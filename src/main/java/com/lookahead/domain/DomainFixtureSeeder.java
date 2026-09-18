@@ -1,5 +1,6 @@
-package com.lookahead.platform;
+package com.lookahead.domain;
 
+import com.lookahead.domain.compatibility.LegacyStorageNames;
 import com.lookahead.learning.content.repository.AccountRepository;
 import com.lookahead.learning.content.security.LocalAuthorAccess;
 import com.lookahead.learning.content.validator.SnapshotValidator;
@@ -18,21 +19,21 @@ import org.springframework.transaction.annotation.Transactional;
 @Component
 @Profile("accounts & local-test")
 @ConditionalOnProperty(name="app.local-test.seed-enabled", havingValue="true")
-public class PlatformFixtureSeeder implements ApplicationRunner {
+public class DomainFixtureSeeder implements ApplicationRunner {
     private final JdbcTemplate jdbc;
     private final AccountRepository subjects;
     private final SnapshotValidator catalog;
     private final Environment environment;
-    public PlatformFixtureSeeder(JdbcTemplate jdbc, AccountRepository subjects, SnapshotValidator catalog,
-                                 Environment environment, PlatformFixtureGuard guard) {
+    public DomainFixtureSeeder(JdbcTemplate jdbc, AccountRepository subjects, SnapshotValidator catalog,
+                                 Environment environment, DomainFixtureGuard guard) {
         this.jdbc = jdbc; this.subjects = subjects; this.catalog = catalog; this.environment = environment;
     }
     @Override @Transactional public void run(ApplicationArguments args) {
-        if (catalog.allTopicIds().isEmpty()) throw new IllegalStateException("Synthetic Platform grants require a nonempty trusted catalog");
+        if (catalog.allTopicIds().isEmpty()) throw new IllegalStateException("Synthetic Domain grants require a nonempty trusted catalog");
         for (int number=1; number<=10; number++) {
             UUID id = UUID.nameUUIDFromBytes(("lookahead-local-test:learner%02d".formatted(number)).getBytes(StandardCharsets.UTF_8));
             // A restart must not restore revoked learner grants or overwrite their expiry.
-            int inserted = jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT (id) DO NOTHING", id);
+            int inserted = jdbc.update("INSERT INTO " + LegacyStorageNames.SUBJECTS_TABLE + "(id) VALUES (?) ON CONFLICT (id) DO NOTHING", id);
             if (inserted == 0) continue;
             for (String topic : catalog.allTopicIds()) {
                 if (number == 9 && !Set.of("learn:hands-on-dsa", "learn:algorithmic-patterns").contains(topic)) continue;

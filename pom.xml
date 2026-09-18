@@ -5,9 +5,10 @@
         <groupId>com.lookahead.learning</groupId>
         <artifactId>backend-apps</artifactId>
         <version>0.0.1-SNAPSHOT</version>
-        <relativePath>../lookahead-learning-backend/pom.xml</relativePath>
+        <relativePath>../lookahead-learning-toolkit/pom.xml</relativePath>
     </parent>
-    <artifactId>platform-app</artifactId>
+    <artifactId>domain-api-app</artifactId>
+    <name>Look Ahead Learning Domain API</name>
     <dependencies>
         <dependency>
             <groupId>com.lookahead.learning</groupId>
@@ -79,13 +80,13 @@
         </dependency>
     </dependencies>
     <build>
-        <finalName>lookahead-platform</finalName>
+        <finalName>lookahead-domain-api</finalName>
         <plugins>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
-                    <mainClass>com.lookahead.platform.PlatformApplication</mainClass>
+                    <mainClass>com.lookahead.domain.DomainApiApplication</mainClass>
                 </configuration>
             </plugin>
         </plugins>

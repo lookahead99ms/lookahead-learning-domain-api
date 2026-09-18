@@ -1,12 +1,13 @@
-package com.lookahead.platform;
+package com.lookahead.domain;
 
+import com.lookahead.domain.compatibility.LegacyStorageNames;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.flywaydb.core.Flyway;
 
-/** One-shot Platform schema migration. Provisioning databases and roles remains infrastructure-owned. */
-public final class PlatformMigration {
-    private PlatformMigration() {}
+/** One-shot Domain schema migration. Provisioning databases and roles remains infrastructure-owned. */
+public final class DomainApiMigration {
+    private DomainApiMigration() {}
     public static void main(String[] args) throws Exception {
         String user = required("SPRING_FLYWAY_USER");
         String url = required("SPRING_FLYWAY_URL");
@@ -18,11 +19,11 @@ public final class PlatformMigration {
         if (password.isBlank()) throw new IllegalStateException("Migration password is required");
         verifyMigrationRole(url, user, password);
         Flyway.configure().dataSource(url, user, password).defaultSchema("public").schemas("public")
-                .locations("classpath:db/platform").cleanDisabled(true).load().migrate();
+                .locations("classpath:db/domain").cleanDisabled(true).load().migrate();
     }
     static void validateMigrationTarget(String user, String url) {
-        if (!"lookahead_platform_migrator".equals(user))
-            throw new IllegalStateException("Platform requires its dedicated migration role");
+        if (!LegacyStorageNames.MIGRATOR_ROLE.equals(user))
+            throw new IllegalStateException("Domain requires its dedicated migration role");
         com.lookahead.learning.content.config.AccountDatabaseConfiguration.validateJdbcUrl(url);
     }
 
@@ -35,7 +36,7 @@ public final class PlatformMigration {
         try (var connection = java.sql.DriverManager.getConnection(url, properties);
                 var statement = connection.createStatement()) {
             statement.setQueryTimeout(5);
-            try (var result = statement.executeQuery("SELECT current_user='lookahead_platform_migrator' "
+            try (var result = statement.executeQuery("SELECT current_user='" + LegacyStorageNames.MIGRATOR_ROLE + "' "
                     + "AND session_user=current_user AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles "
                     + "WHERE rolname=current_user AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)) "
                     + "AND NOT pg_catalog.has_database_privilege(current_user,pg_catalog.current_database(),'CREATE')")) {

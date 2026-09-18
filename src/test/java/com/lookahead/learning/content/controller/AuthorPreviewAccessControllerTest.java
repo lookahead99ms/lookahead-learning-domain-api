@@ -1,7 +1,7 @@
 package com.lookahead.learning.content.controller;
 
 import com.lookahead.learning.content.handler.AccountErrorHandler;
-import com.lookahead.platform.security.PlatformSecurityConfiguration;
+import com.lookahead.domain.security.DomainSecurityConfiguration;
 import com.lookahead.learning.content.repository.AccountRepository;
 import com.lookahead.learning.content.security.AccountPrincipal;
 import com.lookahead.learning.content.security.LocalAuthorAccess;
@@ -120,7 +120,7 @@ class AuthorPreviewAccessControllerTest {
     @Configuration
     @EnableWebMvc
     @EnableWebSecurity
-    @Import({PlatformSecurityConfiguration.class, AuthorPreviewAccessController.class,
+    @Import({DomainSecurityConfiguration.class, AuthorPreviewAccessController.class,
             AuthorPreviewAccessService.class, LocalAuthorAccess.class, AccountErrorHandler.class})
     static class TestApplication {
         @Bean AccountRepository accounts() {

@@ -1,4 +1,4 @@
-package com.lookahead.platform.security;
+package com.lookahead.domain.security;
 
 import com.lookahead.learning.content.repository.AccountRepository;
 import com.lookahead.learning.content.security.AccountPrincipal;
@@ -12,11 +12,11 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
 
 /** Signature/issuer/time run first; this adds client, persisted-token and current-account checks. */
-public final class PlatformTokenConverter implements Converter<Jwt, AbstractAuthenticationToken> {
+public final class DomainTokenConverter implements Converter<Jwt, AbstractAuthenticationToken> {
     private final IdentitySettings settings;
     private final IdentityVerificationClient identity;
     private final AccountRepository accounts;
-    public PlatformTokenConverter(IdentitySettings settings, IdentityVerificationClient identity, AccountRepository accounts) {
+    public DomainTokenConverter(IdentitySettings settings, IdentityVerificationClient identity, AccountRepository accounts) {
         this.settings = settings; this.identity = identity; this.accounts = accounts;
     }
     @Override public AbstractAuthenticationToken convert(Jwt token) {

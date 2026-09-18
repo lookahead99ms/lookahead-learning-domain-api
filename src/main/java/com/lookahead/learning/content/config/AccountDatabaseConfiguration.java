@@ -1,5 +1,6 @@
 package com.lookahead.learning.content.config;
 
+import com.lookahead.domain.compatibility.LegacyStorageNames;
 import com.zaxxer.hikari.HikariDataSource;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -19,13 +20,11 @@ import java.util.Set;
 @Profile("accounts")
 @EnableTransactionManagement
 public class AccountDatabaseConfiguration {
-    private static final String RUNTIME_ROLE = "lookahead_platform_app";
-
     /** Hikari runs this on each new physical connection before lending it to application code. */
     static final String CONNECTION_GUARD_SQL = """
         DO $lookahead_runtime_guard$
         BEGIN
-          IF current_user <> 'lookahead_platform_app' OR session_user <> 'lookahead_platform_app'
+          IF current_user <> '%s' OR session_user <> '%s'
             OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname=current_user
               AND rolcanlogin AND NOT (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls))
             OR EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname<>current_user
@@ -43,16 +42,16 @@ public class AccountDatabaseConfiguration {
           PERFORM pg_catalog.set_config('search_path','pg_catalog,public',false);
         END;
         $lookahead_runtime_guard$;
-        """;
+        """.formatted(LegacyStorageNames.RUNTIME_ROLE, LegacyStorageNames.RUNTIME_ROLE);
 
     @Bean
     HikariDataSource accountDataSource(@Value("${spring.datasource.url}") String url,
-            @Value("${spring.datasource.username}") String username,
+            @Value("${spring.datasource.username:#{T(com.lookahead.domain.compatibility.LegacyStorageNames).RUNTIME_ROLE}}") String username,
             @Value("${spring.datasource.password}") String password,
             @Value("${spring.datasource.hikari.maximum-pool-size:6}") int maximumPoolSize,
             @Value("${spring.datasource.hikari.connection-timeout:3000}") long connectionTimeout,
             @Value("${spring.datasource.hikari.validation-timeout:2000}") long validationTimeout) {
-        if (!RUNTIME_ROLE.equals(username) || password == null || password.isBlank())
+        if (!LegacyStorageNames.RUNTIME_ROLE.equals(username) || password == null || password.isBlank())
             throw new IllegalStateException("Accounts require the dedicated runtime database role");
         validateJdbcUrl(url);
         HikariDataSource source = new HikariDataSource();

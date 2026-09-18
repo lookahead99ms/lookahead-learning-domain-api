@@ -1,5 +1,6 @@
 package com.lookahead.learning.content.repository;
 
+import com.lookahead.domain.compatibility.LegacyStorageNames;
 import com.lookahead.learning.content.security.AccountPrincipal;
 import java.util.Set;
 import java.util.UUID;
@@ -7,14 +8,14 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Repository;
 
-/** Platform-owned subject references and current grants; never reads Identity storage. */
+/** Domain-owned subject references and current grants; never reads Identity storage. */
 @Repository
 public class AccountRepository {
     private final JdbcTemplate jdbc;
     public AccountRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
     public void ensureSubject(UUID subject) {
-        jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT (id) DO NOTHING", subject);
+        jdbc.update("INSERT INTO " + LegacyStorageNames.SUBJECTS_TABLE + "(id) VALUES (?) ON CONFLICT (id) DO NOTHING", subject);
     }
 
     public Set<String> findTopicGrants(UUID subject) {

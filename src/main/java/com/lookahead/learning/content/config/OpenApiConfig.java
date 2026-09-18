@@ -12,7 +12,7 @@ public class OpenApiConfig {
     OpenAPI lookAheadContentOpenApi() {
         return new OpenAPI().info(new Info()
                 .title("Look Ahead Content API")
-                .description("Learning content services for the Look Ahead Learning Platform")
+                .description("Learning content services for the Look Ahead Learning")
                 .version("v1"));
     }
 }

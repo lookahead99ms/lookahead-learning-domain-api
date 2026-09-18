@@ -1,6 +1,6 @@
 spring:
   application:
-    name: lookahead-platform
+    name: lookahead-learning-domain-api
   profiles:
     include: accounts,resource
   config:
@@ -8,9 +8,8 @@ spring:
   flyway:
     enabled: false
   datasource:
-    url: ${LOOKAHEAD_PLATFORM_JDBC_URL}
-    username: lookahead_platform_app
-    password: ${LOOKAHEAD_PLATFORM_DB_PASSWORD:}
+    url: ${LOOKAHEAD_DOMAIN_JDBC_URL}
+    password: ${LOOKAHEAD_DOMAIN_DB_PASSWORD:}
     hikari:
       maximum-pool-size: 6
       connection-timeout: 3000
@@ -41,8 +40,8 @@ app:
   cors:
     allowed-origins: []
   local-test:
-    seed-enabled: ${LOOKAHEAD_PLATFORM_SEED_ENABLED:false}
-    author-enabled: ${LOOKAHEAD_PLATFORM_AUTHOR_ENABLED:false}
+    seed-enabled: ${LOOKAHEAD_DOMAIN_SEED_ENABLED:false}
+    author-enabled: ${LOOKAHEAD_DOMAIN_AUTHOR_ENABLED:false}
 management:
   endpoints:
     web:
@@ -55,4 +54,4 @@ management:
       show-details: never
       group:
         readiness:
-          include: readinessState,platformDatabase
+          include: readinessState,domainDatabase

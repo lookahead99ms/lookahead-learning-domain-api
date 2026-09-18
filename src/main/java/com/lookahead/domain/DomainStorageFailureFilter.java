@@ -1,4 +1,4 @@
-package com.lookahead.platform;
+package com.lookahead.domain;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -17,7 +17,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 /** Dependency failures in bearer authentication occur before MVC handles a product request. */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 20)
-public class PlatformStorageFailureFilter extends OncePerRequestFilter {
+public class DomainStorageFailureFilter extends OncePerRequestFilter {
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         try { chain.doFilter(request, response); }
