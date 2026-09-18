@@ -1,0 +1,58 @@
+spring:
+  application:
+    name: lookahead-platform
+  profiles:
+    include: accounts,resource
+  config:
+    import: optional:configtree:${LOOKAHEAD_SECRETS_DIRECTORY:/run/secrets/}
+  flyway:
+    enabled: false
+  datasource:
+    url: ${LOOKAHEAD_PLATFORM_JDBC_URL}
+    username: lookahead_platform_app
+    password: ${LOOKAHEAD_PLATFORM_DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: 6
+      connection-timeout: 3000
+      validation-timeout: 2000
+  mail:
+    properties:
+      mail.smtp.connectiontimeout: 3000
+      mail.smtp.timeout: 5000
+      mail.smtp.writetimeout: 5000
+server:
+  address: ${LOOKAHEAD_BIND_ADDRESS:127.0.0.1}
+  port: ${PORT:8080}
+  forward-headers-strategy: none
+  shutdown: graceful
+app:
+  version: "@project.version@"
+  deployment-environment: ${LOOKAHEAD_ENVIRONMENT}
+  identity:
+    issuer: ${LOOKAHEAD_OAUTH_ISSUER}
+    upstream: ${LOOKAHEAD_IDENTITY_UPSTREAM}
+    gateway-client-id: ${APP_OAUTH_CLIENT_ID:lookahead-web-gateway}
+    verifier-secret: ${LOOKAHEAD_IDENTITY_VERIFIER_SECRET:}
+  accounts:
+    catalog-path: ${LOOKAHEAD_ACCOUNT_CATALOG}
+  content:
+    publication-path: ${LOOKAHEAD_CONTENT_PUBLICATION:}
+    root: ${LOOKAHEAD_CONTENT_ROOT:}
+  cors:
+    allowed-origins: []
+  local-test:
+    seed-enabled: ${LOOKAHEAD_PLATFORM_SEED_ENABLED:false}
+    author-enabled: ${LOOKAHEAD_PLATFORM_AUTHOR_ENABLED:false}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+      group:
+        readiness:
+          include: readinessState,platformDatabase

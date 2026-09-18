@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "account-catalog/v1",
+  "algorithmVersions": [
+    "study-schedule/v2"
+  ],
+  "rankingVersions": [
+    "synthetic/v1"
+  ],
+  "records": [
+    {
+      "id": "fixture-a",
+      "route": [
+        "/",
+        "learn",
+        "core-java",
+        "fixture-a"
+      ],
+      "topicIds": [
+        "learn:core-java"
+      ],
+      "contentType": "theory"
+    },
+    {
+      "id": "fixture-b",
+      "route": [
+        "/",
+        "learn",
+        "hands-on-dsa",
+        "fixture-b"
+      ],
+      "topicIds": [
+        "learn:hands-on-dsa"
+      ],
+      "contentType": "dsa-problem"
+    }
+  ],
+  "catalogVersion": "sha256:c592530c3d9d2b9d7a18da31138e45d33bac2e4c090e1130ff91153a8e33ca72"
+}

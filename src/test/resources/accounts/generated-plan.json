@@ -1,0 +1,229 @@
+{
+  "goal": "Synthetic API persistence check",
+  "snapshot": {
+    "config": {
+      "days": 7,
+      "dailyHours": 1,
+      "topicIds": [
+        "learn:core-java"
+      ],
+      "accessTopicIds": [
+        "learn:core-java"
+      ],
+      "goalType": "interview",
+      "familiarity": {
+        "learn:core-java": "new"
+      }
+    },
+    "focusedDailyHours": 0.75,
+    "bufferHours": 0.25,
+    "includedTopics": [
+      {
+        "id": "learn:core-java",
+        "path": "learn",
+        "title": "Synthetic topic",
+        "description": "Synthetic integration fixture",
+        "courseIds": []
+      }
+    ],
+    "excludedTopics": [],
+    "days": [
+      {
+        "day": 1,
+        "phase": "Synthetic",
+        "focus": "Verify account persistence",
+        "assignments": [
+          {
+            "id": "smoke-session-fixture-a",
+            "sourceContentId": "fixture-a",
+            "kind": "new",
+            "activity": "Understand",
+            "topicId": "learn:core-java",
+            "topicTitle": "Synthetic topic",
+            "title": "Synthetic HTTP fixture",
+            "courseTitle": "Synthetic course",
+            "contentType": "theory",
+            "route": [
+              "/",
+              "learn",
+              "core-java",
+              "fixture-a"
+            ],
+            "minutes": 20
+          }
+        ],
+        "newCount": 1,
+        "reviewCount": 0,
+        "focusedMinutes": 20,
+        "bufferMinutes": 10
+      },
+      {
+        "day": 2,
+        "phase": "Synthetic",
+        "focus": "Verify account persistence",
+        "assignments": [],
+        "newCount": 0,
+        "reviewCount": 0,
+        "focusedMinutes": 0,
+        "bufferMinutes": 10
+      },
+      {
+        "day": 3,
+        "phase": "Synthetic",
+        "focus": "Verify account persistence",
+        "assignments": [],
+        "newCount": 0,
+        "reviewCount": 0,
+        "focusedMinutes": 0,
+        "bufferMinutes": 10
+      },
+      {
+        "day": 4,
+        "phase": "Synthetic",
+        "focus": "Verify account persistence",
+        "assignments": [],
+        "newCount": 0,
+        "reviewCount": 0,
+        "focusedMinutes": 0,
+        "bufferMinutes": 10
+      },
+      {
+        "day": 5,
+        "phase": "Synthetic",
+        "focus": "Verify account persistence",
+        "assignments": [],
+        "newCount": 0,
+        "reviewCount": 0,
+        "focusedMinutes": 0,
+        "bufferMinutes": 10
+      },
+      {
+        "day": 6,
+        "phase": "Synthetic",
+        "focus": "Verify account persistence",
+        "assignments": [],
+        "newCount": 0,
+        "reviewCount": 0,
+        "focusedMinutes": 0,
+        "bufferMinutes": 10
+      },
+      {
+        "day": 7,
+        "phase": "Synthetic",
+        "focus": "Verify account persistence",
+        "assignments": [],
+        "newCount": 0,
+        "reviewCount": 0,
+        "focusedMinutes": 0,
+        "bufferMinutes": 10
+      }
+    ],
+    "weeks": [
+      {
+        "number": 1,
+        "label": "Synthetic week",
+        "days": [
+          {
+            "day": 1,
+            "phase": "Synthetic",
+            "focus": "Verify account persistence",
+            "assignments": [
+              {
+                "id": "smoke-session-fixture-a",
+                "sourceContentId": "fixture-a",
+                "kind": "new",
+                "activity": "Understand",
+                "topicId": "learn:core-java",
+                "topicTitle": "Synthetic topic",
+                "title": "Synthetic HTTP fixture",
+                "courseTitle": "Synthetic course",
+                "contentType": "theory",
+                "route": [
+                  "/",
+                  "learn",
+                  "core-java",
+                  "fixture-a"
+                ],
+                "minutes": 20
+              }
+            ],
+            "newCount": 1,
+            "reviewCount": 0,
+            "focusedMinutes": 20,
+            "bufferMinutes": 10
+          },
+          {
+            "day": 2,
+            "phase": "Synthetic",
+            "focus": "Verify account persistence",
+            "assignments": [],
+            "newCount": 0,
+            "reviewCount": 0,
+            "focusedMinutes": 0,
+            "bufferMinutes": 10
+          },
+          {
+            "day": 3,
+            "phase": "Synthetic",
+            "focus": "Verify account persistence",
+            "assignments": [],
+            "newCount": 0,
+            "reviewCount": 0,
+            "focusedMinutes": 0,
+            "bufferMinutes": 10
+          },
+          {
+            "day": 4,
+            "phase": "Synthetic",
+            "focus": "Verify account persistence",
+            "assignments": [],
+            "newCount": 0,
+            "reviewCount": 0,
+            "focusedMinutes": 0,
+            "bufferMinutes": 10
+          },
+          {
+            "day": 5,
+            "phase": "Synthetic",
+            "focus": "Verify account persistence",
+            "assignments": [],
+            "newCount": 0,
+            "reviewCount": 0,
+            "focusedMinutes": 0,
+            "bufferMinutes": 10
+          },
+          {
+            "day": 6,
+            "phase": "Synthetic",
+            "focus": "Verify account persistence",
+            "assignments": [],
+            "newCount": 0,
+            "reviewCount": 0,
+            "focusedMinutes": 0,
+            "bufferMinutes": 10
+          },
+          {
+            "day": 7,
+            "phase": "Synthetic",
+            "focus": "Verify account persistence",
+            "assignments": [],
+            "newCount": 0,
+            "reviewCount": 0,
+            "focusedMinutes": 0,
+            "bufferMinutes": 10
+          }
+        ]
+      }
+    ],
+    "uniqueNewItems": 1,
+    "reviewAssignments": 0,
+    "schedulingVersion": "study-schedule/v2"
+  },
+  "provenance": {
+    "snapshotSchemaVersion": "study-plan/v1",
+    "origin": "generated",
+    "algorithmVersion": "study-schedule/v2",
+    "catalogVersion": "sha256:c592530c3d9d2b9d7a18da31138e45d33bac2e4c090e1130ff91153a8e33ca72",
+    "rankingVersion": "synthetic/v1"
+  }
+}

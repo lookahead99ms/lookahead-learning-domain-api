@@ -1,0 +1,184 @@
+{
+  "schemaVersion": "study-plan-template/v1",
+  "templateId": "synthetic-api-revision-d7-h1",
+  "templateVersion": "draft-synthetic-1",
+  "pathId": "synthetic-api-revision",
+  "durationDays": 7,
+  "dailyHours": 1,
+  "availabilityUnit": "hours-per-day",
+  "intensive": false,
+  "intendedUse": "Interview revision and targeted gaps",
+  "provenance": {
+    "algorithmVersion": "ready-made-schedule/v1",
+    "catalogVersion": "synthetic-account-catalog/v1",
+    "rankingVersion": null,
+    "blueprintVersion": "synthetic-blueprint/v1",
+    "sourceContentVersion": "synthetic-content/v1"
+  },
+  "startingKnowledge": [
+    "Can describe a request and response."
+  ],
+  "assumedPrerequisiteIds": [],
+  "topicIds": [
+    "grow:sample-api"
+  ],
+  "references": [
+    {
+      "contentId": "grow:sample-api:request-contract",
+      "topicId": "grow:sample-api",
+      "title": "Synthetic request contract",
+      "courseTitle": "Sample API",
+      "contentType": "theory",
+      "route": [
+        "/",
+        "grow",
+        "sample-api",
+        "request-contract"
+      ],
+      "contentVersion": "synthetic-1",
+      "prerequisiteIds": []
+    }
+  ],
+  "days": [
+    {
+      "day": 1,
+      "phase": "revision",
+      "sessions": [
+        {
+          "id": "synthetic-api-revision-d7-h1-refresh-1",
+          "kind": "review",
+          "activity": "Refresh",
+          "contentId": "grow:sample-api:request-contract",
+          "minutes": 20,
+          "instructions": "Recall a request/response contract, then compare it with the synthetic example.",
+          "prerequisiteIds": [],
+          "requiredSessionIds": [],
+          "review": {
+            "basis": "declared-familiarity",
+            "sourceSessionId": null,
+            "sourceDay": null,
+            "dueDay": 1
+          }
+        }
+      ],
+      "scheduledMinutes": 20,
+      "focusedMinutes": 20,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 40
+    },
+    {
+      "day": 2,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 3,
+      "phase": "revision",
+      "sessions": [
+        {
+          "id": "synthetic-api-revision-d7-h1-recall-3",
+          "kind": "review",
+          "activity": "Recall",
+          "contentId": "grow:sample-api:request-contract",
+          "minutes": 10,
+          "instructions": "Explain the contract without notes; record a gap.",
+          "prerequisiteIds": [],
+          "requiredSessionIds": [
+            "synthetic-api-revision-d7-h1-refresh-1"
+          ],
+          "review": {
+            "basis": "scheduled-session",
+            "sourceSessionId": "synthetic-api-revision-d7-h1-refresh-1",
+            "sourceDay": 1,
+            "dueDay": 3
+          }
+        }
+      ],
+      "scheduledMinutes": 10,
+      "focusedMinutes": 10,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 50
+    },
+    {
+      "day": 4,
+      "phase": "recovery",
+      "sessions": [
+        {
+          "id": "synthetic-api-revision-d7-h1-recovery-4",
+          "kind": "recovery",
+          "activity": "Recover",
+          "contentId": null,
+          "minutes": 10,
+          "instructions": "Take a break. This period is not a completion target.",
+          "prerequisiteIds": [],
+          "requiredSessionIds": []
+        }
+      ],
+      "scheduledMinutes": 10,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 10,
+      "unallocatedMinutes": 50
+    },
+    {
+      "day": 5,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 6,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 7,
+      "phase": "revision",
+      "sessions": [
+        {
+          "id": "synthetic-api-revision-d7-h1-recall-7",
+          "kind": "review",
+          "activity": "Recall",
+          "contentId": "grow:sample-api:request-contract",
+          "minutes": 10,
+          "instructions": "Explain the contract without notes; record a gap.",
+          "prerequisiteIds": [],
+          "requiredSessionIds": [
+            "synthetic-api-revision-d7-h1-refresh-1"
+          ],
+          "review": {
+            "basis": "scheduled-session",
+            "sourceSessionId": "synthetic-api-revision-d7-h1-refresh-1",
+            "sourceDay": 1,
+            "dueDay": 7
+          }
+        }
+      ],
+      "scheduledMinutes": 10,
+      "focusedMinutes": 10,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 50
+    }
+  ],
+  "coverage": {
+    "selectedContentCount": 1,
+    "availableContentCount": 1,
+    "scheduledMinutes": 50,
+    "unallocatedMinutes": 370,
+    "uncoveredContentIds": [],
+    "uncoveredScope": [
+      "Synthetic demonstration only; no private curriculum."
+    ]
+  },
+  "futureReviews": []
+}

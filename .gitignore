@@ -1,0 +1,72 @@
+# Java/Maven build output; keep the Maven Wrapper distributable.
+target/
+*.class
+*.jar
+*.war
+*.ear
+!.mvn/wrapper/maven-wrapper.jar
+
+# Editors and operating-system metadata.
+.idea/
+.vscode/
+.settings/
+.classpath
+.project
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Python tooling used by API verification helpers.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local runtime state, logs and generated test evidence.
+.local/
+.codex-scratch/
+.codex/
+.agents/
+logs/
+*.log
+backups/
+dumps/
+*.dump
+*.backup
+*.sql.gz
+*.sqlite
+*.sqlite3
+*.db
+
+# Actual environment settings, credentials and certificate/key stores.
+.env
+.env.*
+!.env.example
+!.env.*.example
+secrets/
+.secrets/
+.aws/
+.kube/
+.terraform/
+*.tfstate
+*.tfstate.*
+.mvn/settings-security.xml
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+
+# Workspace-only notes and private planning; preserve these files locally.
+src/anc.txt
+docs/private/
+private/
+*.private.*
+docs/account-persistence-contract.proposed.md

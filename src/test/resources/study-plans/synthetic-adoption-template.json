@@ -1,0 +1,402 @@
+{
+  "schemaVersion": "study-plan-template/v1",
+  "templateId": "synthetic-api-revision-d21-h1",
+  "pathId": "synthetic-api-revision",
+  "durationDays": 21,
+  "dailyHours": 1,
+  "availabilityUnit": "hours-per-day",
+  "intensive": false,
+  "intendedUse": "Synthetic API and data learning",
+  "provenance": {
+    "algorithmVersion": "ready-made-schedule/v1",
+    "catalogVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "rankingVersion": null,
+    "blueprintVersion": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sourceContentVersion": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "startingKnowledge": [
+    "Understands synthetic request/response examples — no private curriculum."
+  ],
+  "assumedPrerequisiteIds": [],
+  "topicIds": [
+    "grow:sample-api",
+    "grow:sample-data"
+  ],
+  "references": [
+    {
+      "contentId": "grow:sample-api:request-contract",
+      "topicId": "grow:sample-api",
+      "title": "Synthetic request contract",
+      "courseTitle": "Sample API",
+      "contentType": "theory",
+      "route": [
+        "/",
+        "grow",
+        "sample-api",
+        "request-contract"
+      ],
+      "contentVersion": "synthetic-content-1",
+      "prerequisiteIds": [],
+      "estimatedReadMinutes": 10
+    },
+    {
+      "contentId": "grow:sample-data:transaction-contract",
+      "topicId": "grow:sample-data",
+      "title": "Synthetic transaction contract",
+      "courseTitle": "Sample Data",
+      "contentType": "theory",
+      "route": [
+        "/",
+        "grow",
+        "sample-data",
+        "transaction-contract"
+      ],
+      "contentVersion": "synthetic-content-1",
+      "prerequisiteIds": [],
+      "estimatedReadMinutes": 10
+    },
+    {
+      "contentId": "grow:sample-data:transaction-question",
+      "topicId": "grow:sample-data",
+      "title": "Synthetic transaction question",
+      "courseTitle": "Sample Data",
+      "contentType": "q-and-a",
+      "route": [
+        "/",
+        "grow",
+        "sample-data",
+        "transaction-question"
+      ],
+      "contentVersion": "synthetic-content-1",
+      "prerequisiteIds": [],
+      "estimatedReadMinutes": null
+    }
+  ],
+  "days": [
+    {
+      "day": 1,
+      "phase": "learning",
+      "sessions": [
+        {
+          "id": "synthetic-api-revision-d21-h1-read-request",
+          "kind": "new",
+          "activity": "Understand",
+          "contentId": "grow:sample-api:request-contract",
+          "minutes": 15,
+          "instructions": "Synthetic practice: explain the contract and its trade-offs.",
+          "prerequisiteIds": [],
+          "requiredSessionIds": []
+        },
+        {
+          "id": "synthetic-api-revision-d21-h1-read-transaction",
+          "kind": "new",
+          "activity": "Understand",
+          "contentId": "grow:sample-data:transaction-contract",
+          "minutes": 10,
+          "instructions": "Synthetic practice: explain the contract and its trade-offs.",
+          "prerequisiteIds": [],
+          "requiredSessionIds": []
+        },
+        {
+          "id": "synthetic-api-revision-d21-h1-attempt-transaction",
+          "kind": "practice",
+          "activity": "Attempt",
+          "contentId": "grow:sample-data:transaction-question",
+          "minutes": 10,
+          "instructions": "Synthetic practice: explain the contract and its trade-offs.",
+          "prerequisiteIds": [
+            "grow:sample-api:request-contract",
+            "grow:sample-data:transaction-contract"
+          ],
+          "requiredSessionIds": [
+            "synthetic-api-revision-d21-h1-read-request",
+            "synthetic-api-revision-d21-h1-read-transaction"
+          ]
+        },
+        {
+          "id": "synthetic-api-revision-d21-h1-recovery-1",
+          "kind": "recovery",
+          "activity": "Recover",
+          "contentId": null,
+          "minutes": 10,
+          "instructions": "Synthetic practice: explain the contract and its trade-offs.",
+          "prerequisiteIds": [],
+          "requiredSessionIds": []
+        }
+      ],
+      "scheduledMinutes": 45,
+      "focusedMinutes": 35,
+      "recoveryMinutes": 10,
+      "unallocatedMinutes": 15
+    },
+    {
+      "day": 2,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 3,
+      "phase": "learning",
+      "sessions": [
+        {
+          "id": "synthetic-api-revision-d21-h1-recall-request",
+          "kind": "review",
+          "activity": "Recall",
+          "contentId": "grow:sample-api:request-contract",
+          "minutes": 10,
+          "instructions": "Synthetic practice: explain the contract and its trade-offs.",
+          "prerequisiteIds": [],
+          "requiredSessionIds": [
+            "synthetic-api-revision-d21-h1-read-request"
+          ],
+          "review": {
+            "basis": "scheduled-session",
+            "sourceSessionId": "synthetic-api-revision-d21-h1-read-request",
+            "sourceDay": 1,
+            "dueDay": 3
+          }
+        }
+      ],
+      "scheduledMinutes": 10,
+      "focusedMinutes": 10,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 50
+    },
+    {
+      "day": 4,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 5,
+      "phase": "learning",
+      "sessions": [
+        {
+          "id": "synthetic-api-revision-d21-h1-rehearse-transaction",
+          "kind": "practice",
+          "activity": "Rehearse",
+          "contentId": "grow:sample-data:transaction-question",
+          "minutes": 10,
+          "instructions": "Synthetic practice: explain the contract and its trade-offs.",
+          "prerequisiteIds": [
+            "grow:sample-api:request-contract"
+          ],
+          "requiredSessionIds": [
+            "synthetic-api-revision-d21-h1-read-request",
+            "synthetic-api-revision-d21-h1-attempt-transaction"
+          ]
+        }
+      ],
+      "scheduledMinutes": 10,
+      "focusedMinutes": 10,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 50
+    },
+    {
+      "day": 6,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 7,
+      "phase": "recovery",
+      "sessions": [
+        {
+          "id": "synthetic-api-revision-d21-h1-recovery-7",
+          "kind": "recovery",
+          "activity": "Recover",
+          "contentId": null,
+          "minutes": 10,
+          "instructions": "Synthetic practice: explain the contract and its trade-offs.",
+          "prerequisiteIds": [],
+          "requiredSessionIds": []
+        }
+      ],
+      "scheduledMinutes": 10,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 10,
+      "unallocatedMinutes": 50
+    },
+    {
+      "day": 8,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 9,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 10,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 11,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 12,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 13,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 14,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 15,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 16,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 17,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 18,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 19,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 20,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    },
+    {
+      "day": 21,
+      "phase": "recovery",
+      "sessions": [],
+      "scheduledMinutes": 0,
+      "focusedMinutes": 0,
+      "recoveryMinutes": 0,
+      "unallocatedMinutes": 60
+    }
+  ],
+  "coverage": {
+    "selectedContentCount": 3,
+    "availableContentCount": 4,
+    "selectedUnitIds": [
+      "sample-contract-unit",
+      "sample-transaction-unit"
+    ],
+    "availableUnitCount": 3,
+    "uncoveredUnitIds": [
+      "sample-follow-up-unit"
+    ],
+    "uncoveredContentIds": [
+      "grow:sample-api:unscheduled-contract"
+    ],
+    "uncoveredScope": [
+      "Synthetic demonstration only; no production guarantee."
+    ],
+    "scheduledMinutes": 75,
+    "focusedMinutes": 55,
+    "recoveryMinutes": 20,
+    "unallocatedMinutes": 1185
+  },
+  "futureReviews": [
+    {
+      "id": "synthetic-api-revision-d21-h1-future-request",
+      "kind": "review",
+      "activity": "Recall",
+      "contentId": "grow:sample-api:request-contract",
+      "minutes": 10,
+      "instructions": "Synthetic practice: explain the contract and its trade-offs.",
+      "prerequisiteIds": [],
+      "requiredSessionIds": [
+        "synthetic-api-revision-d21-h1-read-request"
+      ],
+      "review": {
+        "basis": "scheduled-session",
+        "sourceSessionId": "synthetic-api-revision-d21-h1-read-request",
+        "sourceDay": 1,
+        "dueDay": 24
+      }
+    }
+  ],
+  "templateVersion": "sha256:ea279becf65c8656c18a39d8c0915bc65e8c63f72f2404d45df927a68e71c694"
+}

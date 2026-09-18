@@ -1,0 +1,82 @@
+[
+  {
+    "username": "learner01",
+    "days": 7,
+    "dailyHours": 1,
+    "goalType": "interview",
+    "familiarity": "new",
+    "topicId": "learn:core-java"
+  },
+  {
+    "username": "learner02",
+    "days": 8,
+    "dailyHours": 2,
+    "goalType": "learning",
+    "familiarity": "refresh",
+    "topicId": "learn:core-java"
+  },
+  {
+    "username": "learner03",
+    "days": 9,
+    "dailyHours": 3,
+    "goalType": "interview",
+    "familiarity": "familiar",
+    "topicId": "learn:core-java"
+  },
+  {
+    "username": "learner04",
+    "days": 10,
+    "dailyHours": 1,
+    "goalType": "learning",
+    "familiarity": "new",
+    "topicId": "learn:core-java"
+  },
+  {
+    "username": "learner05",
+    "days": 11,
+    "dailyHours": 2,
+    "goalType": "interview",
+    "familiarity": "refresh",
+    "topicId": "learn:core-java"
+  },
+  {
+    "username": "learner06",
+    "days": 12,
+    "dailyHours": 3,
+    "goalType": "learning",
+    "familiarity": "familiar",
+    "topicId": "learn:core-java"
+  },
+  {
+    "username": "learner07",
+    "days": 13,
+    "dailyHours": 1,
+    "goalType": "interview",
+    "familiarity": "new",
+    "topicId": "learn:core-java"
+  },
+  {
+    "username": "learner08",
+    "days": 14,
+    "dailyHours": 2,
+    "goalType": "learning",
+    "familiarity": "refresh",
+    "topicId": "learn:core-java"
+  },
+  {
+    "username": "learner09",
+    "days": 15,
+    "dailyHours": 3,
+    "goalType": "interview",
+    "familiarity": "familiar",
+    "topicId": "learn:hands-on-dsa"
+  },
+  {
+    "username": "learner10",
+    "days": 7,
+    "dailyHours": 1,
+    "goalType": "interview",
+    "familiarity": "new",
+    "topicId": "learn:core-java"
+  }
+]
