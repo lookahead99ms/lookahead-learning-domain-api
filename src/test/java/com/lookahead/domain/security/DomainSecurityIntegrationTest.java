@@ -1,8 +1,8 @@
-package com.lookahead.platform.security;
+package com.lookahead.domain.security;
 
 import com.lookahead.learning.content.repository.AccountRepository;
 import com.lookahead.learning.content.security.AccountPrincipal;
-import com.lookahead.platform.PlatformStorageFailureFilter;
+import com.lookahead.domain.DomainStorageFailureFilter;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -35,7 +35,7 @@ import static org.springframework.security.test.web.servlet.setup.SecurityMockMv
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-class PlatformSecurityIntegrationTest {
+class DomainSecurityIntegrationTest {
     private static final String SUBJECT = "6c8bc359-1141-4c98-83e6-a5ca967fe180";
     private AnnotationConfigWebApplicationContext context;
     private AccountRepository accounts;
@@ -55,7 +55,7 @@ class PlatformSecurityIntegrationTest {
         decoder = context.getBean(JwtDecoder.class);
         when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "account"));
         when(identity.verify("synthetic-token")).thenReturn(new IdentityVerificationClient.Verification(true, SUBJECT, "learner", "Learner", "lookahead-web-gateway"));
-        http = MockMvcBuilders.webAppContextSetup(context).addFilters(new PlatformStorageFailureFilter()).apply(springSecurity()).build();
+        http = MockMvcBuilders.webAppContextSetup(context).addFilters(new DomainStorageFailureFilter()).apply(springSecurity()).build();
     }
     @AfterEach void close() { if (context != null) context.close(); }
 
@@ -108,7 +108,7 @@ class PlatformSecurityIntegrationTest {
                 .issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(60)).build();
     }
     @Configuration @EnableWebMvc @EnableWebSecurity
-    @Import({PlatformSecurityConfiguration.class, ProbeController.class})
+    @Import({DomainSecurityConfiguration.class, ProbeController.class})
     static class TestApplication {
         @Bean ObjectMapper mapper() { return new ObjectMapper(); }
         @Bean AccountRepository accounts() { return mock(AccountRepository.class, withSettings().mockMaker(MockMakers.SUBCLASS)); }

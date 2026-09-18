@@ -1,4 +1,4 @@
-package com.lookahead.platform.security;
+package com.lookahead.domain.security;
 
 import com.lookahead.learning.content.repository.AccountRepository;
 import java.net.http.HttpClient;
@@ -22,12 +22,12 @@ import org.springframework.web.client.RestTemplate;
 import tools.jackson.databind.ObjectMapper;
 
 @Configuration
-public class PlatformSecurityConfiguration {
+public class DomainSecurityConfiguration {
     @Bean IdentitySettings identitySettings(Environment environment) { return IdentitySettings.from(environment); }
     @Bean IdentityVerificationClient identityVerification(IdentitySettings settings, ObjectMapper mapper) {
         return new IdentityVerificationClient(settings, mapper);
     }
-    @Bean JwtDecoder platformDecoder(IdentitySettings settings) {
+    @Bean JwtDecoder domainDecoder(IdentitySettings settings) {
         var client = HttpClient.newBuilder().connectTimeout(settings.connectTimeout()).followRedirects(HttpClient.Redirect.NEVER).build();
         var factory = new JdkClientHttpRequestFactory(client); factory.setReadTimeout(settings.readTimeout());
         var decoder = NimbusJwtDecoder.withJwkSetUri(settings.upstream() + "/oauth2/jwks")
@@ -35,7 +35,7 @@ public class PlatformSecurityConfiguration {
         decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(settings.issuer()));
         return decoder;
     }
-    @Bean SecurityFilterChain platformSecurity(HttpSecurity http, JwtDecoder decoder, IdentitySettings settings,
+    @Bean SecurityFilterChain domainSecurity(HttpSecurity http, JwtDecoder decoder, IdentitySettings settings,
                                                IdentityVerificationClient identity, AccountRepository accounts) throws Exception {
         return http.cors(Customizer.withDefaults()).csrf(AbstractHttpConfigurer::disable)
                 .httpBasic(AbstractHttpConfigurer::disable).formLogin(AbstractHttpConfigurer::disable)
@@ -51,7 +51,7 @@ public class PlatformSecurityConfiguration {
                         .requestMatchers("/api/v1/auth/me", "/api/v1/account-catalog", "/api/v1/author/previews/access", "/api/v1/plans", "/api/v1/plans/**").hasAuthority("SCOPE_account")
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resource -> resource.jwt(jwt -> jwt.decoder(decoder)
-                        .jwtAuthenticationConverter(new PlatformTokenConverter(settings, identity, accounts)))
+                        .jwtAuthenticationConverter(new DomainTokenConverter(settings, identity, accounts)))
                         .authenticationEntryPoint((request, response, error) -> {
                             boolean unavailable = error instanceof AuthenticationServiceException;
                             response.setStatus(unavailable ? 503 : 401);

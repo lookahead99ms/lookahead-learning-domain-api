@@ -1,5 +1,6 @@
 package com.lookahead.learning.content.repository;
 
+import com.lookahead.domain.compatibility.LegacyStorageNames;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.service.SupportFeedbackService;
 import com.lookahead.learning.content.service.SupportReceiptStore;
@@ -21,8 +22,8 @@ public class SupportReceiptRepository implements SupportReceiptStore {
     @Override public Reservation reserve(String owner, String key, String digest) {
         return transaction.execute(status -> {
             UUID account=UUID.fromString(owner);
-            // Platform subject lock serializes request-key creation and the per-account rate limit across replicas.
-            var users=jdbc.queryForList("SELECT id FROM platform_subjects WHERE id=? FOR UPDATE",UUID.class,account);
+            // Domain subject lock serializes request-key creation and the per-account rate limit across replicas.
+            var users=jdbc.queryForList("SELECT id FROM " + LegacyStorageNames.SUBJECTS_TABLE + " WHERE id=? FOR UPDATE",UUID.class,account);
             if (users.isEmpty()) throw new AccountFailure(401,"AUTHENTICATION_REQUIRED","Sign in to continue");
             var existing=jdbc.query("SELECT request_hash,reference,status FROM support_receipts WHERE account_id=? AND request_key=?",
                 (rs,row)->new String[]{rs.getString(1),rs.getString(2),rs.getString(3)},account,key);

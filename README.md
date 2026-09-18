@@ -1,33 +1,43 @@
-# Platform application
+# Look Ahead Learning Domain API
 
-This independently packaged resource application owns content access, current
-course grants, plans, progress, support receipts and local author capability.
+This independently packaged Java/Spring Boot application owns learning business
+rules: content access, current course grants, plans, progress, support receipts
+and local author capability.
 It has no password-login controller, authorization-server library, OAuth state
 repository, signing private key, or Identity database connection.
 
 The candidate does not migrate an existing combined database automatically.
 Legacy migrations and the running application remain separate. Infrastructure
-provisions `lookahead_platform_app` and `lookahead_platform_migrator` with access
-only to the Platform database. Runtime credentials must not own tables, create
-schemas, or connect to the Identity database.
+provisions separate runtime and migration roles with access only to the Domain
+API database. Runtime credentials must not own tables, create schemas, or connect
+to the Identity database. Installed storage identifiers are retained through the
+explicit [legacy storage adapter](docs/storage-compatibility.md).
 
-Build from the sibling `lookahead-learning-backend` directory with
-`./mvnw -pl :platform-app -am verify`. The executable artifact is
-`../lookahead-learning-platform/target/lookahead-platform.jar`; its main class is
-`com.lookahead.platform.PlatformApplication`. The one-shot migration entry point
-is `com.lookahead.platform.PlatformMigration`, using `SPRING_FLYWAY_URL`,
-`SPRING_FLYWAY_USER=lookahead_platform_migrator` and either
+Build from the sibling `lookahead-learning-toolkit` directory with
+`./mvnw -pl :domain-api-app -am verify`. The executable artifact is
+`../lookahead-learning-domain-api/target/lookahead-domain-api.jar`; its main class is
+`com.lookahead.domain.DomainApiApplication`. The one-shot migration entry point
+is `com.lookahead.domain.DomainApiMigration`, using `SPRING_FLYWAY_URL`,
+`SPRING_FLYWAY_USER` set to the adapter's dedicated migration role and either
 `SPRING_FLYWAY_PASSWORD` or `LOOKAHEAD_MIGRATION_PASSWORD_FILE`. Migration scripts
-live in `db/platform`; runtime Flyway is disabled.
+live in `db/domain`; runtime Flyway is disabled. The initial script's historical
+filename and bytes remain unchanged to preserve installed migration history.
+
+The local folder and GitHub repository are `lookahead-learning-domain-api`:
+[lookahead99ms/lookahead-learning-domain-api](https://github.com/lookahead99ms/lookahead-learning-domain-api).
+Java packages, artifact
+names, health identifiers and environment variables now use Domain API naming.
+Existing database objects and grants remain unchanged; no data migration or
+runtime deployment is implied by the source rename.
 
 ## Configuration
 
 | Property | Environment convenience | Purpose |
 | --- | --- | --- |
 | `app.deployment-environment` | `LOOKAHEAD_ENVIRONMENT` | Explicit `local`, `dev` or `prod` |
-| `spring.datasource.url` | `LOOKAHEAD_PLATFORM_JDBC_URL` | Platform PostgreSQL URL |
-| `spring.datasource.username` | Fixed default | `lookahead_platform_app` only |
-| `spring.datasource.password` | `LOOKAHEAD_PLATFORM_DB_PASSWORD` | Platform runtime credential |
+| `spring.datasource.url` | `LOOKAHEAD_DOMAIN_JDBC_URL` | Domain API PostgreSQL URL |
+| `spring.datasource.username` | Adapter default | Only the exact runtime role in `LegacyStorageNames` |
+| `spring.datasource.password` | `LOOKAHEAD_DOMAIN_DB_PASSWORD` | Domain API runtime credential |
 | `app.identity.issuer` | `LOOKAHEAD_OAUTH_ISSUER` | Expected public token issuer |
 | `app.identity.upstream` | `LOOKAHEAD_IDENTITY_UPSTREAM` | Fixed internal Identity origin |
 | `app.identity.gateway-client-id` | `APP_OAUTH_CLIENT_ID` | Expected originating OAuth client |
@@ -56,7 +66,7 @@ privilege individually; retaining SELECT alone does not mark a broken writer UP.
 JWT signature, issuer and lifetime checks use public JWKS. Audience, originating
 client and canonical UUID subject are checked before the internal call. Every
 authenticated request then POSTs the exact access token as form field `token`
-to `/internal/v1/tokens/verify` using Basic user `lookahead-platform-verifier`
+to `/internal/v1/tokens/verify` using Basic user `lookahead-domain-verifier`
 and the dedicated verification secret. Redirects and positive response caching
 are disabled; connect/read timeouts and response sizes are bounded.
 
@@ -64,23 +74,23 @@ Identity returns `{ "active": false }` for an invalid/revoked/disabled identity,
 or an active result with `subject`, `username`, `displayName`, and `clientId`.
 The latter must match the signed token. Invalid credentials yield 401;
 unavailable or malformed Identity results yield 503. No response is treated as
-permission to bypass current Platform grants.
+permission to bypass current Domain API grants.
 
 Only a freshly verified subject may create its credential-free
-`platform_subjects` reference. This operation is idempotent and never grants
+local subject reference. This operation is idempotent and never grants
 access. Existing account UUIDs must be preserved during data transfer. Product
 foreign keys point to this local subject table; no cross-database SQL exists.
-Platform does not persist a stale copy of Identity's enabled state.
+Domain API does not persist a stale copy of Identity's enabled state.
 
 An account disable blocks newly verified requests, but cannot atomically cancel
-an already admitted Platform transaction across databases. Plan/version/activity/
-mutation-receipt writes remain one Platform transaction. Support receipt
-reservation and per-account limits lock the Platform subject row; uncertain
+an already admitted Domain API transaction across databases. Plan/version/activity/
+mutation-receipt writes remain one Domain API transaction. Support receipt
+reservation and per-account limits lock the Domain API subject row; uncertain
 SMTP delivery is never automatically resent by replaying a request key.
 
 Local fixtures require `local-test`, explicit local mode and
-`LOOKAHEAD_PLATFORM_SEED_ENABLED=true`. They create only deterministic subject
-references and synthetic grants. Optional `LOOKAHEAD_PLATFORM_AUTHOR_ENABLED`
+`LOOKAHEAD_DOMAIN_SEED_ENABLED=true`. They create only deterministic subject
+references and synthetic grants. Optional `LOOKAHEAD_DOMAIN_AUTHOR_ENABLED`
 retains the guarded local author capability. Ordinary restart does not restore
 revoked learner grants. These fixtures must never activate in DEV or PROD.
 

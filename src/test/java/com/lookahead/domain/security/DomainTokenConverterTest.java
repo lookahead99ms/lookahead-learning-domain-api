@@ -1,4 +1,4 @@
-package com.lookahead.platform.security;
+package com.lookahead.domain.security;
 
 import com.lookahead.learning.content.repository.AccountRepository;
 import com.lookahead.learning.content.security.AccountPrincipal;
@@ -12,14 +12,14 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-class PlatformTokenConverterTest {
+class DomainTokenConverterTest {
     private final UUID subject = UUID.randomUUID();
     private final IdentitySettings settings = IdentitySettings.from(IdentitySettingsTest.local());
     private final AccountRepository accounts = mock(AccountRepository.class, withSettings().mockMaker(MockMakers.SUBCLASS));
     private final IdentityVerificationClient identity = mock(IdentityVerificationClient.class, withSettings().mockMaker(MockMakers.SUBCLASS));
-    private final PlatformTokenConverter converter = new PlatformTokenConverter(settings, identity, accounts);
+    private final DomainTokenConverter converter = new DomainTokenConverter(settings, identity, accounts);
 
-    @Test void onlyVerifiedIdentityProvisionsAPlatformSubjectAndNoGrants() {
+    @Test void onlyVerifiedIdentityProvisionsADomainSubjectAndNoGrants() {
         when(identity.verify("synthetic-token")).thenReturn(active(subject.toString(), settings.gatewayClientId()));
         var authenticated = converter.convert(token(subject.toString(), settings.gatewayClientId(), "lookahead-api"));
         assertThat(authenticated.getPrincipal()).isEqualTo(new AccountPrincipal(subject, "learner", "Learner", true));

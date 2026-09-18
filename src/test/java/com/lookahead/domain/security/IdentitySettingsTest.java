@@ -1,6 +1,6 @@
-package com.lookahead.platform.security;
+package com.lookahead.domain.security;
 
-import com.lookahead.platform.PlatformFixtureGuard;
+import com.lookahead.domain.DomainFixtureGuard;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 import static org.assertj.core.api.Assertions.*;
@@ -42,10 +42,10 @@ class IdentitySettingsTest {
     }
     @Test void fixturePermissionsNeverRequirePasswordSecretsAndCannotEscapeLocal() {
         var env = local().withProperty("app.local-test.seed-enabled", "true").withProperty("app.local-test.author-enabled", "true");
-        assertThatThrownBy(() -> new PlatformFixtureGuard(env)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> new DomainFixtureGuard(env)).isInstanceOf(IllegalStateException.class);
         env.setActiveProfiles("accounts", "local-test");
-        assertThatCode(() -> new PlatformFixtureGuard(env)).doesNotThrowAnyException();
+        assertThatCode(() -> new DomainFixtureGuard(env)).doesNotThrowAnyException();
         env.withProperty("app.deployment-environment", "prod");
-        assertThatThrownBy(() -> new PlatformFixtureGuard(env)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> new DomainFixtureGuard(env)).isInstanceOf(IllegalStateException.class);
     }
 }

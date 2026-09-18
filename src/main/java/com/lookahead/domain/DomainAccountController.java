@@ -1,4 +1,4 @@
-package com.lookahead.platform;
+package com.lookahead.domain;
 
 import com.lookahead.learning.content.dto.AccountView;
 import com.lookahead.learning.content.dto.ApiResponse;
@@ -12,11 +12,11 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-public class PlatformAccountController {
+public class DomainAccountController {
     private final AccountRepository accounts;
     private final ProtectedContentPolicy publication;
     private final LocalAuthorAccess author;
-    public PlatformAccountController(AccountRepository accounts, ProtectedContentPolicy publication, LocalAuthorAccess author) {
+    public DomainAccountController(AccountRepository accounts, ProtectedContentPolicy publication, LocalAuthorAccess author) {
         this.accounts = accounts; this.publication = publication; this.author = author;
     }
     @GetMapping("/api/v1/auth/me")

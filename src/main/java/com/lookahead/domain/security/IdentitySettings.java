@@ -1,4 +1,4 @@
-package com.lookahead.platform.security;
+package com.lookahead.domain.security;
 
 import java.net.URI;
 import java.time.Duration;
@@ -12,7 +12,7 @@ public record IdentitySettings(String issuer, String upstream, String gatewayCli
     public static IdentitySettings from(Environment environment) {
         String mode = required(environment, "app.deployment-environment");
         if (!Set.of("local", "dev", "prod").contains(mode)) throw new IllegalStateException("Choose local, dev, or prod deployment environment");
-        if (environment.acceptsProfiles(Profiles.of("gateway", "oauth-server"))) throw new IllegalStateException("Platform cannot activate gateway or authorization-server roles");
+        if (environment.acceptsProfiles(Profiles.of("gateway", "oauth-server"))) throw new IllegalStateException("Domain cannot activate gateway or authorization-server roles");
         boolean local = "local".equals(mode);
         if (local && environment.acceptsProfiles(Profiles.of("dev", "prod", "production"))) throw new IllegalStateException("Local mode cannot activate DEV/PROD profiles");
         if (!local && environment.acceptsProfiles(Profiles.of("local", "local-test"))) throw new IllegalStateException("Local profiles require local mode");

@@ -1,4 +1,4 @@
-package com.lookahead.platform.security;
+package com.lookahead.domain.security;
 
 import java.net.http.HttpClient;
 import org.springframework.http.MediaType;
@@ -27,7 +27,7 @@ public class IdentityVerificationClient {
         form.add("token", accessToken);
         try {
             return http.post().uri(settings.upstream() + "/internal/v1/tokens/verify")
-                    .headers(headers -> headers.setBasicAuth("lookahead-platform-verifier", settings.verifierSecret()))
+                    .headers(headers -> headers.setBasicAuth("lookahead-domain-verifier", settings.verifierSecret()))
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED).accept(MediaType.APPLICATION_JSON).body(form)
                     .exchange((request, response) -> {
                         if (response.getStatusCode().value() != 200) throw new IdentityUnavailableException();

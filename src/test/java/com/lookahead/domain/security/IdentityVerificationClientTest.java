@@ -1,4 +1,4 @@
-package com.lookahead.platform.security;
+package com.lookahead.domain.security;
 
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
@@ -19,7 +19,7 @@ class IdentityVerificationClientTest {
             calls.incrementAndGet();
             assertThat(exchange.getRequestMethod()).isEqualTo("POST");
             assertThat(exchange.getRequestURI().getQuery()).isNull();
-            assertThat(exchange.getRequestHeaders().getFirst("Authorization")).isEqualTo("Basic " + Base64.getEncoder().encodeToString(("lookahead-platform-verifier:" + settings.verifierSecret()).getBytes(StandardCharsets.ISO_8859_1)));
+            assertThat(exchange.getRequestHeaders().getFirst("Authorization")).isEqualTo("Basic " + Base64.getEncoder().encodeToString(("lookahead-domain-verifier:" + settings.verifierSecret()).getBytes(StandardCharsets.ISO_8859_1)));
             assertThat(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)).isEqualTo("token=synthetic%2Btoken%26value");
             byte[] body = "{\"active\":false}".getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, body.length); exchange.getResponseBody().write(body); exchange.close();

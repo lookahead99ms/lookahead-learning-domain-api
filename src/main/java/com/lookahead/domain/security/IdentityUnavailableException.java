@@ -1,4 +1,4 @@
-package com.lookahead.platform.security;
+package com.lookahead.domain.security;
 
 import org.springframework.security.authentication.AuthenticationServiceException;
 
