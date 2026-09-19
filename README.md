@@ -13,9 +13,13 @@ API database. Runtime credentials must not own tables, create schemas, or connec
 to the Identity database. Installed storage identifiers are retained through the
 explicit [legacy storage adapter](docs/storage-compatibility.md).
 
-Build from the sibling `lookahead-learning-toolkit` directory with
-`./mvnw -pl :domain-api-app -am verify`. The executable artifact is
-`../lookahead-learning-domain-api/target/lookahead-domain-api.jar`; its main class is
+Build from this repository with Java21 and `./mvnw verify` (Windows:
+`mvnw.cmd verify`). The Maven wrapper downloads the pinned Maven distribution;
+dependencies come from Maven Central. No sibling repository, private curriculum,
+Toolkit library or preinstalled local artifact is needed to build and test.
+On Unix, install `unzip` so the wrapper uses the checksum-pinned ZIP distribution.
+The application Dockerfile supplies it in the build stage.
+The executable artifact is `target/lookahead-domain-api.jar`; its main class is
 `com.lookahead.domain.DomainApiApplication`. The one-shot migration entry point
 is `com.lookahead.domain.DomainApiMigration`, using `SPRING_FLYWAY_URL`,
 `SPRING_FLYWAY_USER` set to the adapter's dedicated migration role and either
@@ -29,6 +33,26 @@ Java packages, artifact
 names, health identifiers and environment variables now use Domain API naming.
 Existing database objects and grants remain unchanged; no data migration or
 runtime deployment is implied by the source rename.
+
+## Independent build and container
+
+```sh
+./mvnw --batch-mode --no-transfer-progress clean verify
+docker build -t lookahead-domain-api:local .
+```
+
+The Docker build runs the same tests before packaging. Its context is this
+repository only. The image runs Java as UID10001, serves on port8080 and checks
+`/actuator/health/readiness`. Configuration and data are mounted or supplied at
+runtime; the image contains no curriculum or credentials. Transport records are
+owned by this application, with JSON contract tests preserving their API shape.
+
+An independent build is not a database-free service. To run the JAR or container,
+provide the Domain PostgreSQL database with its migrated schema/restricted role,
+the Identity verification/JWKS endpoint, secrets and a validated account catalog
+using the configuration below. The redistributable synthetic catalog is in
+`src/test/resources/accounts/`; it is sufficient for tests, not a production
+curriculum. Integrated local orchestration remains infrastructure-owned.
 
 ## Configuration
 

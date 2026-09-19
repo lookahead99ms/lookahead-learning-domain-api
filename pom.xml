@@ -2,19 +2,21 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>com.lookahead.learning</groupId>
-        <artifactId>backend-apps</artifactId>
-        <version>0.0.1-SNAPSHOT</version>
-        <relativePath>../lookahead-learning-toolkit/pom.xml</relativePath>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.1.1</version>
+        <relativePath />
     </parent>
+    <groupId>com.lookahead.learning</groupId>
     <artifactId>domain-api-app</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
     <name>Look Ahead Learning Domain API</name>
+    <properties>
+        <java.version>21</java.version>
+        <maven.compiler.parameters>true</maven.compiler.parameters>
+        <project.build.outputTimestamp>2026-09-18T00:00:00Z</project.build.outputTimestamp>
+    </properties>
     <dependencies>
-        <dependency>
-            <groupId>com.lookahead.learning</groupId>
-            <artifactId>backend-contracts</artifactId>
-            <version>${project.version}</version>
-        </dependency>
         <dependency>
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
