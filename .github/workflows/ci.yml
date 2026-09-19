@@ -1,32 +1,100 @@
-name: Domain API CI
-
-on:
-  pull_request:
-  push:
-    branches: [main]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: domain-api-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-jobs:
-  verify:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
-        with:
-          distribution: temurin
-          java-version: '21'
-          cache: maven
-      - name: Verify independent Maven build
-        run: ./mvnw --batch-mode --no-transfer-progress clean verify
-      - name: Build repository-owned container
-        run: docker build --tag lookahead-domain-api:ci .
+{
+  "name": "Domain API CI",
+  "on": {
+    "pull_request": {},
+    "push": {
+      "branches": [
+        "main"
+      ]
+    },
+    "workflow_dispatch": {}
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "concurrency": {
+    "group": "lookahead-learning-domain-api-${{ github.workflow }}-${{ github.ref }}",
+    "cancel-in-progress": true
+  },
+  "jobs": {
+    "verify": {
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 55,
+      "steps": [
+        {
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "persist-credentials": false,
+            "fetch-depth": 0
+          }
+        },
+        {
+          "uses": "actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6",
+          "with": {
+            "distribution": "temurin",
+            "java-version": "21"
+          }
+        },
+        {
+          "name": "Test security gates with clean, finding and incomplete fixtures",
+          "run": "python3 -m unittest discover -s tools/security -p 'test_*.py'"
+        },
+        {
+          "name": "Initialize Java security analysis",
+          "uses": "github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd",
+          "with": {
+            "languages": "java-kotlin",
+            "build-mode": "manual",
+            "queries": "security-extended",
+            "tools": "linked"
+          }
+        },
+        {
+          "name": "Test and package including existing security regressions",
+          "run": "./mvnw --batch-mode --no-transfer-progress clean verify"
+        },
+        {
+          "name": "Analyze Java code without publishing source databases or SARIF",
+          "uses": "github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd",
+          "with": {
+            "output": ".codex-scratch/security/codeql",
+            "upload": "never",
+            "upload-database": false
+          }
+        },
+        {
+          "name": "Require completed SAST and no high-severity findings",
+          "run": "python3 tools/security/check.py sarif"
+        },
+        {
+          "name": "Install checksum-pinned security scanners",
+          "run": "python3 tools/security/check.py install --tool trivy\npython3 tools/security/check.py install --tool gitleaks"
+        },
+        {
+          "name": "Scan all fetched Git history for secrets with redacted output",
+          "run": "python3 tools/security/check.py history"
+        },
+        {
+          "name": "Resolve direct and transitive dependencies including test/build configurations",
+          "run": "python3 tools/security/check.py dependencies --build-system maven"
+        },
+        {
+          "name": "Scan resolved dependency inventory",
+          "run": "python3 tools/security/check.py sbom"
+        },
+        {
+          "name": "Scan Docker configuration and current source for secrets",
+          "run": "python3 tools/security/check.py config"
+        },
+        {
+          "name": "Build the standalone application image from pinned bases",
+          "run": "docker build --pull --tag lookahead-domain-api:ci ."
+        },
+        {
+          "name": "Scan exact builder base, runtime base and built application image",
+          "run": "python3 tools/security/check.py images --image lookahead-domain-api:ci"
+        }
+      ]
+    }
+  }
+}
