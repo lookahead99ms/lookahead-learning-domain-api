@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "exceptions": [
+    {
+      "ruleId": "java/spring-disabled-csrf-protection",
+      "file": "src/main/java/com/lookahead/domain/security/DomainSecurityConfiguration.java",
+      "sourceSha256": "4c8a12f49c8b95cf907f08785d9d0ef947412b8baeaedfc27bf694ec39274cb2",
+      "expiresAt": "2026-10-19",
+      "ticket": "DLV-804",
+      "rationale": "This stateless OAuth2 resource server accepts Authorization bearer tokens and no browser session cookie; browsers do not attach bearer tokens automatically, so CSRF is not the applicable control."
+    }
+  ]
+}
