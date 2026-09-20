@@ -25,11 +25,11 @@ public class AccountRequestLimitsFilter extends OncePerRequestFilter {
     private final JsonFactory json = JsonFactory.builder().streamReadConstraints(
             StreamReadConstraints.builder().maxNestingDepth(32).maxStringLength(MAX_BYTES).build()).build();
     @Override protected boolean shouldNotFilter(HttpServletRequest request) {
-        return !(request.getRequestURI().startsWith("/api/v1/plans") || request.getRequestURI().equals("/api/v1/support") || request.getRequestURI().equals("/api/v1/auth/register")) || !"POST".equals(request.getMethod());
+        return !(request.getRequestURI().startsWith("/api/v1/author/review-artifacts/") || request.getRequestURI().startsWith("/api/v1/plans") || request.getRequestURI().equals("/api/v1/support") || request.getRequestURI().equals("/api/v1/auth/register")) || !"POST".equals(request.getMethod());
     }
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        int limit = request.getRequestURI().equals("/api/v1/auth/register") ? 8192 : request.getRequestURI().endsWith("/activity") ? 256 * 1024 : MAX_BYTES;
+        int limit = request.getRequestURI().startsWith("/api/v1/author/review-artifacts/") ? 16 * 1024 : request.getRequestURI().equals("/api/v1/auth/register") ? 8192 : request.getRequestURI().endsWith("/activity") ? 256 * 1024 : MAX_BYTES;
         if (request.getContentLengthLong() > limit) { fail(response, 413, "PAYLOAD_TOO_LARGE"); return; }
         byte[] bytes = request.getInputStream().readNBytes(limit + 1);
         if (bytes.length > limit) { fail(response, 413, "PAYLOAD_TOO_LARGE"); return; }

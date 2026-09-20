@@ -21,7 +21,12 @@ public class DomainDatabaseHealthIndicator implements HealthIndicator {
             WHERE pg_catalog.has_schema_privilege(current_user,oid,'CREATE'))
           AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c
             JOIN pg_catalog.pg_roles r ON r.oid=c.relowner WHERE r.rolname=current_user)
-          AND EXISTS (SELECT 1 FROM public.flyway_schema_history WHERE version='1' AND success)
+          AND EXISTS (SELECT 1 FROM public.flyway_schema_history WHERE version='2' AND success)
+          AND pg_catalog.has_table_privilege(current_user,'public.author_review_events','SELECT')
+          AND pg_catalog.has_table_privilege(current_user,'public.author_review_events','INSERT')
+          AND NOT pg_catalog.has_table_privilege(current_user,'public.author_review_events','UPDATE')
+          AND NOT pg_catalog.has_table_privilege(current_user,'public.author_review_events','DELETE')
+          AND NOT pg_catalog.has_table_privilege(current_user,'public.author_review_events','TRUNCATE')
           AND NOT EXISTS (
             SELECT 1 FROM unnest(ARRAY['public.%s','public.account_grants','public.plans',
               'public.plan_versions','public.plan_activity','public.mutation_receipts','public.support_receipts']) AS t(name)

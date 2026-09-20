@@ -25,6 +25,8 @@ server:
   forward-headers-strategy: none
   shutdown: graceful
 app:
+  author-reviews:
+    manifest: ${LOOKAHEAD_AUTHOR_REVIEW_MANIFEST:}
   version: "@project.version@"
   deployment-environment: ${LOOKAHEAD_ENVIRONMENT}
   identity:
