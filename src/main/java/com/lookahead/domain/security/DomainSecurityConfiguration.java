@@ -47,6 +47,8 @@ public class DomainSecurityConfiguration {
                             var value = authentication.get();
                             return new AuthorizationDecision(value instanceof AnonymousAuthenticationToken || value.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("SCOPE_content")));
                         })
+                        .requestMatchers(HttpMethod.GET, "/api/v1/author/review-artifacts", "/api/v1/author/review-artifacts/*/events").hasAuthority("SCOPE_account")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/author/review-artifacts/*/events").hasAuthority("SCOPE_account")
                         .requestMatchers("/api/v1/support").hasAuthority("SCOPE_support")
                         .requestMatchers("/api/v1/auth/me", "/api/v1/account-catalog", "/api/v1/author/previews/access", "/api/v1/plans", "/api/v1/plans/**").hasAuthority("SCOPE_account")
                         .anyRequest().denyAll())

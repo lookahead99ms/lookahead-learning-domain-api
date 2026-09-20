@@ -1,0 +1,456 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Domain Author Review API",
+    "version": "DLV-921-candidate",
+    "description": "Local author capability only. Browser uses BFF-prefixed routes and BFF X-CSRF-TOKEN; Domain uses server-held bearer tokens. All histories are actor scoped; records await Main reconciliation."
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/api/v1/author/review-artifacts": {
+      "get": {
+        "summary": "List operator-approved review artifacts",
+        "responses": {
+          "200": {
+            "description": "Recorded / read result; Cache-Control: no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Artifact"
+                      }
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "timestamp"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON or parameter"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Author access/scope denied; browser BFF also enforces CSRF"
+          },
+          "404": {
+            "description": "Unknown artifact or own event"
+          },
+          "409": {
+            "description": "Stale binding, idempotency conflict or supersession conflict"
+          },
+          "413": {
+            "description": "Payload exceeds 16 KiB"
+          },
+          "422": {
+            "description": "Invalid review request / explanation required"
+          },
+          "503": {
+            "description": "Identity or storage unavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/author/review-artifacts/{artifactId}/events": {
+      "get": {
+        "summary": "Read own immutable review history",
+        "parameters": [
+          {
+            "name": "artifactId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]{0,79}$"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recorded / read result; Cache-Control: no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/History"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "timestamp"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON or parameter"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Author access/scope denied; browser BFF also enforces CSRF"
+          },
+          "404": {
+            "description": "Unknown artifact or own event"
+          },
+          "409": {
+            "description": "Stale binding, idempotency conflict or supersession conflict"
+          },
+          "413": {
+            "description": "Payload exceeds 16 KiB"
+          },
+          "422": {
+            "description": "Invalid review request / explanation required"
+          },
+          "503": {
+            "description": "Identity or storage unavailable"
+          }
+        }
+      },
+      "post": {
+        "summary": "Append a version-bound review decision or replay an identical retry",
+        "parameters": [
+          {
+            "name": "artifactId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]{0,79}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Submission"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Recorded / read result; Cache-Control: no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Receipt"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "timestamp"
+                  ]
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Recorded / read result; Cache-Control: no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Receipt"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "timestamp"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON or parameter"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Author access/scope denied; browser BFF also enforces CSRF"
+          },
+          "404": {
+            "description": "Unknown artifact or own event"
+          },
+          "409": {
+            "description": "Stale binding, idempotency conflict or supersession conflict"
+          },
+          "413": {
+            "description": "Payload exceeds 16 KiB"
+          },
+          "422": {
+            "description": "Invalid review request / explanation required"
+          },
+          "503": {
+            "description": "Identity or storage unavailable"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Artifact": {
+        "type": "object",
+        "properties": {
+          "artifactId": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,79}$"
+          },
+          "artifactVersion": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "contentHash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "ticketId": {
+            "type": "string",
+            "pattern": "^DLV-[1-9][0-9]{0,5}$"
+          }
+        },
+        "required": [
+          "artifactId",
+          "artifactVersion",
+          "contentHash",
+          "ticketId"
+        ]
+      },
+      "Submission": {
+        "type": "object",
+        "properties": {
+          "artifactVersion": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "contentHash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "ticketId": {
+            "type": "string",
+            "pattern": "^DLV-[1-9][0-9]{0,5}$"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "APPROVE",
+              "DECLINE",
+              "NEED_MORE"
+            ]
+          },
+          "comment": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "supersedesEventId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "artifactVersion",
+          "contentHash",
+          "ticketId",
+          "decision",
+          "comment"
+        ],
+        "additionalProperties": false
+      },
+      "Event": {
+        "type": "object",
+        "properties": {
+          "artifactId": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,79}$"
+          },
+          "artifactVersion": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "contentHash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "ticketId": {
+            "type": "string",
+            "pattern": "^DLV-[1-9][0-9]{0,5}$"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "APPROVE",
+              "DECLINE",
+              "NEED_MORE"
+            ]
+          },
+          "comment": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "supersedesEventId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "eventId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "actorId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "recordedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "artifactId",
+          "artifactVersion",
+          "contentHash",
+          "ticketId",
+          "decision",
+          "comment",
+          "supersedesEventId",
+          "eventId",
+          "actorId",
+          "recordedAt",
+          "idempotencyKey"
+        ]
+      },
+      "History": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "entries",
+          "nextCursor"
+        ],
+        "description": "Newest event sequence first, independent of clock ties/corrections; preserve server order."
+      },
+      "Receipt": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "$ref": "#/components/schemas/Event"
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "reconciliationStatus": {
+            "type": "string",
+            "enum": [
+              "PENDING_MAIN_RECONCILIATION"
+            ]
+          }
+        },
+        "required": [
+          "event",
+          "replayed",
+          "reconciliationStatus"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  }
+}

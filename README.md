@@ -129,3 +129,7 @@ guards, authoritative verification, response rejection and account ownership.
 Mocked JDBC tests do not certify real PostgreSQL permissions, migration transfer,
 cross-replica transaction behavior, backup/restore or the three-application login
 flow. Those require the isolated infrastructure integration gate before cutover.
+
+## Author review decisions
+
+The local DLV-921 candidate records immutable, version-bound author review events. See [API, manifest configuration, migration and verification](docs/author-review-api.md) and [OpenAPI source](docs/author-review-openapi.json). Recording a decision does not update delivery status or Git.
