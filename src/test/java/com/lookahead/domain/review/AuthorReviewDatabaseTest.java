@@ -130,8 +130,13 @@ class AuthorReviewDatabaseTest {
         var actor=actor();
         try(var connection=source.getConnection();var statement=connection.createStatement()) {
             statement.execute("SET ROLE lookahead_platform_app");
-            String sql="INSERT INTO author_review_events(event_id,artifact_id,artifact_version,content_hash,ticket_id,decision,comment,actor_id,idempotency_key,request_hash) VALUES ('"+UUID.randomUUID()+"','study-plan-review','v1','"+"a".repeat(64)+"','DLV-704','APPROVE','','"+actor.accountId()+"','"+UUID.randomUUID()+"','"+"b".repeat(64)+"')";
-            assertThat(statement.executeUpdate(sql)).isEqualTo(1);
+            try(var insert=connection.prepareStatement("INSERT INTO author_review_events(event_id,artifact_id,artifact_version,content_hash,ticket_id,decision,comment,actor_id,idempotency_key,request_hash) VALUES (?,?,?,?,?,?,?,?,?,?)")) {
+                insert.setObject(1,UUID.randomUUID());insert.setString(2,"study-plan-review");insert.setString(3,"v1");
+                insert.setString(4,"a".repeat(64));insert.setString(5,"DLV-704");insert.setString(6,"APPROVE");
+                insert.setString(7,"");insert.setObject(8,actor.accountId());insert.setObject(9,UUID.randomUUID());
+                insert.setString(10,"b".repeat(64));
+                assertThat(insert.executeUpdate()).isEqualTo(1);
+            }
             try(var rows=statement.executeQuery("SELECT count(*) FROM author_review_events")){assertThat(rows.next()).isTrue();assertThat(rows.getInt(1)).isPositive();}
             for(String denied:List.of("UPDATE author_review_events SET comment='bad'","DELETE FROM author_review_events","TRUNCATE author_review_events"))
                 assertThatThrownBy(()->statement.executeUpdate(denied)).isInstanceOf(java.sql.SQLException.class).hasMessageContaining("permission denied");
