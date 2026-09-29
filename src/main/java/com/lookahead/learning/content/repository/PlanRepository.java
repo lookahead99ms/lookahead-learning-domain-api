@@ -53,7 +53,7 @@ public class PlanRepository {
         return new PlanRecord(rs.getObject("id", UUID.class), rs.getLong("revision"),
                 rs.getObject("current_version", UUID.class), rs.getString("goal"),
                 json.parse(rs.getString("progress")), rs.getTimestamp("created_at").toInstant().toString(),
-                rs.getTimestamp("updated_at").toInstant().toString());
+                rs.getTimestamp("updated_at").toInstant().toString(), rs.getString("name"), rs.getLong("plan_number"));
     }
 
     public Optional<PlanVersion> findVersion(UUID owner, UUID id, UUID version) {
@@ -63,9 +63,21 @@ public class PlanRepository {
                         json.parse(rs.getString("membership"))), owner, id, version).stream().findFirst();
     }
 
-    public void createPlan(UUID owner, UUID id, UUID version, String goal, JsonNode progress) {
-        jdbc.update("INSERT INTO plans(id,account_id,revision,current_version,goal,progress) VALUES (?,?,1,?,?,?::jsonb)",
-                id, owner, version, goal, json.json(progress));
+    public void createPlan(UUID owner, UUID id, UUID version, String goal, JsonNode progress, String name, long planNumber) {
+        jdbc.update("INSERT INTO plans(id,account_id,revision,current_version,goal,progress,name,plan_number) VALUES (?,?,1,?,?,?::jsonb,?,?)",
+                id, owner, version, goal, json.json(progress), name, planNumber);
+    }
+
+    public long nextPlanNumber(UUID owner) {
+        return jdbc.queryForObject("SELECT last_plan_number+1 FROM platform_subjects WHERE id=?", Long.class, owner);
+    }
+
+    public long allocatePlanNumber(UUID owner) {
+        return jdbc.queryForObject("UPDATE platform_subjects SET last_plan_number=last_plan_number+1 WHERE id=? RETURNING last_plan_number", Long.class, owner);
+    }
+
+    public void rename(UUID owner, UUID id, String name, long revision) {
+        jdbc.update("UPDATE plans SET name=?,revision=?,updated_at=now() WHERE account_id=? AND id=?", name, revision, owner, id);
     }
 
     public void updateProgress(UUID owner, UUID id, JsonNode progress, long revision) {

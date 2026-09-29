@@ -56,6 +56,7 @@ class PlanCardListingTest {
             verify(repository).findVersion(OWNER, record.id(), record.version());
         }
         // This also forbids locks, receipt reads, writes, and loading the seventh sentinel version.
+        verify(repository, org.mockito.Mockito.atLeastOnce()).nextPlanNumber(OWNER);
         verifyNoMoreInteractions(repository);
 
         when(repository.list(OWNER, 7, 6)).thenReturn(records.subList(6, 8));
@@ -69,6 +70,7 @@ class PlanCardListingTest {
             assertThat(second.path("plans").get(index).path("planId").asText()).isEqualTo(record.id().toString());
             verify(repository).findVersion(OWNER, record.id(), record.version());
         }
+        verify(repository, org.mockito.Mockito.atLeastOnce()).nextPlanNumber(OWNER);
         verifyNoMoreInteractions(repository);
     }
 
@@ -91,6 +93,7 @@ class PlanCardListingTest {
         assertThat(row.has("progress")).isFalse();
         verify(repository).list(OWNER, 21, 0);
         verify(repository).findVersion(OWNER, record.id(), record.version());
+        verify(repository, org.mockito.Mockito.atLeastOnce()).nextPlanNumber(OWNER);
         verifyNoMoreInteractions(repository);
     }
 
@@ -101,6 +104,7 @@ class PlanCardListingTest {
         assertThat(response.path("plans").isEmpty()).isTrue();
         assertThat(response.path("nextCursor").isNull()).isTrue();
         verify(repository).list(OWNER, 21, 0);
+        verify(repository, org.mockito.Mockito.atLeastOnce()).nextPlanNumber(OWNER);
         verifyNoMoreInteractions(repository);
     }
 
