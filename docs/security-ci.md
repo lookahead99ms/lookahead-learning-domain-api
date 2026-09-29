@@ -39,3 +39,16 @@ Dependabot proposes weekly Friday 11 AM America/New_York updates for the native 
 On 2026-09-19 Maven Central lists Boot 4.1.1 as the latest stable 4.1 release; its BOM manages Tomcat 11.0.24. This application retains Boot 4.1.1 and overrides embedded Tomcat to 11.0.25, the Apache-published fixed release. Gradle uses a group-scoped resolution rule; Maven uses the Boot parent `tomcat.version` property. Remove the override when a compatible stable Boot patch manages 11.0.25 or newer, then repeat dependency, security, contract and image checks. Do not switch to a milestone release solely to remove this override.
 
 Sources: [Boot Maven metadata](https://repo.maven.apache.org/maven2/org/springframework/boot/spring-boot-dependencies/maven-metadata.xml), [Boot 4.1.1 BOM](https://repo.maven.apache.org/maven2/org/springframework/boot/spring-boot-dependencies/4.1.1/spring-boot-dependencies-4.1.1.pom), [Apache fixes](https://tomcat.apache.org/security-11.html).
+
+## Temporary Jackson override (DLV-916)
+
+On 2026-09-29 the resolved SBOM gate reported high-severity CVE-2026-68497.
+Boot 4.1.1 is still the latest stable 4.1 patch and manages affected Jackson
+versions. The Maven parent manages Jackson 2.21.5 and 3.1.5. The `jackson-2-bom.version` and `jackson-bom.version` properties select the corresponding 2.21.6 and 3.1.6 patch BOMs. Both Jackson lines are present because Springdoc/Swagger uses Jackson 2 while Boot/Flyway uses Jackson 3.
+Remove these overrides when a stable Boot patch manages fixed Jackson versions;
+then repeat complete dependency, native test, protocol, package and image checks.
+Do not narrow the SBOM to runtime dependencies: build tooling is in scope.
+
+Sources: [Jackson 2.21.6 release](https://github.com/FasterXML/jackson/wiki/Jackson-Release-2.21.6),
+[Jackson 3.1.6 release](https://github.com/FasterXML/jackson/wiki/Jackson-Release-3.1.6),
+[Boot 4.1.1 BOM](https://repo.maven.apache.org/maven2/org/springframework/boot/spring-boot-dependencies/4.1.1/spring-boot-dependencies-4.1.1.pom).

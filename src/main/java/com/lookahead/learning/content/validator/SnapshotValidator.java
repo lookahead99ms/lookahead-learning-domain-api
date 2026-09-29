@@ -280,7 +280,7 @@ public final class SnapshotValidator {
 
     /** Preserves imported aggregate evidence without manufacturing attempt counts or timestamps. */
     public JsonNode mapImportedProgress(JsonNode local, ValidationResult validated) {
-        fields(local, "schemaVersion revision goal rankingVersion catalogVersion snapshot completedIds shiftedDays recovery deferredSessions sessionOutcomes reviewNotes attemptedContentIds needsReviewContentIds history studyLog");
+        fields(local, "schemaVersion revision name planNumber createdAt customName goal rankingVersion catalogVersion snapshot completedIds shiftedDays recovery deferredSessions sessionOutcomes reviewNotes attemptedContentIds needsReviewContentIds history studyLog");
         require("study-plan-local/v1".equals(text(local, "schemaVersion", 64)), "Unsupported local snapshot");
         integer(local, "revision", 1, Integer.MAX_VALUE); text(local, "goal", 160); integer(local, "shiftedDays", 0, 10000);
         String localCatalog = optionalText(local, "catalogVersion", 256);

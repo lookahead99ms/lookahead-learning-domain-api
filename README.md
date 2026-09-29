@@ -19,6 +19,8 @@ dependencies come from Maven Central. No sibling repository, private curriculum,
 Toolkit library or preinstalled local artifact is needed to build and test.
 On Unix, install `unzip` so the wrapper uses the checksum-pinned ZIP distribution.
 The application Dockerfile supplies it in the build stage.
+The Boot parent still owns the dependency baseline; temporary Jackson 2/3 patch
+BOM overrides are documented in [Security CI](docs/security-ci.md).
 The executable artifact is `target/lookahead-domain-api.jar`; its main class is
 `com.lookahead.domain.DomainApiApplication`. The one-shot migration entry point
 is `com.lookahead.domain.DomainApiMigration`, using `SPRING_FLYWAY_URL`,
@@ -133,3 +135,19 @@ flow. Those require the isolated infrastructure integration gate before cutover.
 ## Author review decisions
 
 The local DLV-921 candidate records immutable, version-bound author review events. See [API, manifest configuration, migration and verification](docs/author-review-api.md) and [OpenAPI source](docs/author-review-openapi.json). Recording a decision does not update delivery status or Git.
+
+### Study-plan naming
+
+Migration `V3__plan_names.sql` adds names and stable per-account plan numbers,
+preserving legacy display labels from `goal`. The subject row holds the last
+allocated number; transactional increments serialize concurrent creates and
+deletion does not reuse a number. Create accepts an optional `name`; omission
+generates `Study plan #N_DDMMYYYY_HXDays` using UTC creation date and configured
+`dailyHours`/`days`. Names are independent of goals and immutable schedule versions.
+
+`POST /api/v1/plans/{id}/name` accepts `{expectedRevision, name}` and the existing
+idempotency key/owner protections. It changes only name, revision, update time and
+an audit event; schedule, progress and creation number are preserved. Trimmed names
+are1–160 characters with no control characters. List/detail return `name` and
+`planNumber`; list also returns advisory `nextPlanNumber`. The account catalog
+advertises `planNamingPolicies: ["plan-name-v1"]`.
