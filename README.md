@@ -133,3 +133,19 @@ flow. Those require the isolated infrastructure integration gate before cutover.
 ## Author review decisions
 
 The local DLV-921 candidate records immutable, version-bound author review events. See [API, manifest configuration, migration and verification](docs/author-review-api.md) and [OpenAPI source](docs/author-review-openapi.json). Recording a decision does not update delivery status or Git.
+
+### Study-plan naming
+
+Migration `V3__plan_names.sql` adds names and stable per-account plan numbers,
+preserving legacy display labels from `goal`. The subject row holds the last
+allocated number; transactional increments serialize concurrent creates and
+deletion does not reuse a number. Create accepts an optional `name`; omission
+generates `Study plan #N_DDMMYYYY_HXDays` using UTC creation date and configured
+`dailyHours`/`days`. Names are independent of goals and immutable schedule versions.
+
+`POST /api/v1/plans/{id}/name` accepts `{expectedRevision, name}` and the existing
+idempotency key/owner protections. It changes only name, revision, update time and
+an audit event; schedule, progress and creation number are preserved. Trimmed names
+are1–160 characters with no control characters. List/detail return `name` and
+`planNumber`; list also returns advisory `nextPlanNumber`. The account catalog
+advertises `planNamingPolicies: ["plan-name-v1"]`.

@@ -66,6 +66,12 @@ public class PlanController {
         return mutation(planService.create(user.accountId(), key(key), body, true));
     }
 
+    @PostMapping("/plans/{id}/name")
+    ResponseEntity<?> rename(@AuthenticationPrincipal AccountPrincipal user, @PathVariable String id,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key, @RequestBody JsonNode body) {
+        return mutation(planService.rename(user.accountId(), PayloadReaders.uuid(id), key(key), body));
+    }
+
     @PostMapping("/plans/{id}/activity")
     ResponseEntity<?> activity(@AuthenticationPrincipal AccountPrincipal user, @PathVariable String id,
             @RequestHeader(value = "Idempotency-Key", required = false) String key, @RequestBody JsonNode body) {

@@ -35,7 +35,11 @@ public class PlanService {
         return repository.grants(account);
     }
 
-    public JsonNode catalogMetadata() { return validator.metadata(); }
+    public JsonNode catalogMetadata() {
+        ObjectNode metadata = (ObjectNode) validator.metadata().deepCopy();
+        metadata.putArray("planNamingPolicies").add("plan-name-v1");
+        return metadata;
+    }
 
     @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public JsonNode get(UUID account, UUID id, UUID historicalVersion) {
@@ -59,6 +63,7 @@ public class PlanService {
             ObjectNode node = mapper.createObjectNode();
             node.put("planId", plan.id().toString()); node.put("versionId", plan.version().toString());
             node.put("revision", plan.revision()); node.put("goal", plan.goal());
+            node.put("name", plan.name()); node.put("planNumber", plan.planNumber());
             node.put("createdAt", plan.createdAt()); node.put("updatedAt", plan.updatedAt());
             PlanVersion current = version(account, plan.id(), plan.version());
             node.set("card", PlanCardMetadata.from(current.snapshot(), plan.progress(), mapper));
@@ -66,6 +71,7 @@ public class PlanService {
         }).toList();
         ObjectNode result = mapper.createObjectNode();
         result.set("plans", mapper.valueToTree(rows));
+        result.put("nextPlanNumber", repository.nextPlanNumber(account));
         if (page.size() > limit) result.put("nextCursor", Base64.getUrlEncoder().withoutPadding()
                 .encodeToString(Integer.toString(offset + limit).getBytes(StandardCharsets.UTF_8)));
         else result.putNull("nextCursor");
@@ -74,7 +80,7 @@ public class PlanService {
 
     @Transactional
     public Mutation create(UUID account, UUID key, JsonNode body, boolean imported) {
-        fields(body, imported ? "sourceSchemaVersion localSnapshot provenance" : "goal snapshot provenance");
+        fields(body, imported ? "sourceSchemaVersion localSnapshot provenance" : "goal snapshot provenance name");
         String operation = imported ? "import" : "create";
         Mutation repeat = replay(account, key, operation, body);
         if (repeat != null) return repeat;
@@ -92,10 +98,39 @@ public class PlanService {
             recovery.put("deadlineDays", snapshot.path("config").path("days").asInt());
             recovery.set("deferredContentIds", mapper.createArrayNode());
         }
-        repository.createPlan(account, id, versionId, goal, progress);
+        long planNumber = repository.allocatePlanNumber(account);
+        JsonNode namingSource = imported ? local : body;
+        String name = namingSource.has("name") ? planName(namingSource) : defaultPlanName(planNumber, snapshot);
+        repository.createPlan(account, id, versionId, goal, progress, name, planNumber);
         insertVersion(account, id, versionId, null, snapshot, validated.provenance(), recovery, imported ? "import" : "create", mapper.valueToTree(validated.assignmentContentIds()));
         if (imported) event(account, id, versionId, 1, "legacyImport", progress);
         return receipt(account, key, operation, body, id, 201, view(account, plan(account, id, false), version(account, id, versionId)));
+    }
+
+    static String defaultPlanName(long number, JsonNode snapshot) {
+        String date = java.time.LocalDate.now(java.time.ZoneOffset.UTC).format(java.time.format.DateTimeFormatter.ofPattern("ddMMyyyy"));
+        String hours = new java.math.BigDecimal(snapshot.path("config").path("dailyHours").asText()).stripTrailingZeros().toPlainString();
+        return "Study plan #" + number + "_" + date + "_" + hours + "X" + snapshot.path("config").path("days").asInt();
+    }
+
+    private String planName(JsonNode body) {
+        String name = text(body, "name", 160).strip();
+        require(name.codePoints().noneMatch(Character::isISOControl), "Invalid name");
+        return name;
+    }
+
+    @Transactional
+    public Mutation rename(UUID account, UUID id, UUID key, JsonNode body) {
+        fields(body, "expectedRevision name");
+        Mutation repeat = replay(account, key, "rename:" + id, body);
+        if (repeat != null) return repeat;
+        PlanRecord plan = plan(account, id, true);
+        expect(plan, body);
+        String name = planName(body);
+        repository.rename(account, id, name, plan.revision() + 1);
+        event(account, id, plan.version(), plan.revision() + 1, "rename", body);
+        return receipt(account, key, "rename:" + id, body, id, 200,
+                view(account, plan(account, id, false), version(account, id, plan.version())));
     }
 
     @Transactional
@@ -354,6 +389,7 @@ public class PlanService {
     private ObjectNode view(UUID account, PlanRecord plan, PlanVersion version) {
         ObjectNode result = mapper.createObjectNode();
         result.put("planId", plan.id().toString()); result.put("versionId", version.id().toString()); result.put("revision", plan.revision());
+        result.put("name", plan.name()); result.put("planNumber", plan.planNumber());
         result.put("goal", plan.goal()); result.set("snapshot", version.snapshot()); result.set("provenance", version.provenance());
         result.set("progress", plan.progress()); result.set("recovery", version.recovery());
         result.put("createdAt", plan.createdAt()); result.put("updatedAt", plan.updatedAt());
