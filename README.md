@@ -19,6 +19,8 @@ dependencies come from Maven Central. No sibling repository, private curriculum,
 Toolkit library or preinstalled local artifact is needed to build and test.
 On Unix, install `unzip` so the wrapper uses the checksum-pinned ZIP distribution.
 The application Dockerfile supplies it in the build stage.
+The Boot parent still owns the dependency baseline; temporary Jackson 2/3 patch
+BOM overrides are documented in [Security CI](docs/security-ci.md).
 The executable artifact is `target/lookahead-domain-api.jar`; its main class is
 `com.lookahead.domain.DomainApiApplication`. The one-shot migration entry point
 is `com.lookahead.domain.DomainApiMigration`, using `SPRING_FLYWAY_URL`,
