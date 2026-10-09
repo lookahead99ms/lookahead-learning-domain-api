@@ -58,7 +58,12 @@ public class CloudSecurityConfiguration {
             .authorizeHttpRequests(a->a.anyRequest().authenticated())
             .oauth2ResourceServer(r->r.jwt(j->j.decoder(decoder).jwtAuthenticationConverter(jwt->{
                 String secret=request.getHeader("X-LookAhead-Gateway-Secret");
-                if(secret==null||!MessageDigest.isEqual(secret.getBytes(StandardCharsets.UTF_8),settings.gatewaySecret().getBytes(StandardCharsets.UTF_8)))throw CognitoTokenVerifier.invalid();
+                // Compare every request, including absent credentials, before any
+                // authentication can be returned. No header controls whether the
+                // constant-time credential check executes.
+                byte[] supplied=java.util.Objects.toString(secret,"").getBytes(StandardCharsets.UTF_8);
+                boolean gatewayVerified=MessageDigest.isEqual(supplied,settings.gatewaySecret().getBytes(StandardCharsets.UTF_8));
+                if(!gatewayVerified)throw CognitoTokenVerifier.invalid();
                 return UsernamePasswordAuthenticationToken.authenticated(verifier.verify(jwt),null,List.of());
             })).authenticationEntryPoint((req,res,error)->{
                 res.setStatus(error instanceof AuthenticationServiceException?503:401);res.setHeader("Cache-Control","no-store");res.setContentType("application/json");

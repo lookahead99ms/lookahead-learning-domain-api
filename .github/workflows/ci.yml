@@ -7,7 +7,15 @@
         "main"
       ]
     },
-    "workflow_dispatch": {}
+    "workflow_dispatch": {},
+    "workflow_call": {
+      "inputs": {
+        "export-image": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    }
   },
   "permissions": {
     "contents": "read"
@@ -40,6 +48,10 @@
           "run": "python3 -m unittest discover -s tools/security -p 'test_*.py'"
         },
         {
+          "name": "Verify immutable image binding",
+          "run": "python3 -m unittest discover -s tools/release -p 'test_*.py'"
+        },
+        {
           "name": "Initialize Java security analysis",
           "uses": "github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd",
           "with": {
@@ -60,7 +72,9 @@
             "CLOUD_AUTH_TEST_DATABASE_URL": "jdbc:postgresql://127.0.0.1:4393/lookahead_domain_cloud_auth",
             "CLOUD_AUTH_TEST_PASSWORD_FILE": "${{ runner.temp }}/domain-test-password",
             "DLV921_DATABASE_URL": "jdbc:postgresql://127.0.0.1:4392/lookahead_domain_review",
-            "DLV921_DATABASE_PASSWORD_FILE": "${{ runner.temp }}/domain-test-password"
+            "DLV921_DATABASE_PASSWORD_FILE": "${{ runner.temp }}/domain-test-password",
+            "DOMAIN_BOOTSTRAP_TEST_URL": "jdbc:postgresql://127.0.0.1:4394/lookahead_platform",
+            "DOMAIN_BOOTSTRAP_TEST_PASSWORD_FILE": "${{ runner.temp }}/domain-test-password"
           }
         },
         {
@@ -103,6 +117,23 @@
         {
           "name": "Scan exact builder base, runtime base and built application image",
           "run": "python3 tools/security/check.py images --image lookahead-domain-api:ci"
+        },
+        {
+          "name": "Export the exact scanned release image",
+          "if": "inputs.export-image == true",
+          "run": "python3 tools/release/image.py export --image lookahead-domain-api:ci --directory \"$RUNNER_TEMP/release-image\""
+        },
+        {
+          "name": "Retain immutable image for the same release run",
+          "if": "inputs.export-image == true",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "release-image-${{ github.sha }}",
+            "path": "${{ runner.temp }}/release-image/",
+            "retention-days": 1,
+            "if-no-files-found": "error",
+            "compression-level": 0
+          }
         }
       ],
       "services": {
@@ -129,7 +160,23 @@
             "127.0.0.1:4392:5432"
           ],
           "options": "--health-cmd \"pg_isready -U postgres\" --health-interval 5s --health-timeout 5s --health-retries 20"
+        },
+        "bootstrap-db": {
+          "image": "postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0",
+          "env": {
+            "POSTGRES_USER": "postgres",
+            "POSTGRES_PASSWORD": "synthetic-disposable-domain-ci",
+            "POSTGRES_DB": "lookahead_platform"
+          },
+          "ports": [
+            "127.0.0.1:4394:5432"
+          ],
+          "options": "--health-cmd \"pg_isready -U postgres\" --health-interval 5s --health-timeout 5s --health-retries 20"
         }
+      },
+      "env": {
+        "CODEQL_ACTION_DIFF_INFORMED_QUERIES": "false",
+        "CODEQL_ACTION_OVERLAY_ANALYSIS": "false"
       }
     }
   }

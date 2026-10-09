@@ -63,6 +63,18 @@ class SecurityGateTests(unittest.TestCase):
         self.assertEqual('requires-action', findings[0]['disposition'])
         self.assertIsNone(findings[0]['ticket'])
 
+    def test_full_repository_analysis_rejects_incremental_or_invalid_scope(self):
+        run = {'tool': {'driver': {'name': 'CodeQL', 'rules': [{'id': 'fixture'}]}},
+               'results': [], 'invocations': [{'executionSuccessful': True}]}
+        for properties in ({'incrementalMode': 'diff-informed'}, {'incrementalMode': 'overlay'},
+                           {'incrementalMode': 'diff-informed,overlay'}, {'incrementalMode': True}, []):
+            with self.subTest(properties=properties), self.assertRaisesRegex(ValueError, '^SAST full analysis required$'):
+                checks.sarif_gate([{'runs': [{**run, 'properties': properties}]}])
+        self.assertEqual(0, checks.sarif_gate([{'runs': [run]}]))
+        workflow = checks.json.loads((checks.ROOT / '.github/workflows/ci.yml').read_text())
+        self.assertEqual('false', workflow['jobs']['verify']['env']['CODEQL_ACTION_DIFF_INFORMED_QUERIES'])
+        self.assertEqual('false', workflow['jobs']['verify']['env']['CODEQL_ACTION_OVERLAY_ANALYSIS'])
+
     def test_public_failure_reason_exposes_only_reviewed_constants(self):
         for reason in checks.SAFE_SAST_FAILURES:
             self.assertIn(reason, checks.failure_message(ValueError(reason)))

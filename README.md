@@ -306,7 +306,48 @@ against the completed scan before retiring an exception; absence is not automati
 approval. Missing analysis, warnings, expired or changed-source exceptions and
 unreviewed findings still block. SARIF messages and source snippets are not printed.
 
-The completed October 9 CodeQL run no longer reports the cloud admission
-`java/user-controlled-bypass` finding. Its unused exception was removed; a
-reappearing finding blocks without a new review. Both exercised CSRF exceptions
-remain source-bound and expiring.
+Earlier October 9 PR analysis omitted the cloud admission bypass finding, but
+main analysis reported it again. The bypass exception remains removed; the
+authentication fix and full-scan configuration below require new hosted proof.
+Both CSRF dispositions remain source-bound and expiring.
+
+PR and main SAST gates require full repository analysis. Diff-informed and
+overlay analysis are explicitly disabled in the pinned action; incremental SARIF
+is rejected. An alert disappearing from changed-lines-only analysis is not proof
+that its exception is obsolete. New authentication control flow always terminates
+fresh OAuth before reuse, and Domain compares missing credentials unconditionally
+before denying authentication. Hosted full-scan proof remains required.
+
+The dormant `release-image.yml` manual workflow reuses the full CI job, then
+exports its exact scanned image as a one-day archive. Publication loads that
+archive without rebuilding, validates source/Dockerfile/workflow/archive/config
+digests, and uses a separately reviewed DEV OIDC role. It requires an exact main
+SHA, immutable DEV ECR repository and a protected `dev` environment with independent
+review and protected-branch restriction. Unsupported private-repository approval
+features block this workflow; a manual trigger alone is insufficient. Registry
+receipt verifies remote manifest/config identity. No workflow was dispatched or
+image published locally. Configure approved settings and action allowlists before
+activation; private content and AWS credentials are never bundled in the image.
+
+
+The Domain image also contains a fixed one-shot database bootstrap entry point:
+
+```sh
+java -Dloader.main=com.lookahead.domain.DomainApiBootstrap -cp /opt/lookahead/app.jar org.springframework.boot.loader.launch.PropertiesLauncher
+```
+
+Use only the dedicated private bootstrap ECS task defined by Infra, after operator
+approval. Its injected master, application and migrator secrets never enter the
+runtime Domain task. It requires explicit DEV/PROD, an exact regional RDS endpoint,
+port 5432 and the existing `verify-full` CA policy; it refuses command arguments.
+Bootstrap provisions only the fixed application/migrator roles and schema, checks
+safe existing state on re-entry, and does not run Flyway. The separate migration
+task runs the existing migration entry point before application rollout. Connection
+and query deadlines are bounded, secrets and SQL are omitted from error output,
+and PostgreSQL receives SCRAM verifiers rather than plaintext password SQL. Local
+PostgreSQL 17 tests cover initial setup, repeat invocation, wrong secrets and unsafe
+role recovery; they do not certify AWS execution-role or endpoint connectivity.
+
+Publication explicitly pushes only the verified `linux/amd64` manifest (Docker API
+1.46 or newer). The registry receipt checks its config digest against the saved
+archive; Docker Desktop index IDs are kept separate from that config identity.

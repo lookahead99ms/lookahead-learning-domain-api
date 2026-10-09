@@ -35,6 +35,7 @@ SAFE_SAST_FAILURES = frozenset({
     'SAST exception is stale or was not exercised',
     'SAST exception source changed or is missing',
     'SAST execution incomplete',
+    'SAST full analysis required',
     'SAST findings require review',
     'SAST invocation inventory absent',
     'SAST notification inventory invalid',
@@ -265,6 +266,9 @@ def sarif_gate(documents, actionable=None, exceptions=None, used=None):
     for item in runs:
         if item.get('tool', {}).get('driver', {}).get('name') != 'CodeQL':
             raise ValueError('Unexpected SAST producer')
+        properties = item.get('properties', {})
+        if not isinstance(properties, dict) or properties.get('incrementalMode') not in (None, ''):
+            raise ValueError('SAST full analysis required')
         invocations = item.get('invocations')
         if not isinstance(invocations, list) or not invocations:
             raise ValueError('SAST invocation inventory absent')
