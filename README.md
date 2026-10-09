@@ -248,3 +248,14 @@ request timeout configuration and interruption. Docker compiles that same measur
 source for the standalone JVM probe. The RDS trust verifier remains build-only.
 Wrapper distribution setup has a source-independent Docker layer; dependency
 versions and checksum verification are unchanged.
+
+## SAST gate diagnostics
+
+`python3 tools/security/check.py sarif` requires completed CodeQL invocations,
+valid rule/result inventories and exercised, source-bound exceptions. A failure
+prints a reviewed constant reason (for example, missing invocation inventory or
+unexercised exception) while leaving untrusted error text and SARIF messages out
+of public logs. Warning/error notifications still block; this diagnostic change
+does not waive findings or weaken the security gate. Raw SARIF and source
+databases remain unpublished. Run the tooling regressions with
+`python3 -m unittest discover -s tools/security -p 'test_*.py'`.

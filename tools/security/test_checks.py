@@ -11,6 +11,24 @@ checks = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checks)
 
 class SecurityGateTests(unittest.TestCase):
+    def test_public_failure_reason_exposes_only_reviewed_constants(self):
+        for reason in checks.SAFE_SAST_FAILURES:
+            self.assertIn(reason, checks.failure_message(ValueError(reason)))
+        for error in (ValueError('synthetic-secret'), ValueError('Expired SAST exception synthetic-secret'),
+                      KeyError('synthetic-secret'), OSError('synthetic-secret')):
+            self.assertNotIn('synthetic-secret', checks.failure_message(error))
+            self.assertIn('inspect the step', checks.failure_message(error))
+
+    def test_notification_rejection_has_safe_distinct_reason(self):
+        run = {'tool': {'driver': {'name': 'CodeQL', 'rules': [{'id': 'fixture'}]}},
+               'results': [], 'invocations': [{'executionSuccessful': True,
+                   'toolExecutionNotifications': [{'level': 'warning', 'message': {'text': 'synthetic-secret'}}]}]}
+        with self.assertRaisesRegex(ValueError, '^SAST notification requires review$'):
+            checks.sarif_gate([{'runs': [run]}])
+        run['invocations'][0]['toolExecutionNotifications'] = 'synthetic-secret'
+        with self.assertRaisesRegex(ValueError, '^SAST notification inventory invalid$'):
+            checks.sarif_gate([{'runs': [run]}])
+
     def test_resolved_bom_keeps_distinct_versions_and_deduplicates(self):
         a={'group':'org.example','name':'fixture','version':'1'}
         bom=checks.java_bom([a,a,{**a,'version':'2'}])

@@ -21,6 +21,37 @@ PINS = Path(__file__).with_name('tools.json')
 SAST_EXCEPTIONS = Path(__file__).with_name('sast-exceptions.json')
 
 
+# Only trusted constant reasons may reach public CI logs. Never echo exception
+# text from JSON parsing, paths, subprocesses or scanner report messages.
+SAFE_SAST_FAILURES = frozenset({
+    'CodeQL report missing runs',
+    'Duplicate SAST exception',
+    'Expired SAST exception',
+    'Incomplete SAST exception',
+    'Invalid SAST exception contract',
+    'Invalid SAST exception expiry',
+    'Invalid SAST security severity',
+    'SAST exception file must be repository-relative',
+    'SAST exception is stale or was not exercised',
+    'SAST exception source changed or is missing',
+    'SAST execution incomplete',
+    'SAST findings require review',
+    'SAST invocation inventory absent',
+    'SAST notification inventory invalid',
+    'SAST notification requires review',
+    'SAST result inventory absent',
+    'SAST rule inventory absent',
+    'Unexpected SAST producer',
+    'Unknown SAST result rule',
+})
+
+
+def failure_message(error):
+    reason = str(error) if type(error) is ValueError and str(error) in SAFE_SAST_FAILURES else None
+    return ('Security check failed: ' + type(error).__name__ +
+            ('; ' + reason if reason else '; inspect the step and local report.'))
+
+
 def read(path):
     return json.loads(Path(path).read_text())
 
@@ -225,10 +256,11 @@ def sarif_gate(documents, actionable=None, exceptions=None, used=None):
                 raise ValueError('SAST execution incomplete')
             for field in ('toolExecutionNotifications', 'toolConfigurationNotifications'):
                 notifications = invocation.get(field, [])
-                if not isinstance(notifications, list) or any(
-                        not isinstance(notification, dict) or notification.get('level', 'warning') != 'note'
-                        for notification in notifications):
-                    raise ValueError('SAST execution incomplete')
+                if not isinstance(notifications, list):
+                    raise ValueError('SAST notification inventory invalid')
+                if any(not isinstance(notification, dict) or notification.get('level', 'warning') != 'note'
+                       for notification in notifications):
+                    raise ValueError('SAST notification requires review')
         components = [item['tool']['driver'], *item['tool'].get('extensions', [])]
         rules = {rule['id']: rule for component in components for rule in component.get('rules', [])}
         if not rules:
@@ -317,5 +349,5 @@ def main():
 if __name__ == '__main__':
     try: main()
     except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
-        print('Security check failed: ' + type(error).__name__ + '; inspect the step and local report.', file=sys.stderr)
+        print(failure_message(error), file=sys.stderr)
         sys.exit(1)
