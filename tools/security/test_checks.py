@@ -27,6 +27,27 @@ class SecurityGateTests(unittest.TestCase):
         changed['runs'][0]['results'][0]['locations'][0]['physicalLocation']['artifactLocation']['uri'] = 'src/main/java/Unreviewed.java'
         self.assertEqual(checks.sarif_gate([changed], exceptions=exceptions), 1)
 
+    def test_unused_exception_reports_metadata_before_failing_closed(self):
+        exceptions = checks.load_sast_exceptions()
+        document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': [
+            {'id': 'fixture', 'properties': {'security-severity': '8'}}]}},
+            'invocations': [{'executionSuccessful': True}], 'results': []}]}
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / 'codeql').mkdir()
+            (output / 'codeql/java.sarif').write_text(checks.json.dumps(document))
+            with patch.object(checks, 'OUT', output), patch.object(checks.sys, 'argv', ['check.py', 'sarif']), patch('builtins.print') as printed:
+                with self.assertRaisesRegex(ValueError, '^SAST exception is stale or was not exercised$'):
+                    checks.main()
+            summary = checks.json.loads((output / 'sarif-summary.json').read_text())
+            self.assertEqual(0, summary['sastFindingsRequiringAction'])
+            self.assertEqual(len(exceptions), len(summary['unusedSastExceptions']))
+            self.assertEqual(summary, checks.json.loads(printed.call_args.args[0]))
+            for item in summary['unusedSastExceptions']:
+                self.assertEqual({'ruleId', 'file', 'ticket'}, set(item))
+            self.assertNotIn('rationale', checks.json.dumps(summary))
+            self.assertNotIn('sourceSha256', checks.json.dumps(summary))
+
     def test_public_failure_reason_exposes_only_reviewed_constants(self):
         for reason in checks.SAFE_SAST_FAILURES:
             self.assertIn(reason, checks.failure_message(ValueError(reason)))

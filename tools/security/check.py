@@ -360,9 +360,16 @@ def main():
         exceptions = load_sast_exceptions()
         used = set()
         count = sarif_gate([read(p) for p in (OUT / 'codeql').glob('*.sarif')], actionable, exceptions, used)
+        # Publish bounded metadata before policy validation so a stale exception
+        # cannot hide the evidence needed to review it. Never include SARIF
+        # messages, snippets, credentials or exception rationales.
+        unused = [{'ruleId': rule, 'file': file, 'ticket': exceptions[(rule, file)]['ticket']}
+                  for rule, file in sorted(set(exceptions) - used)]
+        summary = {'sastFindingsRequiringAction': count, 'findings': actionable,
+                   'unusedSastExceptions': unused}
+        write(OUT / 'sarif-summary.json', summary)
+        print(json.dumps(summary))
         require_all_exceptions_used(exceptions, used)
-        write(OUT / 'sarif-summary.json', {'findingsRequiringAction': actionable})
-        print(json.dumps({'sastFindingsRequiringAction': count, 'findings': actionable}))
         if count: raise ValueError('SAST findings require review')
 
 if __name__ == '__main__':

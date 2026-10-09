@@ -299,3 +299,9 @@ package scans and the isolated three-application Local authentication contract
 with fresh synthetic PostgreSQL databases. All applications ran as 10001:10001
 with a read-only root filesystem, capped temporary storage and healthy Java
 readiness probes. This does not certify Cognito or RDS connectivity in AWS.
+
+When a SAST exception is not exercised, the gate writes and prints bounded finding
+metadata and `unusedSastExceptions` before failing. Review the exact rule/file
+against the completed scan before retiring an exception; absence is not automatic
+approval. Missing analysis, warnings, expired or changed-source exceptions and
+unreviewed findings still block. SARIF messages and source snippets are not printed.
