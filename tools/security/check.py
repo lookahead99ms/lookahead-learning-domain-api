@@ -202,9 +202,9 @@ def scan(kind, target=None, require_java=False):
 
 def base_images(text):
     images = re.findall(r'^FROM\s+(\S+)', text, re.M | re.I)
-    if len(images) != 2 or any(not re.fullmatch(r'eclipse-temurin:21-(?:jdk|jre)(?:-noble)?@sha256:[a-f0-9]{64}', image) for image in images):
+    if len(images) != 2 or any(not re.fullmatch(r'eclipse-temurin:21-(?:jdk|jre)(?:-noble|-alpine)?@sha256:[a-f0-9]{64}', image) for image in images):
         raise ValueError('Both Java 21 builder/runtime bases must be digest pinned')
-    if not re.search(r':21-jdk(?:-noble)?@', images[0]) or not re.search(r':21-jre(?:-noble)?@', images[1]):
+    if not re.search(r':21-jdk(?:-noble)?@', images[0]) or not re.search(r':21-jre(?:-noble|-alpine)?@', images[1]):
         raise ValueError('Expected JDK builder followed by JRE runtime')
     return images
 
@@ -360,9 +360,16 @@ def main():
         exceptions = load_sast_exceptions()
         used = set()
         count = sarif_gate([read(p) for p in (OUT / 'codeql').glob('*.sarif')], actionable, exceptions, used)
+        # Publish bounded metadata before policy validation so a stale exception
+        # cannot hide the evidence needed to review it. Never include SARIF
+        # messages, snippets, credentials or exception rationales.
+        unused = [{'ruleId': rule, 'file': file, 'ticket': exceptions[(rule, file)]['ticket']}
+                  for rule, file in sorted(set(exceptions) - used)]
+        summary = {'sastFindingsRequiringAction': count, 'findings': actionable,
+                   'unusedSastExceptions': unused}
+        write(OUT / 'sarif-summary.json', summary)
+        print(json.dumps(summary))
         require_all_exceptions_used(exceptions, used)
-        write(OUT / 'sarif-summary.json', {'findingsRequiringAction': actionable})
-        print(json.dumps({'sastFindingsRequiringAction': count, 'findings': actionable}))
         if count: raise ValueError('SAST findings require review')
 
 if __name__ == '__main__':

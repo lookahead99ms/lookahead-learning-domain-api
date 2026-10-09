@@ -27,6 +27,42 @@ class SecurityGateTests(unittest.TestCase):
         changed['runs'][0]['results'][0]['locations'][0]['physicalLocation']['artifactLocation']['uri'] = 'src/main/java/Unreviewed.java'
         self.assertEqual(checks.sarif_gate([changed], exceptions=exceptions), 1)
 
+    def test_unused_exception_reports_metadata_before_failing_closed(self):
+        exceptions = checks.load_sast_exceptions()
+        document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': [
+            {'id': 'fixture', 'properties': {'security-severity': '8'}}]}},
+            'invocations': [{'executionSuccessful': True}], 'results': []}]}
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / 'codeql').mkdir()
+            (output / 'codeql/java.sarif').write_text(checks.json.dumps(document))
+            with patch.object(checks, 'OUT', output), patch.object(checks.sys, 'argv', ['check.py', 'sarif']), patch('builtins.print') as printed:
+                with self.assertRaisesRegex(ValueError, '^SAST exception is stale or was not exercised$'):
+                    checks.main()
+            summary = checks.json.loads((output / 'sarif-summary.json').read_text())
+            self.assertEqual(0, summary['sastFindingsRequiringAction'])
+            self.assertEqual(len(exceptions), len(summary['unusedSastExceptions']))
+            self.assertEqual(summary, checks.json.loads(printed.call_args.args[0]))
+            for item in summary['unusedSastExceptions']:
+                self.assertEqual({'ruleId', 'file', 'ticket'}, set(item))
+            self.assertNotIn('rationale', checks.json.dumps(summary))
+            self.assertNotIn('sourceSha256', checks.json.dumps(summary))
+
+    def test_retired_bypass_exception_cannot_suppress_a_reappearing_finding(self):
+        exceptions = checks.load_sast_exceptions()
+        self.assertTrue(exceptions)
+        self.assertEqual({'java/spring-disabled-csrf-protection'}, {rule for rule, file in exceptions})
+        rule = 'java/user-controlled-bypass'
+        document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': [
+            {'id': rule, 'properties': {'security-severity': '7.8'}}]}},
+            'invocations': [{'executionSuccessful': True}], 'results': [
+                {'ruleId': rule, 'locations': [{'physicalLocation': {
+                    'artifactLocation': {'uri': 'src/main/java/com/lookahead/domain/cloud/CloudSecurityConfiguration.java'}}}]}]}]}
+        findings = []
+        self.assertEqual(1, checks.sarif_gate([document], findings, exceptions))
+        self.assertEqual('requires-action', findings[0]['disposition'])
+        self.assertIsNone(findings[0]['ticket'])
+
     def test_public_failure_reason_exposes_only_reviewed_constants(self):
         for reason in checks.SAFE_SAST_FAILURES:
             self.assertIn(reason, checks.failure_message(ValueError(reason)))
@@ -179,9 +215,10 @@ class SecurityGateTests(unittest.TestCase):
         valid='FROM eclipse-temurin:21-jdk@sha256:'+64*'a'+' AS build\nFROM eclipse-temurin:21-jre@sha256:'+64*'b'+' AS runtime'
         self.assertEqual(2,len(checks.base_images(valid)))
         self.assertEqual(2,len(checks.base_images(valid.replace("21-jdk@", "21-jdk-noble@").replace("21-jre@", "21-jre-noble@"))))
-        for bad in [valid.replace("21-jdk@", "21-jdk-unknown@"), "\n".join(reversed(valid.splitlines()))]:
+        self.assertEqual(2,len(checks.base_images(valid.replace("21-jdk@", "21-jdk-noble@").replace("21-jre@", "21-jre-alpine@"))))
+        for bad in [valid.replace("21-jdk@", "21-jdk-unknown@"), valid.replace("21-jdk@", "21-jdk-alpine@"), valid.replace("21-jre@", "21-jre-unknown@"), "\n".join(reversed(valid.splitlines()))]:
             with self.assertRaises(ValueError):checks.base_images(bad)
-        for bad in ['FROM eclipse-temurin:21-jre', valid.splitlines()[0], valid.replace('21-jdk@sha256:'+64*'a','21-jdk')]:
+        for bad in ['FROM eclipse-temurin:21-jre', valid.splitlines()[0], valid.replace('21-jdk@sha256:'+64*'a','21-jdk'), valid.replace('21-jre@sha256:'+64*'b','21-jre-alpine'), valid.replace('eclipse-temurin:21-jre@','untrusted/java:21-jre@')]:
             with self.assertRaises(ValueError):checks.base_images(bad)
 
 if __name__=='__main__':unittest.main()

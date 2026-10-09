@@ -268,8 +268,8 @@ A rejected notification logs only its level and a bounded Java diagnostic ID,
 never its message, source snippet, locations or properties.
 
 
-Cloud admission SAST dispositions in `tools/security/sast-exceptions.json`
-are bound to the entire `CloudSecurityConfiguration.java` source SHA and expire
+The cloud admission CSRF disposition in `tools/security/sast-exceptions.json`
+is bound to the entire `CloudSecurityConfiguration.java` source SHA and expires
 on 2026-10-19. The internal chain accepts explicit bearer and Gateway-secret
 headers, never browser cookies; missing/wrong Gateway credentials fail closed,
 and every successful authentication still verifies the token against Cognito.
@@ -280,10 +280,33 @@ the separate signed-JWT/database integration test remains required for that
 boundary's local integration coverage. Source changes or expiry require review.
 
 
-The Docker builder and runtime use explicit, digest-pinned Eclipse Temurin
-Java 21 Ubuntu 24.04 (`21-jdk-noble` / `21-jre-noble`) images. This avoids the
-reported OpenSSL and bundled Go-tooling findings in the prior Ubuntu 26.04
-pins. The scanner still blocks High, Critical and Unknown severities, including
-unfixed findings, and requires complete OS/Java package coverage for built images.
-A passing base scan does not certify the built application; CI scans both bases
-and the exact final image. User 10001 and the existing health probe remain unchanged.
+The Docker builder uses digest-pinned Eclipse Temurin Java 21 Ubuntu 24.04
+(`21-jdk-noble`); the runtime uses a separately pinned Java 21 Alpine image
+(`21-jre-alpine`). The runtime uses musl libc and Alpine's account-creation
+commands, retains numeric user/group 10001 and the existing Java health probe,
+and needs no added curl or application SDK. Distroless Java 21 Debian candidates
+were investigated but rejected because their complete package scans still found
+blocking vulnerabilities. No image exception is used.
+
+The scanner blocks High, Critical and Unknown severities, including unfixed
+findings, and requires complete OS/Java package coverage for built images.
+A passing base scan does not certify the application: CI scans both exact pinned
+bases and the final image. Local Docker smoke checks are separate from AWS
+activation, network, IAM and cloud profile verification.
+
+On October 9, 2026, the pinned AMD64 candidates passed complete base/final
+package scans and the isolated three-application Local authentication contract
+with fresh synthetic PostgreSQL databases. All applications ran as 10001:10001
+with a read-only root filesystem, capped temporary storage and healthy Java
+readiness probes. This does not certify Cognito or RDS connectivity in AWS.
+
+When a SAST exception is not exercised, the gate writes and prints bounded finding
+metadata and `unusedSastExceptions` before failing. Review the exact rule/file
+against the completed scan before retiring an exception; absence is not automatic
+approval. Missing analysis, warnings, expired or changed-source exceptions and
+unreviewed findings still block. SARIF messages and source snippets are not printed.
+
+The completed October 9 CodeQL run no longer reports the cloud admission
+`java/user-controlled-bypass` finding. Its unused exception was removed; a
+reappearing finding blocks without a new review. Both exercised CSRF exceptions
+remain source-bound and expiring.
