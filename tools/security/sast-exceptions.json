@@ -12,7 +12,7 @@
     {
       "ruleId": "java/spring-disabled-csrf-protection",
       "file": "src/main/java/com/lookahead/domain/cloud/CloudSecurityConfiguration.java",
-      "sourceSha256": "17a348e8f7bf7656307d6bf25871bac9f64eb60f0a7f528cb3ed0341226363b9",
+      "sourceSha256": "fede1c2318c8698c8852a6f2dc93e8715dac5abb0cd9b4af7c86807a43aa02a7",
       "expiresAt": "2026-10-19",
       "ticket": "DLV-918",
       "rationale": "DEV/PROD internal Gateway admission is a stateless server-to-server bearer resource chain; it accepts no session-cookie, HTTP Basic or form authentication. Every admission requires a decoded and Cognito-verified access token plus a constant-time comparison with the server-configured Gateway secret. Browser session CSRF remains enforced by Gateway. CloudAdmissionSecurityTest covers cookie-only and missing credential denial in both profiles."

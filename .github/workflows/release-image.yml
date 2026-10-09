@@ -1,0 +1,119 @@
+{
+  "name": "Build once and publish approved DEV image",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "approved-source-sha": {
+          "description": "Exact reviewed main source SHA",
+          "required": true,
+          "type": "string"
+        },
+        "role-arn": {
+          "description": "Reviewed scoped DEV OIDC publisher role ARN",
+          "required": true,
+          "type": "string"
+        },
+        "ecr-repository": {
+          "description": "Exact DEV ECR registry/repository",
+          "required": true,
+          "type": "string"
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "concurrency": {
+    "group": "dev-image-release-${{ github.repository }}",
+    "cancel-in-progress": false
+  },
+  "jobs": {
+    "verify": {
+      "uses": "./.github/workflows/ci.yml",
+      "with": {
+        "export-image": true
+      }
+    },
+    "publish": {
+      "needs": "verify",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 20,
+      "environment": "dev",
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "id-token": "write"
+      },
+      "steps": [
+        {
+          "name": "Checkout exact release source",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Require exact source and protected DEV environment",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "APPROVED_SHA": "${{ inputs.approved-source-sha }}",
+            "DEPLOY_ROLE": "${{ inputs.role-arn }}",
+            "ECR_REPOSITORY": "${{ inputs.ecr-repository }}"
+          },
+          "run": "test \"$GITHUB_REF\" = refs/heads/main\ngh api \"repos/$GITHUB_REPOSITORY/environments/dev\" > \"$RUNNER_TEMP/dev-environment.json\"\npython3 tools/release/registry.py approval --input \"$RUNNER_TEMP/dev-environment.json\" --revision \"$GITHUB_SHA\" --expected-revision \"$APPROVED_SHA\" --role \"$DEPLOY_ROLE\" --repository \"$ECR_REPOSITORY\""
+        },
+        {
+          "name": "Download the same-run scanned artifact",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "release-image-${{ github.sha }}",
+            "path": "${{ runner.temp }}/release-image"
+          }
+        },
+        {
+          "name": "Load and verify scanned image without rebuilding",
+          "run": "python3 tools/release/image.py import --directory \"$RUNNER_TEMP/release-image\" > \"$RUNNER_TEMP/release-image-id\""
+        },
+        {
+          "name": "Use short-lived DEV OIDC credentials",
+          "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
+          "with": {
+            "aws-region": "us-east-2",
+            "role-to-assume": "${{ inputs.role-arn }}",
+            "allowed-account-ids": "509614632283",
+            "role-duration-seconds": 900,
+            "unset-current-credentials": true,
+            "output-credentials": false
+          }
+        },
+        {
+          "name": "Publish exact scanned image into immutable DEV repository",
+          "env": {
+            "ECR_REPOSITORY": "${{ inputs.ecr-repository }}"
+          },
+          "run": "repository_name=\"${ECR_REPOSITORY#*/}\"\nmutability=\"$(aws ecr describe-repositories --repository-names \"$repository_name\" --query 'repositories[0].imageTagMutability' --output text)\"\ntest \"$mutability\" = IMMUTABLE\naws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin \"${ECR_REPOSITORY%%/*}\"\ndocker tag \"$(cat \"$RUNNER_TEMP/release-image-id\")\" \"$ECR_REPOSITORY:$GITHUB_SHA\"\ndocker push --platform linux/amd64 \"$ECR_REPOSITORY:$GITHUB_SHA\"\naws ecr batch-get-image --repository-name \"$repository_name\" --image-ids \"imageTag=$GITHUB_SHA\" --output json > \"$RUNNER_TEMP/ecr-image.json\"\npython3 tools/release/registry.py bind --input \"$RUNNER_TEMP/ecr-image.json\" --revision \"$GITHUB_SHA\" --repository \"$ECR_REPOSITORY\" --image-receipt \"$RUNNER_TEMP/release-image/image.json\" --output \"$RUNNER_TEMP/registry-image.json\""
+        },
+        {
+          "name": "Retain immutable registry release receipt",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "registry-image-${{ github.sha }}",
+            "path": "${{ runner.temp }}/registry-image.json",
+            "if-no-files-found": "error",
+            "retention-days": 21
+          }
+        },
+        {
+          "name": "Clear registry login",
+          "if": "always()",
+          "env": {
+            "ECR_REPOSITORY": "${{ inputs.ecr-repository }}"
+          },
+          "run": "docker logout \"${ECR_REPOSITORY%%/*}\""
+        }
+      ]
+    }
+  }
+}
