@@ -268,8 +268,8 @@ A rejected notification logs only its level and a bounded Java diagnostic ID,
 never its message, source snippet, locations or properties.
 
 
-Cloud admission SAST dispositions in `tools/security/sast-exceptions.json`
-are bound to the entire `CloudSecurityConfiguration.java` source SHA and expire
+The cloud admission CSRF disposition in `tools/security/sast-exceptions.json`
+is bound to the entire `CloudSecurityConfiguration.java` source SHA and expires
 on 2026-10-19. The internal chain accepts explicit bearer and Gateway-secret
 headers, never browser cookies; missing/wrong Gateway credentials fail closed,
 and every successful authentication still verifies the token against Cognito.
@@ -305,3 +305,8 @@ metadata and `unusedSastExceptions` before failing. Review the exact rule/file
 against the completed scan before retiring an exception; absence is not automatic
 approval. Missing analysis, warnings, expired or changed-source exceptions and
 unreviewed findings still block. SARIF messages and source snippets are not printed.
+
+The completed October 9 CodeQL run no longer reports the cloud admission
+`java/user-controlled-bypass` finding. Its unused exception was removed; a
+reappearing finding blocks without a new review. Both exercised CSRF exceptions
+remain source-bound and expiring.

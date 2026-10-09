@@ -48,6 +48,21 @@ class SecurityGateTests(unittest.TestCase):
             self.assertNotIn('rationale', checks.json.dumps(summary))
             self.assertNotIn('sourceSha256', checks.json.dumps(summary))
 
+    def test_retired_bypass_exception_cannot_suppress_a_reappearing_finding(self):
+        exceptions = checks.load_sast_exceptions()
+        self.assertTrue(exceptions)
+        self.assertEqual({'java/spring-disabled-csrf-protection'}, {rule for rule, file in exceptions})
+        rule = 'java/user-controlled-bypass'
+        document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': [
+            {'id': rule, 'properties': {'security-severity': '7.8'}}]}},
+            'invocations': [{'executionSuccessful': True}], 'results': [
+                {'ruleId': rule, 'locations': [{'physicalLocation': {
+                    'artifactLocation': {'uri': 'src/main/java/com/lookahead/domain/cloud/CloudSecurityConfiguration.java'}}}]}]}]}
+        findings = []
+        self.assertEqual(1, checks.sarif_gate([document], findings, exceptions))
+        self.assertEqual('requires-action', findings[0]['disposition'])
+        self.assertIsNone(findings[0]['ticket'])
+
     def test_public_failure_reason_exposes_only_reviewed_constants(self):
         for reason in checks.SAFE_SAST_FAILURES:
             self.assertIn(reason, checks.failure_message(ValueError(reason)))
