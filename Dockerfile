@@ -1,4 +1,4 @@
-FROM eclipse-temurin:21-jdk@sha256:92a2a4d7a928d057e7bd999c418d66c26a34eb9a0442f3ab67721c3f88110b2d AS build
+FROM eclipse-temurin:21-jdk-noble@sha256:b468c3fc688b14450571494f588bd939378e7fd542ed5a73f8efc13f17872a87 AS build
 WORKDIR /workspace
 # Keep the wrapper on the checksum-pinned ZIP distribution (its tar fallback
 # has different bytes). This package is needed only in the build stage.
@@ -19,7 +19,7 @@ RUN ./mvnw --batch-mode --no-transfer-progress verify \
     && mkdir /workspace/health \
     && javac --release 21 -d /workspace/health src/main/java/com/lookahead/domain/health/ContainerHealthcheck.java
 
-FROM eclipse-temurin:21-jre@sha256:cff19e6215689161eb6162c11b86b0c60ddf802164f2eaf48d570f8fb79a36c5 AS runtime
+FROM eclipse-temurin:21-jre-noble@sha256:000fd431958bc81a24abe1e8e5f0f0fd3ae365a594bd50aadb20696805f9408c AS runtime
 WORKDIR /opt/lookahead
 RUN groupadd --gid 10001 lookahead && useradd --uid 10001 --gid 10001 --no-create-home lookahead
 COPY --from=build --chown=10001:10001 /workspace/target/lookahead-domain-api.jar /opt/lookahead/app.jar

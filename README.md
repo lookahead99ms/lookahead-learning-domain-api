@@ -266,3 +266,24 @@ mandatory exception usage stay enforced. SARIF trace notifications (`none`)
 are informational alongside `note`; warnings, errors and unknown levels block.
 A rejected notification logs only its level and a bounded Java diagnostic ID,
 never its message, source snippet, locations or properties.
+
+
+Cloud admission SAST dispositions in `tools/security/sast-exceptions.json`
+are bound to the entire `CloudSecurityConfiguration.java` source SHA and expire
+on 2026-10-19. The internal chain accepts explicit bearer and Gateway-secret
+headers, never browser cookies; missing/wrong Gateway credentials fail closed,
+and every successful authentication still verifies the token against Cognito.
+`CloudAdmissionSecurityTest` exercises both DEV and PROD filter chains with
+controlled JWT decoding/provider responses, including rejected tokens and
+provider revocation. It does not certify real Cognito/IAM/network behavior;
+the separate signed-JWT/database integration test remains required for that
+boundary's local integration coverage. Source changes or expiry require review.
+
+
+The Docker builder and runtime use explicit, digest-pinned Eclipse Temurin
+Java 21 Ubuntu 24.04 (`21-jdk-noble` / `21-jre-noble`) images. This avoids the
+reported OpenSSL and bundled Go-tooling findings in the prior Ubuntu 26.04
+pins. The scanner still blocks High, Critical and Unknown severities, including
+unfixed findings, and requires complete OS/Java package coverage for built images.
+A passing base scan does not certify the built application; CI scans both bases
+and the exact final image. User 10001 and the existing health probe remain unchanged.

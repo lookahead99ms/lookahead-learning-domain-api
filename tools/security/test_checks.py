@@ -11,6 +11,22 @@ checks = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checks)
 
 class SecurityGateTests(unittest.TestCase):
+    def test_reviewed_cloud_findings_are_bound_and_other_findings_still_block(self):
+        exceptions = checks.load_sast_exceptions()
+        rules = [{'id': rule, 'properties': {'security-severity': '8.8'}}
+                 for rule in sorted({key[0] for key in exceptions})]
+        results = [{'ruleId': rule, 'locations': [{'physicalLocation': {
+            'artifactLocation': {'uri': file}, 'region': {'startLine': 54}}}]}
+            for rule, file in exceptions]
+        document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': rules}},
+            'invocations': [{'executionSuccessful': True}], 'results': results}]}
+        used = set()
+        self.assertEqual(checks.sarif_gate([document], exceptions=exceptions, used=used), 0)
+        checks.require_all_exceptions_used(exceptions, used)
+        changed = copy.deepcopy(document)
+        changed['runs'][0]['results'][0]['locations'][0]['physicalLocation']['artifactLocation']['uri'] = 'src/main/java/Unreviewed.java'
+        self.assertEqual(checks.sarif_gate([changed], exceptions=exceptions), 1)
+
     def test_public_failure_reason_exposes_only_reviewed_constants(self):
         for reason in checks.SAFE_SAST_FAILURES:
             self.assertIn(reason, checks.failure_message(ValueError(reason)))
@@ -162,6 +178,9 @@ class SecurityGateTests(unittest.TestCase):
     def test_both_base_stages_must_be_pinned(self):
         valid='FROM eclipse-temurin:21-jdk@sha256:'+64*'a'+' AS build\nFROM eclipse-temurin:21-jre@sha256:'+64*'b'+' AS runtime'
         self.assertEqual(2,len(checks.base_images(valid)))
+        self.assertEqual(2,len(checks.base_images(valid.replace("21-jdk@", "21-jdk-noble@").replace("21-jre@", "21-jre-noble@"))))
+        for bad in [valid.replace("21-jdk@", "21-jdk-unknown@"), "\n".join(reversed(valid.splitlines()))]:
+            with self.assertRaises(ValueError):checks.base_images(bad)
         for bad in ['FROM eclipse-temurin:21-jre', valid.splitlines()[0], valid.replace('21-jdk@sha256:'+64*'a','21-jdk')]:
             with self.assertRaises(ValueError):checks.base_images(bad)
 
