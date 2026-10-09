@@ -179,9 +179,10 @@ class SecurityGateTests(unittest.TestCase):
         valid='FROM eclipse-temurin:21-jdk@sha256:'+64*'a'+' AS build\nFROM eclipse-temurin:21-jre@sha256:'+64*'b'+' AS runtime'
         self.assertEqual(2,len(checks.base_images(valid)))
         self.assertEqual(2,len(checks.base_images(valid.replace("21-jdk@", "21-jdk-noble@").replace("21-jre@", "21-jre-noble@"))))
-        for bad in [valid.replace("21-jdk@", "21-jdk-unknown@"), "\n".join(reversed(valid.splitlines()))]:
+        self.assertEqual(2,len(checks.base_images(valid.replace("21-jdk@", "21-jdk-noble@").replace("21-jre@", "21-jre-alpine@"))))
+        for bad in [valid.replace("21-jdk@", "21-jdk-unknown@"), valid.replace("21-jdk@", "21-jdk-alpine@"), valid.replace("21-jre@", "21-jre-unknown@"), "\n".join(reversed(valid.splitlines()))]:
             with self.assertRaises(ValueError):checks.base_images(bad)
-        for bad in ['FROM eclipse-temurin:21-jre', valid.splitlines()[0], valid.replace('21-jdk@sha256:'+64*'a','21-jdk')]:
+        for bad in ['FROM eclipse-temurin:21-jre', valid.splitlines()[0], valid.replace('21-jdk@sha256:'+64*'a','21-jdk'), valid.replace('21-jre@sha256:'+64*'b','21-jre-alpine'), valid.replace('eclipse-temurin:21-jre@','untrusted/java:21-jre@')]:
             with self.assertRaises(ValueError):checks.base_images(bad)
 
 if __name__=='__main__':unittest.main()

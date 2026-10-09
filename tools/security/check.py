@@ -202,9 +202,9 @@ def scan(kind, target=None, require_java=False):
 
 def base_images(text):
     images = re.findall(r'^FROM\s+(\S+)', text, re.M | re.I)
-    if len(images) != 2 or any(not re.fullmatch(r'eclipse-temurin:21-(?:jdk|jre)(?:-noble)?@sha256:[a-f0-9]{64}', image) for image in images):
+    if len(images) != 2 or any(not re.fullmatch(r'eclipse-temurin:21-(?:jdk|jre)(?:-noble|-alpine)?@sha256:[a-f0-9]{64}', image) for image in images):
         raise ValueError('Both Java 21 builder/runtime bases must be digest pinned')
-    if not re.search(r':21-jdk(?:-noble)?@', images[0]) or not re.search(r':21-jre(?:-noble)?@', images[1]):
+    if not re.search(r':21-jdk(?:-noble)?@', images[0]) or not re.search(r':21-jre(?:-noble|-alpine)?@', images[1]):
         raise ValueError('Expected JDK builder followed by JRE runtime')
     return images
 

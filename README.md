@@ -280,10 +280,22 @@ the separate signed-JWT/database integration test remains required for that
 boundary's local integration coverage. Source changes or expiry require review.
 
 
-The Docker builder and runtime use explicit, digest-pinned Eclipse Temurin
-Java 21 Ubuntu 24.04 (`21-jdk-noble` / `21-jre-noble`) images. This avoids the
-reported OpenSSL and bundled Go-tooling findings in the prior Ubuntu 26.04
-pins. The scanner still blocks High, Critical and Unknown severities, including
-unfixed findings, and requires complete OS/Java package coverage for built images.
-A passing base scan does not certify the built application; CI scans both bases
-and the exact final image. User 10001 and the existing health probe remain unchanged.
+The Docker builder uses digest-pinned Eclipse Temurin Java 21 Ubuntu 24.04
+(`21-jdk-noble`); the runtime uses a separately pinned Java 21 Alpine image
+(`21-jre-alpine`). The runtime uses musl libc and Alpine's account-creation
+commands, retains numeric user/group 10001 and the existing Java health probe,
+and needs no added curl or application SDK. Distroless Java 21 Debian candidates
+were investigated but rejected because their complete package scans still found
+blocking vulnerabilities. No image exception is used.
+
+The scanner blocks High, Critical and Unknown severities, including unfixed
+findings, and requires complete OS/Java package coverage for built images.
+A passing base scan does not certify the application: CI scans both exact pinned
+bases and the final image. Local Docker smoke checks are separate from AWS
+activation, network, IAM and cloud profile verification.
+
+On October 9, 2026, the pinned AMD64 candidates passed complete base/final
+package scans and the isolated three-application Local authentication contract
+with fresh synthetic PostgreSQL databases. All applications ran as 10001:10001
+with a read-only root filesystem, capped temporary storage and healthy Java
+readiness probes. This does not certify Cognito or RDS connectivity in AWS.
