@@ -1,6 +1,8 @@
 package com.lookahead.domain;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.health.contributor.Status;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -25,5 +27,14 @@ class DomainDatabaseHealthIndicatorTest {
         var health = new DomainDatabaseHealthIndicator(jdbc).health();
         assertThat(health.getStatus()).isEqualTo(Status.DOWN);
         assertThat(health.getDetails()).isEmpty();
+    }
+    @ParameterizedTest @ValueSource(strings={"dev","prod"})
+    void cloudReadinessRequiresCloudSchemaAndRestrictedIdentityPrivileges(String mode) {
+        var jdbc=mock(JdbcTemplate.class);
+        var cloud=new DomainDatabaseHealthIndicator(jdbc,new org.springframework.mock.env.MockEnvironment().withProperty("app.deployment-environment",mode));
+        when(jdbc.queryForObject(anyString(),eq(Boolean.class))).thenReturn(true,false,true,true);
+        assertThat(cloud.health().getStatus()).isEqualTo(Status.DOWN);
+        assertThat(cloud.health().getStatus()).isEqualTo(Status.UP);
+        verify(jdbc,times(4)).queryForObject(anyString(),eq(Boolean.class));
     }
 }

@@ -23,7 +23,6 @@
 !src/test/resources/**
 !tools/
 !tools/container/
-!tools/container/Healthcheck.java
 # Exclusions remain last so newly added private inputs cannot override them.
 **/.env*
 **/secrets/**
@@ -50,3 +49,9 @@
 **/*.class
 **/*.jar
 **/.DS_Store
+
+# Exact reviewed public trust bundle/build verifier; all private-key exclusions remain.
+!tools/container/VerifyRdsTrust.java
+!tools/container/trust/
+!tools/container/trust/rds-global-bundle.pem
+!tools/container/trust/rds-global-bundle.sha256

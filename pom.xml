@@ -16,12 +16,40 @@
         <!-- DLV-916: temporary override until a stable Boot 4.1 patch manages the fix. -->
         <tomcat.version>11.0.25</tomcat.version>
         <!-- DLV-916: Boot 4.1.1 manages vulnerable Jackson 2/3 patch levels. -->
-        <jackson-2-bom.version>2.21.6</jackson-2-bom.version>
-        <jackson-bom.version>3.1.6</jackson-bom.version>
+        <jackson-2-bom.version>2.21.7</jackson-2-bom.version>
+        <jackson-bom.version>3.1.7</jackson-bom.version>
         <maven.compiler.parameters>true</maven.compiler.parameters>
         <project.build.outputTimestamp>2026-09-18T00:00:00Z</project.build.outputTimestamp>
     </properties>
     <dependencies>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>cognitoidentityprovider</artifactId>
+            <version>2.55.12</version>
+            <exclusions>
+                <exclusion><groupId>software.amazon.awssdk</groupId><artifactId>netty-nio-client</artifactId></exclusion>
+                <exclusion><groupId>software.amazon.awssdk</groupId><artifactId>apache5-client</artifactId></exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <version>2.55.12</version>
+            <exclusions>
+                <exclusion><groupId>software.amazon.awssdk</groupId><artifactId>netty-nio-client</artifactId></exclusion>
+                <exclusion><groupId>software.amazon.awssdk</groupId><artifactId>apache-client</artifactId></exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>url-connection-client</artifactId>
+            <version>2.55.12</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-compress</artifactId>
+            <version>1.28.0</version>
+        </dependency>
         <dependency>
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
@@ -90,12 +118,81 @@
         <finalName>lookahead-domain-api</finalName>
         <plugins>
             <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.15</version>
+                <dependencies>
+                    <dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>3.6.1</version></dependency>
+                </dependencies>
+                <executions>
+                    <execution>
+                        <id>coverage-agent</id>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>coverage-report</id>
+                        <phase>verify</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <!-- DLV-918: application BOMs do not constrain plugin classpaths. -->
+                <dependencies>
+                    <dependency><groupId>tools.jackson.core</groupId><artifactId>jackson-core</artifactId><version>${jackson-bom.version}</version></dependency>
+                    <dependency><groupId>tools.jackson.core</groupId><artifactId>jackson-databind</artifactId><version>${jackson-bom.version}</version></dependency>
+                    <dependency><groupId>org.apache.commons</groupId><artifactId>commons-lang3</artifactId><version>3.18.0</version></dependency>
+                    <dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>3.6.1</version></dependency>
+                </dependencies>
                 <configuration>
                     <mainClass>com.lookahead.domain.DomainApiApplication</mainClass>
                 </configuration>
             </plugin>
+            <!-- DLV-918: patched transitives for the ordinary clean/verify lifecycle. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId><artifactId>maven-clean-plugin</artifactId>
+                <dependencies><dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>4.0.3</version></dependency></dependencies>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId><artifactId>maven-resources-plugin</artifactId>
+                <dependencies><dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>3.6.1</version></dependency></dependencies>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId>
+                <dependencies>
+                    <dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>4.0.3</version></dependency>
+                    <dependency><groupId>commons-io</groupId><artifactId>commons-io</artifactId><version>2.14.0</version></dependency>
+                </dependencies>
+            </plugin>
         </plugins>
     </build>
+    <profiles>
+        <profile>
+            <id>coverage</id>
+            <build><plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <configuration><systemPropertyVariables><coverage.required>true</coverage.required></systemPropertyVariables></configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <executions><execution>
+                        <id>coverage-gate</id>
+                        <phase>verify</phase>
+                        <goals><goal>check</goal></goals>
+                        <configuration><rules><rule>
+                            <element>BUNDLE</element>
+                            <limits><limit>
+                                <counter>LINE</counter><value>COVEREDRATIO</value><minimum>0.85</minimum>
+                            </limit></limits>
+                        </rule></rules></configuration>
+                    </execution></executions>
+                </plugin>
+            </plugins></build>
+        </profile>
+    </profiles>
 </project>

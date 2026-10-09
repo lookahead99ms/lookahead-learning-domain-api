@@ -1,0 +1,8 @@
+{
+  "source": "https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem",
+  "documentation": "https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL.html",
+  "retrievedDate": "2026-10-08",
+  "sha256": "fe45bbebf92ad3e27a583bbb2ddd1553c521ed4d49af5514dc0a40372ea5395c",
+  "purpose": "Public RDS root CA certificates only; no private keys. Reviewed input for immutable image builds.",
+  "runtimePath": "/opt/lookahead/trust/rds-global-bundle.pem"
+}

@@ -23,11 +23,14 @@ import tools.jackson.databind.ObjectMapper;
 
 @Configuration
 public class DomainSecurityConfiguration {
-    @Bean IdentitySettings identitySettings(Environment environment) { return IdentitySettings.from(environment); }
-    @Bean IdentityVerificationClient identityVerification(IdentitySettings settings, ObjectMapper mapper) {
+    @Bean @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression("'${app.deployment-environment:}' == 'local'")
+    IdentitySettings identitySettings(Environment environment) { return IdentitySettings.from(environment); }
+    @Bean @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression("'${app.deployment-environment:}' == 'local'")
+    IdentityVerificationClient identityVerification(IdentitySettings settings, ObjectMapper mapper) {
         return new IdentityVerificationClient(settings, mapper);
     }
-    @Bean JwtDecoder domainDecoder(IdentitySettings settings) {
+    @Bean @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression("'${app.deployment-environment:}' == 'local'")
+    JwtDecoder domainDecoder(IdentitySettings settings) {
         var client = HttpClient.newBuilder().connectTimeout(settings.connectTimeout()).followRedirects(HttpClient.Redirect.NEVER).build();
         var factory = new JdkClientHttpRequestFactory(client); factory.setReadTimeout(settings.readTimeout());
         var decoder = NimbusJwtDecoder.withJwkSetUri(settings.upstream() + "/oauth2/jwks")
@@ -35,8 +38,13 @@ public class DomainSecurityConfiguration {
         decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(settings.issuer()));
         return decoder;
     }
-    @Bean SecurityFilterChain domainSecurity(HttpSecurity http, JwtDecoder decoder, IdentitySettings settings,
-                                               IdentityVerificationClient identity, AccountRepository accounts) throws Exception {
+    @Bean @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression("'${app.deployment-environment:}' == 'local'")
+    org.springframework.core.convert.converter.Converter<org.springframework.security.oauth2.jwt.Jwt,org.springframework.security.authentication.AbstractAuthenticationToken> localAuthenticationConverter(IdentitySettings settings,IdentityVerificationClient identity,AccountRepository accounts) {
+        return new DomainTokenConverter(settings,identity,accounts);
+    }
+    @Bean @org.springframework.core.annotation.Order(2)
+    SecurityFilterChain domainSecurity(HttpSecurity http, JwtDecoder decoder,
+            org.springframework.core.convert.converter.Converter<org.springframework.security.oauth2.jwt.Jwt,org.springframework.security.authentication.AbstractAuthenticationToken> domainAuthenticationConverter) throws Exception {
         return http.cors(Customizer.withDefaults()).csrf(AbstractHttpConfigurer::disable)
                 .httpBasic(AbstractHttpConfigurer::disable).formLogin(AbstractHttpConfigurer::disable)
                 .logout(AbstractHttpConfigurer::disable).requestCache(AbstractHttpConfigurer::disable)
@@ -53,7 +61,7 @@ public class DomainSecurityConfiguration {
                         .requestMatchers("/api/v1/auth/me", "/api/v1/account-catalog", "/api/v1/author/previews/access", "/api/v1/plans", "/api/v1/plans/**").hasAuthority("SCOPE_account")
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resource -> resource.jwt(jwt -> jwt.decoder(decoder)
-                        .jwtAuthenticationConverter(new DomainTokenConverter(settings, identity, accounts)))
+                        .jwtAuthenticationConverter(domainAuthenticationConverter))
                         .authenticationEntryPoint((request, response, error) -> {
                             boolean unavailable = error instanceof AuthenticationServiceException;
                             response.setStatus(unavailable ? 503 : 401);

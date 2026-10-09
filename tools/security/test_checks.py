@@ -18,7 +18,7 @@ class SecurityGateTests(unittest.TestCase):
         with self.assertRaises(ValueError):checks.java_bom([])
 
     def test_sarif_clean_and_high_security_finding(self):
-        run={'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':'8.1'}}]}},'results':[]}
+        run={'invocations':[{'executionSuccessful':True}],'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':'8.1'}}]}},'results':[]}
         self.assertEqual(0,checks.sarif_gate([{'runs':[run]}]))
         run['results']=[{'ruleId':'fixture'}]
         self.assertEqual(1,checks.sarif_gate([{'runs':[run]}]))
@@ -27,8 +27,25 @@ class SecurityGateTests(unittest.TestCase):
         with self.assertRaises(ValueError):checks.sarif_gate([])
         run={'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture'}]}},'invocations':[{'executionSuccessful':False}]}
         with self.assertRaises(ValueError):checks.sarif_gate([{'runs':[run]}])
-        run.pop('invocations');run['results']=[{'ruleId':'unrecognized'}]
+        run['invocations']=[{'executionSuccessful':True}];run['results']=[{'ruleId':'unrecognized'}]
         with self.assertRaises(ValueError):checks.sarif_gate([{'runs':[run]}])
+
+    def test_sarif_requires_success_and_rejects_incomplete_analysis_notifications(self):
+        clean={'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture'}]}},'results':[]}
+        for invocations in (None, [], [{}], [{'executionSuccessful':False}], [{'executionSuccessful':'true'}], [None]):
+            run={**clean,'invocations':invocations}
+            with self.subTest(invocations=invocations), self.assertRaises(ValueError):
+                checks.sarif_gate([{'runs':[run]}])
+        with self.assertRaises(ValueError): checks.sarif_gate([{'runs':[clean]}])
+        for field in ('toolExecutionNotifications','toolConfigurationNotifications'):
+            for notification in ({'level':'error'},{'level':'warning'},{},{'level':'invalid'},None):
+                run={**clean,'invocations':[{'executionSuccessful':True,field:[notification]}]}
+                with self.subTest(field=field,notification=notification), self.assertRaises(ValueError):
+                    checks.sarif_gate([{'runs':[run]}])
+            run={**clean,'invocations':[{'executionSuccessful':True,field:[{'level':'note'}]}]}
+            self.assertEqual(0,checks.sarif_gate([{'runs':[run]}]))
+            run['invocations'].append({'executionSuccessful':False})
+            with self.assertRaises(ValueError): checks.sarif_gate([{'runs':[run]}])
 
     def test_image_needs_os_and_package_coverage(self):
         report={'Metadata':{'OS':{'Family':'ubuntu'}},'Results':[{'Class':'os-pkgs','Packages':[{'Name':'fixture','Version':'1'}]}]}
@@ -53,7 +70,7 @@ class SecurityGateTests(unittest.TestCase):
 
     def test_sarif_nonfinite_severity_fails(self):
         for value in ('NaN', 'Infinity', '-1', '11'):
-            run={'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':value}}]}},'results':[{'ruleId':'fixture'}]}
+            run={'invocations':[{'executionSuccessful':True}],'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':value}}]}},'results':[{'ruleId':'fixture'}]}
             with self.assertRaises(ValueError): checks.sarif_gate([{'runs':[run]}])
 
     def test_application_image_needs_java_and_os(self):
@@ -64,7 +81,7 @@ class SecurityGateTests(unittest.TestCase):
         self.assertFalse(any(checks.trivy_gate({'Metadata':{'OS':{'Family':'ubuntu'}},'Results':[os_result,java_result]},'image',True).values()))
 
     def test_grouped_sarif_rules_are_resolved(self):
-        run={'tool':{'driver':{'name':'CodeQL'},'extensions':[{'rules':[{'id':'fixture','properties':{'security-severity':'8'}}]}]},'results':[{'rule':{'id':'fixture'}}]}
+        run={'invocations':[{'executionSuccessful':True}],'tool':{'driver':{'name':'CodeQL'},'extensions':[{'rules':[{'id':'fixture','properties':{'security-severity':'8'}}]}]},'results':[{'rule':{'id':'fixture'}}]}
         self.assertEqual(1,checks.sarif_gate([{'runs':[run]}]))
 
     def test_sast_exception_is_exact_expiring_and_hash_bound(self):
@@ -75,7 +92,7 @@ class SecurityGateTests(unittest.TestCase):
                   'expiresAt':'2026-10-19','ticket':'DLV-804','rationale':'Reviewed synthetic fixture.'}
             policy.write_text(checks.json.dumps({'version':1,'exceptions':[item]}))
             exceptions=checks.load_sast_exceptions(policy,root,date(2026,9,19))
-            run={'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':'8'}}]}},
+            run={'invocations':[{'executionSuccessful':True}],'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':'8'}}]}},
                  'results':[{'ruleId':'fixture','locations':[{'physicalLocation':{'artifactLocation':{'uri':'src/Security.java'},'region':{'startLine':7}}}]}]}
             details=[]; used=set()
             self.assertEqual(0,checks.sarif_gate([{'runs':[run]}],details,exceptions,used))

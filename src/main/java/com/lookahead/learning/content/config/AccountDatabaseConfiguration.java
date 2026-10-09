@@ -60,9 +60,7 @@ public class AccountDatabaseConfiguration {
         source.setPassword(password);
         source.setConnectionInitSql(CONNECTION_GUARD_SQL);
         // Pool acquisition does not bound an already borrowed connection's socket read.
-        source.addDataSourceProperty("connectTimeout", "3");
-        source.addDataSourceProperty("socketTimeout", "5");
-        source.addDataSourceProperty("cancelSignalTimeout", "2");
+        source.setDataSourceProperties(com.lookahead.domain.database.DomainDatabaseConnections.timeoutProperties());
         source.setMaximumPoolSize(maximumPoolSize);
         source.setConnectionTimeout(connectionTimeout);
         source.setValidationTimeout(validationTimeout);

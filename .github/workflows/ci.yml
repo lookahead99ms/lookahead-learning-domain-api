@@ -50,8 +50,18 @@
           }
         },
         {
-          "name": "Test and package including existing security regressions",
-          "run": "./mvnw --batch-mode --no-transfer-progress clean verify"
+          "name": "Prepare disposable database fixture password file",
+          "run": "umask 077\nprintf '%s' 'synthetic-disposable-domain-ci' > \"$RUNNER_TEMP/domain-test-password\""
+        },
+        {
+          "name": "Test all production code and require at least 85 percent line coverage",
+          "run": "./mvnw --batch-mode --no-transfer-progress -Pcoverage clean verify",
+          "env": {
+            "CLOUD_AUTH_TEST_DATABASE_URL": "jdbc:postgresql://127.0.0.1:4393/lookahead_domain_cloud_auth",
+            "CLOUD_AUTH_TEST_PASSWORD_FILE": "${{ runner.temp }}/domain-test-password",
+            "DLV921_DATABASE_URL": "jdbc:postgresql://127.0.0.1:4392/lookahead_domain_review",
+            "DLV921_DATABASE_PASSWORD_FILE": "${{ runner.temp }}/domain-test-password"
+          }
         },
         {
           "name": "Analyze Java code without publishing source databases or SARIF",
@@ -94,7 +104,33 @@
           "name": "Scan exact builder base, runtime base and built application image",
           "run": "python3 tools/security/check.py images --image lookahead-domain-api:ci"
         }
-      ]
+      ],
+      "services": {
+        "cloud-auth-db": {
+          "image": "postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0",
+          "env": {
+            "POSTGRES_USER": "postgres",
+            "POSTGRES_PASSWORD": "synthetic-disposable-domain-ci",
+            "POSTGRES_DB": "lookahead_domain_cloud_auth"
+          },
+          "ports": [
+            "127.0.0.1:4393:5432"
+          ],
+          "options": "--health-cmd \"pg_isready -U postgres\" --health-interval 5s --health-timeout 5s --health-retries 20"
+        },
+        "review-plan-db": {
+          "image": "postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0",
+          "env": {
+            "POSTGRES_USER": "postgres",
+            "POSTGRES_PASSWORD": "synthetic-disposable-domain-ci",
+            "POSTGRES_DB": "lookahead_domain_review"
+          },
+          "ports": [
+            "127.0.0.1:4392:5432"
+          ],
+          "options": "--health-cmd \"pg_isready -U postgres\" --health-interval 5s --health-timeout 5s --health-retries 20"
+        }
+      }
     }
   }
 }

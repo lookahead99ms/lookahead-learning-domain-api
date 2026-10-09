@@ -3,7 +3,9 @@
 This independently packaged Java/Spring Boot application owns learning business
 rules: content access, current course grants, plans, progress, support receipts
 and local author capability.
-It has no password-login controller, authorization-server library, OAuth state
+Local uses the separate Identity application. DEV/PROD use Cognito and Domain-owned
+durable sign-ins; see [cloud authentication](docs/cloud-authentication.md). Domain
+has no browser login controller, authorization-server library, OAuth state
 repository, signing private key, or Identity database connection.
 
 The candidate does not migrate an existing combined database automatically.
@@ -43,18 +45,53 @@ runtime deployment is implied by the source rename.
 docker build -t lookahead-domain-api:local .
 ```
 
-The Docker build runs the same tests before packaging. Its context is this
-repository only. The image runs Java as UID10001, serves on port8080 and checks
+The Docker build runs the default test suite before packaging; database suites
+require their explicit disposable fixtures. Its context is this repository only. The image runs Java as UID10001, serves on port8080 and checks
 `/actuator/health/readiness`. Configuration and data are mounted or supplied at
 runtime; the image contains no curriculum or credentials. Transport records are
 owned by this application, with JSON contract tests preserving their API shape.
 
 An independent build is not a database-free service. To run the JAR or container,
 provide the Domain PostgreSQL database with its migrated schema/restricted role,
-the Identity verification/JWKS endpoint, secrets and a validated account catalog
+the Local Identity verification/JWKS endpoint or cloud Cognito settings, secrets and a validated account catalog
 using the configuration below. The redistributable synthetic catalog is in
 `src/test/resources/accounts/`; it is sufficient for tests, not a production
 curriculum. Integrated local orchestration remains infrastructure-owned.
+
+## Required release coverage gate
+
+CI and release validation run `./mvnw -Pcoverage clean verify` with both disposable
+PostgreSQL fixtures configured. JaCoCo 0.8.15 measures every production class,
+without source exclusions, and fails verification below **85% line coverage**.
+Branch coverage is reported separately. Reports are written to
+`target/site/jacoco/index.html` and `target/site/jacoco/jacoco.xml`.
+
+Infrastructure owns fixture startup and shutdown. Use its
+`scripts/cloud_auth_test_database.py` and
+`scripts/author_document_review_test_database.py` helpers to prepare the isolated
+loopback databases before running:
+
+```sh
+CLOUD_AUTH_TEST_DATABASE_URL=jdbc:postgresql://127.0.0.1:4393/lookahead_domain_cloud_auth \
+CLOUD_AUTH_TEST_PASSWORD_FILE=/absolute/path/to/cloud-auth-test/postgres-password \
+DLV921_DATABASE_URL=jdbc:postgresql://127.0.0.1:4392/lookahead_domain_review \
+DLV921_DATABASE_PASSWORD_FILE=/absolute/path/to/author-document-review-test/postgres-password \
+./mvnw --batch-mode --no-transfer-progress -Pcoverage clean verify
+```
+
+The file paths above are placeholders for the helper-created password files;
+never use application or production database credentials. The coverage profile
+fails when either fixture URL or password file is absent, rather than silently
+skipping persistence validation. Tests use unique schemas and remove their own
+schema after execution. GitHub CI supplies two pinned PostgreSQL services with
+synthetic disposable credentials. The ordinary `./mvnw verify` and Docker build
+remain independently executable, but do not certify the required coverage gate.
+
+The suite checks Local provider preservation, DEV/PROD Cognito and publication
+bean selection, invalid configuration rejection, and real PostgreSQL sign-in,
+review and plan lifecycle behavior. AWS provider calls remain mocked; coverage
+and local database passes do not certify live Cognito, S3 IAM, ECS secret injection
+or RDS TLS behavior.
 
 ## Configuration
 
@@ -75,7 +112,7 @@ curriculum. Integrated local orchestration remains infrastructure-owned.
 Configuration-tree files can supply the corresponding dotted property names;
 `LOOKAHEAD_SECRETS_DIRECTORY` selects their directory. Never mount Identity DB
 credentials, password fixtures or signing private keys in this application.
-DEV and PROD Identity URLs require HTTPS. Explicit local mode permits loopback
+DEV and PROD require the Cognito configuration in the cloud guide. Explicit local mode permits loopback
 HTTP and fixed internal names `identity`, `identity-api`, `lookahead-identity`.
 Public issuer HTTP remains loopback-only. `accounts` and `resource` roles are
 always activated; mixed gateway/authorization-server roles fail startup.
@@ -87,7 +124,36 @@ actual restricted role before being lent to application code. Migration jobs
 verify their separate role before Flyway. Readiness checks each required DML
 privilege individually; retaining SELECT alone does not mark a broken writer UP.
 
-## Request and data contracts
+Runtime, migration and account-administration cloud connections share the same
+JDBC transport validator. DEV/PROD require database `lookahead_platform`, an RDS
+hostname in `AWS_REGION`, `sslmode=verify-full`, and an absolute readable,
+non-symlink CA bundle containing current CA certificates. The CA bundle's trusted
+provenance and image packaging are separate release checks; accepting its file
+format does not establish an AWS handshake. No application AWS SDK fetches the CA.
+
+For migration and account-administration commands, explicitly set
+`LOOKAHEAD_ENVIRONMENT=dev` or `prod` and `AWS_REGION` alongside the Flyway
+variables above. Existing Local commands retain `local` when
+`LOOKAHEAD_ENVIRONMENT` is absent; explicitly empty or unknown modes fail.
+Local JDBC URLs and password-file defaults are preserved. Every runtime,
+migration and administration connection uses three-second connect,
+five-second socket and two-second cancellation timeouts, including connections
+opened after the initial migration-role check. URL parameters cannot override
+these bounds.
+
+DEV/PROD also require `server.address=127.0.0.1`
+(`LOOKAHEAD_BIND_ADDRESS=127.0.0.1`). The Service Connect proxy terminates encrypted
+private ingress on port 8443 and forwards inside the task to Domain HTTP on
+loopback port 8080. Startup rejects wildcard, task-interface and ambiguous host
+bindings so plain HTTP cannot be exposed outside the task. Local binding behavior
+is unchanged, and the container healthcheck continues to use loopback HTTP.
+The deployed Service Connect TLS boundary still requires exact-image and live
+AWS verification.
+
+## Local request and data contracts
+
+The following Identity protocol applies to Local. DEV/PROD use the separate
+[Cognito and durable sign-in contract](docs/cloud-authentication.md).
 
 JWT signature, issuer and lifetime checks use public JWKS. Audience, originating
 client and canonical UUID subject are checked before the internal call. Every
@@ -151,3 +217,34 @@ an audit event; schedule, progress and creation number are preserved. Trimmed na
 are1–160 characters with no control characters. List/detail return `name` and
 `planNumber`; list also returns advisory `nextPlanNumber`. The account catalog
 advertises `planNamingPolicies: ["plan-name-v1"]`.
+
+
+## AWS DEV deployment candidate (DLV-810)
+
+`deployment/service.yaml` is the application-owned service contract for the local AWS candidate. It declares health, capacity, immutable image/release inputs and symbolic approved resource/secret references. Shared DEV/PROD values, IAM, S3, networking, CloudFormation and tooling belong to Infra. YAML uses JSON syntax. Current image/evidence values are unresolved and desired count is zero; this is not an activated cloud profile. Local configuration and authorization are preserved. See the sibling Infra `aws/devprod/README.md` for local planning commands and remaining application/identity/bootstrap gates. No resource creation, upload or GitHub activation has been performed.
+
+Deployment direction: this application owns its service YAML and future thin caller to an immutable-pinned Infra reusable workflow. The current v1 manifest still requires migration to shared + DEV/PROD sections. Infra owns bootstrap/IAM/security groups/templates/orchestration; see workspace Infra `docs/deployment/README.md`. Build-once digest promotion, required scans and separate DEV/PROD approvals remain gates, not enabled deployment behavior.
+
+## Service deployment configuration
+
+`deployment/service.yaml` uses `lookahead-service/v2`: `shared` owns service port, health, settings and approved resource/secret/Infra output references; `environments.dev` and `.prod` select capacity, image digest, content release and activation evidence. Both candidates retain zero tasks. Shared account/region values and all infrastructure remain Infra-owned. Infra's maintained `aws/devprod/parameter-bindings.yaml` validates every template parameter; `scripts/aws_deployment.py plan --environment dev|prod` generates an offline plan. See Infra `docs/deployment/README.md` for commands and activation gates. No application contract or Local Docker behavior changed; AWS deployment remains blocked.
+
+October8 candidate service configuration adds explicit Fargate runtime/private networking, ingress/target-group references, optional alarm references, and per-environment scaling min/max, CPU targets, cooldowns and alarm thresholds. Desired/min tasks stay0 and scaling/alarms disabled. Fargate uses CPU/memory, not an EC2 instance type. Infra owns conditional scaling/IAM/CloudWatch resources; see Infra docs/deployment/README.md.
+
+Deployment `service.yaml` now declares task startup, health probes, temporary disk, logging/rollout settings and approved environment/Secrets Manager bindings. Java DEV/PROD sections declare Xms128 MiB / Xmx512 MiB and approved JVM args for provisional 1 GiB tasks, leaving explicit native/probe budget; load testing remains required. Infra shared values and maintained templates remain authoritative; see Infra `docs/deployment/README.md` → JVM and task configuration. Local Docker/runtime behavior is unchanged and AWS activation remains blocked.
+
+AWS candidate `deployment/service.yaml` now references the shared application task role and separate shared Fargate execution role from its owning environment foundation. All three cloud apps reuse this pair; DEV/PROD have separate role resources/scopes. Infra owns policies, trust and validation; service-specific secret mappings and existing authorization are preserved. See Infra `docs/deployment/README.md` → Two shared IAM roles per environment. No cloud activation.
+
+## Cloud publication application candidate
+
+DEV/PROD now select a verified S3 startup publication; Local retains mounted files and creates no AWS client beans. Domain alone uses the pinned S3 SDK with ECS task credentials. A bounded byte/entry cache preserves per-request authorization. Readiness includes publication initialization and existing database checks; cloud startup requires injected database secret values and verified RDS TLS. See [cloud publication configuration and validation](docs/cloud-publication.md). Local fixture checks do not certify AWS/IAM/ECS behavior. Cognito consumers and Domain durable sign-ins are implemented and locally tested. The inactive cloud candidate removes Identity and retains one Domain RDS; Local Identity is preserved. See [cloud authentication, database admission and remaining activation gates](docs/cloud-authentication.md).
+
+The container now includes [checksum-pinned public RDS trust roots](tools/container/trust/README.md) at `/opt/lookahead/trust/rds-global-bundle.pem`. The build validates certificates and excludes private key material. This supplies the cloud JDBC trust file; real RDS connectivity/restore and ECS Service Connect encryption still need provider verification.
+
+The container readiness probe is `com.lookahead.domain.health.ContainerHealthcheck`
+under `src/main/java`, included in the normal production coverage inventory.
+Its tests cover real loopback success/failure responses, strict readiness payloads,
+request timeout configuration and interruption. Docker compiles that same measured
+source for the standalone JVM probe. The RDS trust verifier remains build-only.
+Wrapper distribution setup has a source-independent Docker layer; dependency
+versions and checksum verification are unchanged.

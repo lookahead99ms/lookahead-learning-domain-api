@@ -30,15 +30,31 @@ app:
   version: "@project.version@"
   deployment-environment: ${LOOKAHEAD_ENVIRONMENT}
   identity:
-    issuer: ${LOOKAHEAD_OAUTH_ISSUER}
-    upstream: ${LOOKAHEAD_IDENTITY_UPSTREAM}
+    issuer: ${LOOKAHEAD_OAUTH_ISSUER:}
+    upstream: ${LOOKAHEAD_IDENTITY_UPSTREAM:}
     gateway-client-id: ${APP_OAUTH_CLIENT_ID:lookahead-web-gateway}
     verifier-secret: ${LOOKAHEAD_IDENTITY_VERIFIER_SECRET:}
+  cognito:
+    issuer: ${LOOKAHEAD_COGNITO_ISSUER:}
+    region: ${AWS_REGION:}
+    client-id: ${APP_OAUTH_CLIENT_ID:}
+    scope-prefix: ${LOOKAHEAD_COGNITO_SCOPE_PREFIX:}
+    gateway-secret: ${LOOKAHEAD_DOMAIN_GATEWAY_SECRET:}
   accounts:
-    catalog-path: ${LOOKAHEAD_ACCOUNT_CATALOG}
+    catalog-path: ${LOOKAHEAD_ACCOUNT_CATALOG:}
   content:
     publication-path: ${LOOKAHEAD_CONTENT_PUBLICATION:}
     root: ${LOOKAHEAD_CONTENT_ROOT:}
+  publication:
+    region: ${AWS_REGION:}
+    account-id: ${LOOKAHEAD_AWS_ACCOUNT_ID:}
+    bucket: ${LOOKAHEAD_PUBLICATION_BUCKET:}
+    release-id: ${LOOKAHEAD_PUBLICATION_RELEASE_ID:}
+    manifest-sha256: ${LOOKAHEAD_PUBLICATION_MANIFEST_SHA256:}
+    archive-sha256: ${LOOKAHEAD_PUBLICATION_ARCHIVE_SHA256:}
+    directory: ${LOOKAHEAD_PUBLICATION_DIRECTORY:/tmp/lookahead-publications}
+    cache-bytes: ${LOOKAHEAD_CONTENT_CACHE_BYTES:33554432}
+    cache-entries: ${LOOKAHEAD_CONTENT_CACHE_ENTRIES:256}
   cors:
     allowed-origins: []
   local-test:
@@ -56,4 +72,4 @@ management:
       show-details: never
       group:
         readiness:
-          include: readinessState,domainDatabase
+          include: readinessState,domainDatabase,contentPublication

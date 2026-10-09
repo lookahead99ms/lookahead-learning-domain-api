@@ -23,6 +23,12 @@ public class ProtectedContentPolicy {
     private final Path root;
     private final String version;
     private final Set<String> freeContentIds;
+    private com.lookahead.domain.publication.BoundedContentCache cache;
+    @org.springframework.beans.factory.annotation.Autowired
+    public ProtectedContentPolicy(ObjectMapper mapper, com.lookahead.domain.publication.PublicationLocation location) {
+        this(mapper, location.manifest(), location.contentRoot());
+        if (location.cloud()) cache = new com.lookahead.domain.publication.BoundedContentCache(location.cacheBytes(), location.cacheEntries());
+    }
     public ProtectedContentPolicy(ObjectMapper mapper,@Value("${app.content.publication-path:}") String manifestPath,
             @Value("${app.content.root:}") String contentRoot) {
         if(manifestPath.isBlank() && contentRoot.isBlank()){assets=Map.of();root=null;version="disabled";freeContentIds=Set.of();return;}
@@ -65,6 +71,11 @@ public class ProtectedContentPolicy {
     }
     public Optional<Asset> find(String path){return Optional.ofNullable(assets.get(path));}
     public byte[] read(Asset asset) {
+        if (!asset.equals(assets.get(asset.path()))) throw new AccountFailure(503,"CONTENT_UNAVAILABLE","Content is unavailable.");
+        if (cache != null) return cache.read(asset.path() + ":" + asset.sha256(), () -> readVerified(asset));
+        return readVerified(asset);
+    }
+    private byte[] readVerified(Asset asset) {
         try {
             Path file=root.resolve(asset.path().substring("/content/".length())).normalize();
             for(Path current=file;current!=null && current.startsWith(root);current=current.getParent())if(Files.isSymbolicLink(current))throw new IllegalStateException("Symbolic asset path");

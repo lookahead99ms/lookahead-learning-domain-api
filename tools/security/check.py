@@ -217,9 +217,18 @@ def sarif_gate(documents, actionable=None, exceptions=None, used=None):
     for item in runs:
         if item.get('tool', {}).get('driver', {}).get('name') != 'CodeQL':
             raise ValueError('Unexpected SAST producer')
-        for invocation in item.get('invocations', []):
-            if invocation.get('executionSuccessful') is False or any(n.get('level') == 'error' for n in invocation.get('toolExecutionNotifications', [])):
+        invocations = item.get('invocations')
+        if not isinstance(invocations, list) or not invocations:
+            raise ValueError('SAST invocation inventory absent')
+        for invocation in invocations:
+            if not isinstance(invocation, dict) or invocation.get('executionSuccessful') is not True:
                 raise ValueError('SAST execution incomplete')
+            for field in ('toolExecutionNotifications', 'toolConfigurationNotifications'):
+                notifications = invocation.get(field, [])
+                if not isinstance(notifications, list) or any(
+                        not isinstance(notification, dict) or notification.get('level', 'warning') != 'note'
+                        for notification in notifications):
+                    raise ValueError('SAST execution incomplete')
         components = [item['tool']['driver'], *item['tool'].get('extensions', [])]
         rules = {rule['id']: rule for component in components for rule in component.get('rules', [])}
         if not rules:
