@@ -122,7 +122,7 @@
                 <artifactId>jacoco-maven-plugin</artifactId>
                 <version>0.8.15</version>
                 <dependencies>
-                    <dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>3.6.1</version></dependency>
+                    <dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>4.1.0</version></dependency>
                 </dependencies>
                 <executions>
                     <execution>
@@ -144,7 +144,7 @@
                     <dependency><groupId>tools.jackson.core</groupId><artifactId>jackson-core</artifactId><version>${jackson-bom.version}</version></dependency>
                     <dependency><groupId>tools.jackson.core</groupId><artifactId>jackson-databind</artifactId><version>${jackson-bom.version}</version></dependency>
                     <dependency><groupId>org.apache.commons</groupId><artifactId>commons-lang3</artifactId><version>3.18.0</version></dependency>
-                    <dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>3.6.1</version></dependency>
+                    <dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>4.1.0</version></dependency>
                 </dependencies>
                 <configuration>
                     <mainClass>com.lookahead.domain.DomainApiApplication</mainClass>
@@ -153,16 +153,16 @@
             <!-- DLV-918: patched transitives for the ordinary clean/verify lifecycle. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId><artifactId>maven-clean-plugin</artifactId>
-                <dependencies><dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>4.0.3</version></dependency></dependencies>
+                <dependencies><dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>4.1.0</version></dependency></dependencies>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId><artifactId>maven-resources-plugin</artifactId>
-                <dependencies><dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>3.6.1</version></dependency></dependencies>
+                <dependencies><dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>4.1.0</version></dependency></dependencies>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId>
                 <dependencies>
-                    <dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>4.0.3</version></dependency>
+                    <dependency><groupId>org.codehaus.plexus</groupId><artifactId>plexus-utils</artifactId><version>4.1.0</version></dependency>
                     <dependency><groupId>commons-io</groupId><artifactId>commons-io</artifactId><version>2.14.0</version></dependency>
                 </dependencies>
             </plugin>
