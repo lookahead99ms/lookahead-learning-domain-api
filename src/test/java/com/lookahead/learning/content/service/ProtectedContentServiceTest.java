@@ -59,6 +59,18 @@ class ProtectedContentServiceTest {
         when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of());
         denied(()->service.read("/content/pro.json",learner),403,"CONTENT_SCOPE_REQUIRED");
     }
+    @Test void cachedCloudBytesDoNotCacheGrantsOrEnabledState() throws Exception {
+        policy();
+        var location = new com.lookahead.domain.publication.PublicationLocation(directory.resolve("manifest.json").toString(),directory.toString(),"",true,1024,4);
+        var service = new ProtectedContentService(new ProtectedContentPolicy(mapper,location),accounts);
+        when(accounts.isEnabled(learner.accountId())).thenReturn(true);
+        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("learn:sample-course"));
+        assertThat(service.read("/content/pro.json",learner).bytes()).isNotEmpty();
+        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of());
+        denied(()->service.read("/content/pro.json",learner),403,"CONTENT_SCOPE_REQUIRED");
+        when(accounts.isEnabled(learner.accountId())).thenReturn(false);
+        denied(()->service.read("/content/pro.json",learner),401,"AUTHENTICATION_REQUIRED");
+    }
     @Test void excludesUnlistedFilesAndRejectsTraversalAndChangedBytes() throws Exception {
         var policy=policy();var service=new ProtectedContentService(policy,accounts);
         for(String path:List.of("/content/manifest.json","/content/../public.json","/content/%2e%2e/public.json","/content/public.json/","/content/public.json%00"))denied(()->service.read(path,null),404,"CONTENT_NOT_FOUND");

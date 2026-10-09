@@ -1,0 +1,157 @@
+# Task/service values are projected into maintained Infra templates. No credentials in YAML.
+schemaVersion: lookahead-service/v2
+service: domain
+shared:
+  port: 8080
+  health:
+    path: /actuator/health/readiness
+    intervalSeconds: 15
+    enabled: true
+    command:
+    - CMD
+    - java
+    - -Xms16m
+    - -Xmx64m
+    - -cp
+    - /opt/lookahead/health
+    - com.lookahead.domain.health.ContainerHealthcheck
+    timeoutSeconds: 5
+    retries: 3
+    startPeriodSeconds: 60
+  settings:
+    LOOKAHEAD_ENVIRONMENT: '@environment'
+    LOOKAHEAD_BIND_ADDRESS: 127.0.0.1
+    PORT: '@service.port'
+    JAVA_TOOL_OPTIONS: '@jvm'
+    APP_OAUTH_CLIENT_ID: '@application.oauthClientId'
+    LOOKAHEAD_DOMAIN_JDBC_URL: '@application.domainJdbcUrl'
+    LOOKAHEAD_DOMAIN_SEED_ENABLED: 'false'
+    LOOKAHEAD_DOMAIN_AUTHOR_ENABLED: 'false'
+    AWS_REGION: '@region'
+    LOOKAHEAD_AWS_ACCOUNT_ID: '@accountId'
+    LOOKAHEAD_PUBLICATION_BUCKET: '@resources.publicationBucket'
+    LOOKAHEAD_PUBLICATION_RELEASE_ID: '@publication.releaseId'
+    LOOKAHEAD_PUBLICATION_MANIFEST_SHA256: '@publication.manifestSha256'
+    LOOKAHEAD_PUBLICATION_ARCHIVE_SHA256: '@publication.archiveSha256'
+    LOOKAHEAD_PUBLICATION_DIRECTORY: /tmp/lookahead-publications
+    LOOKAHEAD_CONTENT_CACHE_BYTES: '33554432'
+    LOOKAHEAD_CONTENT_CACHE_ENTRIES: '256'
+    LOOKAHEAD_COGNITO_ISSUER: '@application.cognitoIssuer'
+    LOOKAHEAD_COGNITO_SCOPE_PREFIX: '@application.cognitoScopePrefix'
+  resourceRefs:
+  - domainDatabase
+  - publicationBucket
+  - frontendOrigin
+  secretRefs:
+  - domainApp
+  - domainGateway
+  infrastructureRefs:
+    cluster: persistent.Cluster
+    subnet1: persistent.AppSubnet1
+    subnet2: persistent.AppSubnet2
+    securityGroup: persistent.DomainSecurity
+    executionRole: persistent.SharedTaskExecutionRoleArn
+    logGroup: persistent.DomainLogs
+    namespace: persistent.PrivateNamespaceArn
+    taskRole: persistent.SharedApplicationTaskRoleArn
+    tlsAuthority: persistent.ServiceConnectAuthorityArn
+    tlsInfrastructureRole: persistent.ServiceConnectInfrastructureRoleArn
+  runtime:
+    launchType: FARGATE
+    operatingSystem: LINUX
+    cpuArchitecture: X86_64
+    readOnlyRootFilesystem: true
+    assignPublicIp: false
+    platformVersion: 1.4.0
+    networkMode: awsvpc
+    ephemeralStorageGiB: 20
+    stopTimeoutSeconds: 120
+  ingress:
+    mode: service-connect-tls
+    targetGroupRef: null
+    loadBalancerRef: null
+  monitoring:
+    namespace: AWS/ECS
+    cpuAlarmRef: domain.CpuAlarmArn
+    logs:
+      driver: awslogs
+      streamPrefix: domain
+      region: '@region'
+      mode: non-blocking
+      maxBufferSize: 4m
+  secretEnvironment:
+    LOOKAHEAD_DOMAIN_DB_PASSWORD: domainApp
+    LOOKAHEAD_DOMAIN_GATEWAY_SECRET: domainGateway
+  container:
+    name: domain
+    user: 10001:10001
+    essential: true
+    entryPoint:
+    - java
+    - -jar
+    - /opt/lookahead/app.jar
+    workingDirectory: /opt/lookahead
+    family: lookahead-@environment-domain
+  storage:
+    volumeName: temporary
+    mountPath: /tmp
+    readOnly: false
+  deployment:
+    minimumHealthyPercent: 100
+    maximumPercent: 200
+    healthCheckGracePeriodSeconds: 0
+    circuitBreakerEnabled: true
+    rollback: true
+environments:
+  dev:
+    cpu: 512
+    memory: 1024
+    desiredCount: 0
+    imageDigest: null
+    contentReleaseId: null
+    activationEvidence: null
+    scaling:
+      enabled: false
+      minCapacity: 0
+      maxCapacity: 2
+      targetCpuPercent: 60
+      scaleInCooldownSeconds: 300
+      scaleOutCooldownSeconds: 60
+    alarms:
+      enabled: false
+      cpuThresholdPercent: 80
+      periodSeconds: 60
+      evaluationPeriods: 3
+    jvm:
+      xmsMiB: 128
+      xmxMiB: 512
+      nativeHeadroomMiB: 256
+      args:
+      - -XX:+ExitOnOutOfMemoryError
+      - -Djava.io.tmpdir=/tmp
+  prod:
+    cpu: 512
+    memory: 1024
+    desiredCount: 0
+    imageDigest: null
+    contentReleaseId: null
+    activationEvidence: null
+    scaling:
+      enabled: false
+      minCapacity: 0
+      maxCapacity: 4
+      targetCpuPercent: 60
+      scaleInCooldownSeconds: 300
+      scaleOutCooldownSeconds: 60
+    alarms:
+      enabled: false
+      cpuThresholdPercent: 80
+      periodSeconds: 60
+      evaluationPeriods: 3
+    jvm:
+      xmsMiB: 128
+      xmxMiB: 512
+      nativeHeadroomMiB: 256
+      args:
+      - -XX:+ExitOnOutOfMemoryError
+      - -Djava.io.tmpdir=/tmp

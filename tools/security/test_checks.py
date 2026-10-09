@@ -11,6 +11,61 @@ checks = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checks)
 
 class SecurityGateTests(unittest.TestCase):
+    def test_reviewed_cloud_findings_are_bound_and_other_findings_still_block(self):
+        exceptions = checks.load_sast_exceptions()
+        rules = [{'id': rule, 'properties': {'security-severity': '8.8'}}
+                 for rule in sorted({key[0] for key in exceptions})]
+        results = [{'ruleId': rule, 'locations': [{'physicalLocation': {
+            'artifactLocation': {'uri': file}, 'region': {'startLine': 54}}}]}
+            for rule, file in exceptions]
+        document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': rules}},
+            'invocations': [{'executionSuccessful': True}], 'results': results}]}
+        used = set()
+        self.assertEqual(checks.sarif_gate([document], exceptions=exceptions, used=used), 0)
+        checks.require_all_exceptions_used(exceptions, used)
+        changed = copy.deepcopy(document)
+        changed['runs'][0]['results'][0]['locations'][0]['physicalLocation']['artifactLocation']['uri'] = 'src/main/java/Unreviewed.java'
+        self.assertEqual(checks.sarif_gate([changed], exceptions=exceptions), 1)
+
+    def test_public_failure_reason_exposes_only_reviewed_constants(self):
+        for reason in checks.SAFE_SAST_FAILURES:
+            self.assertIn(reason, checks.failure_message(ValueError(reason)))
+        for error in (ValueError('synthetic-secret'), ValueError('Expired SAST exception synthetic-secret'),
+                      KeyError('synthetic-secret'), OSError('synthetic-secret')):
+            self.assertNotIn('synthetic-secret', checks.failure_message(error))
+            self.assertIn('inspect the step', checks.failure_message(error))
+
+    def test_notification_rejection_has_safe_distinct_reason(self):
+        run = {'tool': {'driver': {'name': 'CodeQL', 'rules': [{'id': 'fixture'}]}},
+               'results': [], 'invocations': [{'executionSuccessful': True,
+                   'toolExecutionNotifications': [{'level': 'warning', 'message': {'text': 'synthetic-secret'}}]}]}
+        with self.assertRaisesRegex(ValueError, '^SAST notification requires review$'):
+            checks.sarif_gate([{'runs': [run]}])
+        run['invocations'][0]['toolExecutionNotifications'] = 'synthetic-secret'
+        with self.assertRaisesRegex(ValueError, '^SAST notification inventory invalid$'):
+            checks.sarif_gate([{'runs': [run]}])
+
+    def test_repository_sast_exception_binding_is_current(self):
+        checks.load_sast_exceptions()
+
+    def test_trace_notifications_are_informational_but_warnings_still_block(self):
+        run = {'tool': {'driver': {'name': 'CodeQL', 'rules': [{'id': 'fixture'}]}},
+               'results': [], 'invocations': [{'executionSuccessful': True,
+                   'toolExecutionNotifications': [{'level': 'none'}]}]}
+        self.assertEqual(0, checks.sarif_gate([{'runs': [run]}]))
+        run['invocations'][0]['toolExecutionNotifications'][0]['level'] = 'warning'
+        with self.assertRaises(ValueError): checks.sarif_gate([{'runs': [run]}])
+
+    def test_notification_summary_never_includes_messages_or_unknown_ids(self):
+        summary = checks.notification_summary([
+            {'level': 'warning', 'descriptor': {'id': 'java/diagnostics/extraction-warnings'},
+             'message': {'text': 'synthetic-secret'}, 'properties': {'secret': 'synthetic-secret'}},
+            {'level': 'synthetic-secret', 'descriptor': {'id': 'synthetic-secret'}},
+            None])
+        self.assertNotIn('synthetic-secret', str(summary))
+        self.assertEqual('java/diagnostics/extraction-warnings', summary[0]['id'])
+        self.assertEqual('invalid', summary[1]['level'])
+
     def test_resolved_bom_keeps_distinct_versions_and_deduplicates(self):
         a={'group':'org.example','name':'fixture','version':'1'}
         bom=checks.java_bom([a,a,{**a,'version':'2'}])
@@ -18,7 +73,7 @@ class SecurityGateTests(unittest.TestCase):
         with self.assertRaises(ValueError):checks.java_bom([])
 
     def test_sarif_clean_and_high_security_finding(self):
-        run={'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':'8.1'}}]}},'results':[]}
+        run={'invocations':[{'executionSuccessful':True}],'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':'8.1'}}]}},'results':[]}
         self.assertEqual(0,checks.sarif_gate([{'runs':[run]}]))
         run['results']=[{'ruleId':'fixture'}]
         self.assertEqual(1,checks.sarif_gate([{'runs':[run]}]))
@@ -27,8 +82,25 @@ class SecurityGateTests(unittest.TestCase):
         with self.assertRaises(ValueError):checks.sarif_gate([])
         run={'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture'}]}},'invocations':[{'executionSuccessful':False}]}
         with self.assertRaises(ValueError):checks.sarif_gate([{'runs':[run]}])
-        run.pop('invocations');run['results']=[{'ruleId':'unrecognized'}]
+        run['invocations']=[{'executionSuccessful':True}];run['results']=[{'ruleId':'unrecognized'}]
         with self.assertRaises(ValueError):checks.sarif_gate([{'runs':[run]}])
+
+    def test_sarif_requires_success_and_rejects_incomplete_analysis_notifications(self):
+        clean={'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture'}]}},'results':[]}
+        for invocations in (None, [], [{}], [{'executionSuccessful':False}], [{'executionSuccessful':'true'}], [None]):
+            run={**clean,'invocations':invocations}
+            with self.subTest(invocations=invocations), self.assertRaises(ValueError):
+                checks.sarif_gate([{'runs':[run]}])
+        with self.assertRaises(ValueError): checks.sarif_gate([{'runs':[clean]}])
+        for field in ('toolExecutionNotifications','toolConfigurationNotifications'):
+            for notification in ({'level':'error'},{'level':'warning'},{},{'level':'invalid'},None):
+                run={**clean,'invocations':[{'executionSuccessful':True,field:[notification]}]}
+                with self.subTest(field=field,notification=notification), self.assertRaises(ValueError):
+                    checks.sarif_gate([{'runs':[run]}])
+            run={**clean,'invocations':[{'executionSuccessful':True,field:[{'level':'note'}]}]}
+            self.assertEqual(0,checks.sarif_gate([{'runs':[run]}]))
+            run['invocations'].append({'executionSuccessful':False})
+            with self.assertRaises(ValueError): checks.sarif_gate([{'runs':[run]}])
 
     def test_image_needs_os_and_package_coverage(self):
         report={'Metadata':{'OS':{'Family':'ubuntu'}},'Results':[{'Class':'os-pkgs','Packages':[{'Name':'fixture','Version':'1'}]}]}
@@ -53,7 +125,7 @@ class SecurityGateTests(unittest.TestCase):
 
     def test_sarif_nonfinite_severity_fails(self):
         for value in ('NaN', 'Infinity', '-1', '11'):
-            run={'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':value}}]}},'results':[{'ruleId':'fixture'}]}
+            run={'invocations':[{'executionSuccessful':True}],'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':value}}]}},'results':[{'ruleId':'fixture'}]}
             with self.assertRaises(ValueError): checks.sarif_gate([{'runs':[run]}])
 
     def test_application_image_needs_java_and_os(self):
@@ -64,7 +136,7 @@ class SecurityGateTests(unittest.TestCase):
         self.assertFalse(any(checks.trivy_gate({'Metadata':{'OS':{'Family':'ubuntu'}},'Results':[os_result,java_result]},'image',True).values()))
 
     def test_grouped_sarif_rules_are_resolved(self):
-        run={'tool':{'driver':{'name':'CodeQL'},'extensions':[{'rules':[{'id':'fixture','properties':{'security-severity':'8'}}]}]},'results':[{'rule':{'id':'fixture'}}]}
+        run={'invocations':[{'executionSuccessful':True}],'tool':{'driver':{'name':'CodeQL'},'extensions':[{'rules':[{'id':'fixture','properties':{'security-severity':'8'}}]}]},'results':[{'rule':{'id':'fixture'}}]}
         self.assertEqual(1,checks.sarif_gate([{'runs':[run]}]))
 
     def test_sast_exception_is_exact_expiring_and_hash_bound(self):
@@ -75,7 +147,7 @@ class SecurityGateTests(unittest.TestCase):
                   'expiresAt':'2026-10-19','ticket':'DLV-804','rationale':'Reviewed synthetic fixture.'}
             policy.write_text(checks.json.dumps({'version':1,'exceptions':[item]}))
             exceptions=checks.load_sast_exceptions(policy,root,date(2026,9,19))
-            run={'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':'8'}}]}},
+            run={'invocations':[{'executionSuccessful':True}],'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':'8'}}]}},
                  'results':[{'ruleId':'fixture','locations':[{'physicalLocation':{'artifactLocation':{'uri':'src/Security.java'},'region':{'startLine':7}}}]}]}
             details=[]; used=set()
             self.assertEqual(0,checks.sarif_gate([{'runs':[run]}],details,exceptions,used))
@@ -106,6 +178,9 @@ class SecurityGateTests(unittest.TestCase):
     def test_both_base_stages_must_be_pinned(self):
         valid='FROM eclipse-temurin:21-jdk@sha256:'+64*'a'+' AS build\nFROM eclipse-temurin:21-jre@sha256:'+64*'b'+' AS runtime'
         self.assertEqual(2,len(checks.base_images(valid)))
+        self.assertEqual(2,len(checks.base_images(valid.replace("21-jdk@", "21-jdk-noble@").replace("21-jre@", "21-jre-noble@"))))
+        for bad in [valid.replace("21-jdk@", "21-jdk-unknown@"), "\n".join(reversed(valid.splitlines()))]:
+            with self.assertRaises(ValueError):checks.base_images(bad)
         for bad in ['FROM eclipse-temurin:21-jre', valid.splitlines()[0], valid.replace('21-jdk@sha256:'+64*'a','21-jdk')]:
             with self.assertRaises(ValueError):checks.base_images(bad)
 

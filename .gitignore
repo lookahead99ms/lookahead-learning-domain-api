@@ -70,3 +70,6 @@ docs/private/
 private/
 *.private.*
 docs/account-persistence-contract.proposed.md
+
+# Public AWS RDS trust anchors; exact exception, never private keys.
+!tools/container/trust/rds-global-bundle.pem

@@ -23,6 +23,10 @@ public final class SnapshotValidator {
     private final Set<String> topicIds = new HashSet<>();
 
     @Autowired
+    public SnapshotValidator(ObjectMapper mapper, com.lookahead.domain.publication.PublicationLocation publication) {
+        this(mapper, publication.accountCatalog());
+    }
+
     public SnapshotValidator(ObjectMapper mapper, @Value("${app.accounts.catalog-path}") String catalogPath) {
         this(mapper, readCatalog(mapper, catalogPath));
     }

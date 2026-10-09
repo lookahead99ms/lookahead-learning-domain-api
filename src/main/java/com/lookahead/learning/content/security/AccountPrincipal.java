@@ -8,8 +8,9 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 
 /** Password-free identity admitted by this request's authoritative token validation. */
-public record AccountPrincipal(UUID accountId, String username, String displayName, boolean enabled)
+public record AccountPrincipal(UUID accountId, String username, String displayName, boolean enabled, boolean cloudAuthor)
         implements Principal {
+    public AccountPrincipal(UUID accountId,String username,String displayName,boolean enabled){this(accountId,username,displayName,enabled,false);}
     @Override public String getName() { return accountId.toString(); }
     public String getUsername() { return username; }
     public boolean isEnabled() { return enabled; }

@@ -17,6 +17,8 @@ public class LocalAuthorAccess {
     public LocalAuthorAccess(Environment environment) { this.environment = environment; }
 
     public boolean allowed(AccountPrincipal principal) {
+        if (java.util.Set.of("dev","prod").contains(environment.getProperty("app.deployment-environment","")))
+            return principal != null && principal.isEnabled() && principal.cloudAuthor();
         return principal != null && principal.isEnabled()
                 && ACCOUNT_ID.equals(principal.accountId()) && USERNAME.equals(principal.getUsername())
                 && environment.getProperty("app.local-test.author-enabled", Boolean.class, false)
