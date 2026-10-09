@@ -259,3 +259,10 @@ of public logs. Warning/error notifications still block; this diagnostic change
 does not waive findings or weaken the security gate. Raw SARIF and source
 databases remain unpublished. Run the tooling regressions with
 `python3 -m unittest discover -s tools/security -p 'test_*.py'`.
+
+SAST exception hashes are also checked in the first tooling-test step; review
+the security boundary before updating a hash after a source change. Expiry and
+mandatory exception usage stay enforced. SARIF trace notifications (`none`)
+are informational alongside `note`; warnings, errors and unknown levels block.
+A rejected notification logs only its level and a bounded Java diagnostic ID,
+never its message, source snippet, locations or properties.

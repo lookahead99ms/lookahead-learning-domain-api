@@ -46,6 +46,23 @@ SAFE_SAST_FAILURES = frozenset({
 })
 
 
+def notification_summary(notifications):
+    summary = []
+    for notification in notifications:
+        if not isinstance(notification, dict):
+            summary.append({'level': 'invalid', 'id': 'unavailable'})
+            continue
+        level = notification.get('level', 'missing')
+        if level not in ('note', 'none', 'warning', 'error', 'missing'):
+            level = 'invalid'
+        descriptor = notification.get('descriptor', {})
+        identifier = descriptor.get('id') if isinstance(descriptor, dict) else None
+        if not isinstance(identifier, str) or not re.fullmatch(r'java/[a-z0-9/_-]{1,120}', identifier):
+            identifier = 'unrecognized'
+        summary.append({'level': level, 'id': identifier})
+    return summary
+
+
 def failure_message(error):
     reason = str(error) if type(error) is ValueError and str(error) in SAFE_SAST_FAILURES else None
     return ('Security check failed: ' + type(error).__name__ +
@@ -258,8 +275,10 @@ def sarif_gate(documents, actionable=None, exceptions=None, used=None):
                 notifications = invocation.get(field, [])
                 if not isinstance(notifications, list):
                     raise ValueError('SAST notification inventory invalid')
-                if any(not isinstance(notification, dict) or notification.get('level', 'warning') != 'note'
+                if any(not isinstance(notification, dict) or notification.get('level', 'warning') not in ('note', 'none')
                        for notification in notifications):
+                    print(json.dumps({'sastNotificationField': field,
+                                      'notifications': notification_summary(notifications)}))
                     raise ValueError('SAST notification requires review')
         components = [item['tool']['driver'], *item['tool'].get('extensions', [])]
         rules = {rule['id']: rule for component in components for rule in component.get('rules', [])}

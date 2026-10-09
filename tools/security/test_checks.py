@@ -29,6 +29,27 @@ class SecurityGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '^SAST notification inventory invalid$'):
             checks.sarif_gate([{'runs': [run]}])
 
+    def test_repository_sast_exception_binding_is_current(self):
+        checks.load_sast_exceptions()
+
+    def test_trace_notifications_are_informational_but_warnings_still_block(self):
+        run = {'tool': {'driver': {'name': 'CodeQL', 'rules': [{'id': 'fixture'}]}},
+               'results': [], 'invocations': [{'executionSuccessful': True,
+                   'toolExecutionNotifications': [{'level': 'none'}]}]}
+        self.assertEqual(0, checks.sarif_gate([{'runs': [run]}]))
+        run['invocations'][0]['toolExecutionNotifications'][0]['level'] = 'warning'
+        with self.assertRaises(ValueError): checks.sarif_gate([{'runs': [run]}])
+
+    def test_notification_summary_never_includes_messages_or_unknown_ids(self):
+        summary = checks.notification_summary([
+            {'level': 'warning', 'descriptor': {'id': 'java/diagnostics/extraction-warnings'},
+             'message': {'text': 'synthetic-secret'}, 'properties': {'secret': 'synthetic-secret'}},
+            {'level': 'synthetic-secret', 'descriptor': {'id': 'synthetic-secret'}},
+            None])
+        self.assertNotIn('synthetic-secret', str(summary))
+        self.assertEqual('java/diagnostics/extraction-warnings', summary[0]['id'])
+        self.assertEqual('invalid', summary[1]['level'])
+
     def test_resolved_bom_keeps_distinct_versions_and_deduplicates(self):
         a={'group':'org.example','name':'fixture','version':'1'}
         bom=checks.java_bom([a,a,{**a,'version':'2'}])
