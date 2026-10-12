@@ -90,6 +90,12 @@ class DomainSecurityIntegrationTest {
                 .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("code").value("ACCOUNT_STORAGE_UNAVAILABLE"))
                 .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("private database"))));
     }
+    @Test void accountReadRejectsCookiesAndBrowserSuppliedIdentityWithoutBearer() throws Exception {
+        http.perform(get("/api/v1/auth/me").cookie(new jakarta.servlet.http.Cookie("JSESSIONID", "forged"))
+                .header("Origin", "https://attacker.invalid").param("verifiedEmail", "invited@example.invalid"))
+                .andExpect(status().isUnauthorized());
+        verifyNoInteractions(identity, accounts, decoder);
+    }
     @Test void tokenScopeAndDenyByDefaultAreEnforced() throws Exception {
         when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
         http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token")).andExpect(status().isForbidden());

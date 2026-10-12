@@ -84,3 +84,18 @@ expiry. Cookie-only and wrong-credential/scope denial checks remain enforced.
 Negative parser tests intentionally print warning/error notification fixtures;
 those lines alone do not mean hosted analysis failed. A fresh hosted full CI run
 is required after publishing the reviewed binding update.
+
+## Account read and image findings (October 12)
+
+The account-read CSRF finding has an exact source-bound exception expiring
+October 19: Domain requires bearer authentication and account scope, and pending
+invitation claiming uses only the server principal's verified email and an
+existing owner-created grant. Cookie-only requests to Domain are denied. This
+disposition does not make state changes on GET desirable; moving claim activation
+to an explicit authenticated mutation remains tracked separately. Gateway browser
+sessions and Domain bearer authentication are distinct boundaries.
+
+The WebP bounds finding is corrected in code using remaining-byte checks before
+narrowing chunk lengths. Truncated headers, unsigned oversized lengths and missing
+padding are rejected. No exception is added for the image parser. A new full
+hosted CodeQL run must confirm the finding is absent.

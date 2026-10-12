@@ -84,16 +84,18 @@ final class PlatformReviewImages {
 
     private static byte[] webp(byte[] in) {
         long declared = Integer.toUnsignedLong(int32le(in, 4)) + 8;
-        if (declared > in.length) throw new IndexOutOfBoundsException();
+        if (declared < 12 || declared > in.length) throw new IndexOutOfBoundsException();
         var out = new ByteArrayOutputStream(in.length);
         out.write(in, 0, 12);
         int at = 12;
-        while (at + 8 <= declared) {
+        while (at < declared) {
+            if (declared - at < 8L) throw new IndexOutOfBoundsException();
             String type = ascii(in, at, 4);
             long size = Integer.toUnsignedLong(int32le(in, at + 4));
             long padded = size + (size & 1);
-            if (at + 8 + size > declared) throw new IndexOutOfBoundsException();
-            int total = (int) Math.min(8 + padded, declared - at);
+            long remaining = declared - at - 8L;
+            if (padded > remaining) throw new IndexOutOfBoundsException();
+            int total = Math.toIntExact(8L + padded);
             if (!WEBP_METADATA.contains(type)) {
                 byte[] chunk = Arrays.copyOfRange(in, at, at + total);
                 if (type.equals("VP8X") && size >= 1) chunk[8] &= (byte) ~0x0c; // clear the EXIF and XMP flags
