@@ -30,6 +30,36 @@ is `com.lookahead.domain.DomainApiMigration`, using `SPRING_FLYWAY_URL`,
 `SPRING_FLYWAY_PASSWORD` or `LOOKAHEAD_MIGRATION_PASSWORD_FILE`. Migration scripts
 live in `db/domain`; runtime Flyway is disabled. The initial script's historical
 filename and bytes remain unchanged to preserve installed migration history.
+Java migrations are registered explicitly in `DomainApiMigration.configure`
+(currently V5, below) so Flyway never finds one twice.
+
+## Blaze catalog ID (DLV-931)
+
+The catalog whose data ID was `look-ahead` is now `blaze`: topic and course scopes
+`blaze:<courseId>`, content IDs `blaze:<courseId>:<lesson>`, topic `path` `blaze`, routes
+`/blaze/...` and content assets under `/content/blaze/`. The platform keeps its Look Ahead
+name: packages, headers, environment variables, database objects and browser storage keys
+such as `look-ahead.study-plan.v1` are unchanged.
+
+- `CatalogIds` holds the one rule set. Requests from old browsers, saved local plans and a
+  publication built before the rename are read with legacy `look-ahead` IDs mapped to
+  `blaze`: the trusted account catalog, protected-content manifest scopes and content IDs,
+  ready-made templates (after their digest is checked against the published bytes), account
+  grants, and plan create, import, activity and version bodies. Prose such as plan names,
+  goals, titles and notes is never rewritten. Retry receipts still hash the request exactly
+  as sent, so an old tab retrying the same request gets its original response.
+- `V5__blaze_catalog_id` (Java, `com.lookahead.domain.migration`) moves stored
+  `account_grants` (an account holding both forms keeps the longer-lasting grant) and
+  rewrites `plans.progress`, `plan_versions.snapshot/membership/provenance/recovery`,
+  `plan_activity.payload` and `mutation_receipts.response`. A rewritten snapshot gets its
+  `snapshot_digest` recomputed with `PlanJson`, so the stored digest still matches. Rows
+  without catalog IDs are untouched; `request_hash`, `catalogVersion` pins and the
+  append-only author review events are left as they are.
+- `BlazeCatalogMigrationDatabaseTest` runs the production Flyway configuration on the
+  disposable review fixture: V1–V4, legacy data, then V5, and checks the migrated plan through
+  `PlanService`. `CatalogIdsTest` and `LegacyCatalogPlanTest` cover the request rules.
+- The platform review page "Look Ahead Catalog" is now "Blaze Catalog"; an old tab's value
+  is accepted and stored items read with the new name.
 
 The local folder and GitHub repository are `lookahead-learning-domain-api`:
 [lookahead99ms/lookahead-learning-domain-api](https://github.com/lookahead99ms/lookahead-learning-domain-api).
@@ -351,3 +381,54 @@ role recovery; they do not certify AWS execution-role or endpoint connectivity.
 Publication explicitly pushes only the verified `linux/amd64` manifest (Docker API
 1.46 or newer). The registry receipt checks its config digest against the saved
 archive; Docker Desktop index IDs are kept separate from that config identity.
+
+## Platform reviews (DLV-928)
+
+`/api/v1/platform-reviews` (package `com.lookahead.domain.review.platform`) stores reviewer
+feedback without a database table: one JSON file per UTC day, `reviews/yyyy-MM-dd.json`,
+holds every item written that day, and images are stored under `review-images/{itemId}/`.
+`PlatformReviewObjects` is the storage boundary; implementations are the Local filesystem store and the S3 cloud candidate. A change reads the day file, applies the change and writes it back only if
+it is unchanged (serialized in-process as well), so concurrent saves keep every item. The S3
+store (DLV-929) maps the same operations to GetObject, conditional PutObject, ListObjectsV2
+and DeleteObject.
+
+| Setting | Meaning |
+| --- | --- |
+| `LOOKAHEAD_PLATFORM_REVIEW_DIRECTORY` | Local private directory for day files and images. Unconfigured storage answers 503; cloud uses separate S3 settings |
+| `LOOKAHEAD_PLATFORM_REVIEWERS` | Legacy compatibility setting; ignored by the wired runtime. No automatic reviewer migration. Current authorization uses Domain staff assignments. The owner is the author capability |
+
+Limits: 6 images per item, 5 MB each, 20 MB per item, PNG/JPEG/WebP checked by file signature,
+EXIF/XMP/IPTC/PNG-text metadata removed without re-encoding; multipart request at most 21 MB;
+100 items per reviewer per day. The container image creates
+`/var/lib/lookahead/platform-reviews` owned by the app user so a new named volume mounted
+there is writable. Tests: `PlatformReviewServiceTest`, `PlatformReviewControllerTest`.
+
+
+## Staff access and cloud profile candidates (DLV-930/933)
+
+Domain V6 owns `staff_access` and immutable `staff_access_events`; V7 owns
+`cloud_account_preferences` and `cloud_account_profile_links`. Owner-only access
+assignment APIs are `/api/v1/admin/access`, `/catalog` and `/lookup`; current
+permissions are `/api/v1/account/permissions` and additive `auth/me.permissions`.
+Roles are admin/reviewer/tester, independent of selected/full curriculum grants.
+Only the existing owner capability manages access. Testers receive full courses
+and own feedback; no admin/board access. Owner/admin triage all feedback.
+
+Pending email assignments claim only from provider-verified email on an admitted
+Cognito identity, within 14 days after save. Local signup does not verify email.
+No accounts merge by email. Cognito signup/admission automation is still a cloud
+activation follow-up. Owner-owned plan review artifacts remain owner-only.
+
+`S3PlatformReviewObjects` is a tested cloud candidate, using conditional ETags,
+expected bucket owner and SSE-KMS. Set all three cloud values together:
+`LOOKAHEAD_PLATFORM_REVIEW_BUCKET`, `LOOKAHEAD_PLATFORM_REVIEW_PREFIX` (trailing
+slash), `LOOKAHEAD_PLATFORM_REVIEW_KMS_KEY` (key ARN). The prefix/key are explicit;
+there is no Local emulator or cloud disk fallback. Runtime uses the existing
+container task credentials and regional S3 client. Infra must supply least-privilege
+S3/KMS permissions before deployment. No AWS resources have been provisioned.
+
+Cloud account preference/link routes use the current Cognito sign-in proof and
+Domain account lock, preserving Local request shapes. `CloudSignInRegistryDatabaseTest`
+checks persistence, account isolation and revocation against the documented
+disposable PostgreSQL fixture; `S3PlatformReviewObjectsTest` checks concurrent
+conditional writes with a stubbed SDK client. Neither is live AWS certification.

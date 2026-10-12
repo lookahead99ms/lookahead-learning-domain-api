@@ -3,6 +3,7 @@ package com.lookahead.learning.content.validator;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
+import com.lookahead.learning.content.util.CatalogIds;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -32,7 +33,8 @@ public final class ReadyMadeTemplateMapper {
     private record PriorSession(int day, JsonNode session) {}
 
     /** The caller must verify rawSha256 against allowlisted bytes before parsing this input. */
-    public Mapping map(JsonNode template, String rawSha256) {
+    public Mapping map(JsonNode source, String rawSha256) {
+        JsonNode template = source;
         require(rawSha256 != null && rawSha256.matches("[a-f0-9]{64}"), "Invalid raw template digest");
         fields(template, "schemaVersion templateId templateVersion pathId durationDays dailyHours availabilityUnit intensive intendedUse provenance startingKnowledge assumedPrerequisiteIds topicIds references days coverage futureReviews");
         require("study-plan-template/v1".equals(text(template, "schemaVersion", 64)), "Unsupported template schema");
@@ -56,18 +58,22 @@ public final class ReadyMadeTemplateMapper {
         require(pins.has("rankingVersion"), "Missing ranking pin");
         if (!pins.path("rankingVersion").isNull()) text(pins, "rankingVersion", 256);
         verifyTemplateVersion(template, templateVersion);
+        // DLV-931: the digest covers the published bytes; project legacy look-ahead IDs as blaze.
+        template = CatalogIds.normalize(template);
+        pins = template.path("provenance");
 
         List<String> topics = strings(template, "topicIds", 100, 256);
         require(!topics.isEmpty(), "Template has no selected scope");
         Set<String> selectedTopics = new LinkedHashSet<>(topics);
-        for (String topic : topics) require(topic.matches("(?:learn|grow|look-ahead):[a-z0-9-]+"), "Invalid course scope");
+        for (String topic : topics) require(topic.matches(CatalogIds.SCOPE_PATTERN), "Invalid course scope");
         Map<String, JsonNode> references = references(template, selectedTopics);
         Set<String> assumptions = new HashSet<>(strings(template, "assumedPrerequisiteIds", 10000, 256));
         require(references.keySet().containsAll(assumptions), "Unresolved assumed prerequisite");
         require(duration <= 14 || assumptions.isEmpty(), "Long template silently assumes omitted prerequisites");
 
         ObjectNode snapshot = mapper.createObjectNode();
-        snapshot.set("template", template.deepCopy());
+        // The embedded source stays byte-for-byte what templateVersion and templateSha256 pin.
+        snapshot.set("template", source.deepCopy());
         ObjectNode config = snapshot.putObject("config");
         config.put("days", duration).put("dailyHours", hours);
         config.set("topicIds", template.path("topicIds").deepCopy());

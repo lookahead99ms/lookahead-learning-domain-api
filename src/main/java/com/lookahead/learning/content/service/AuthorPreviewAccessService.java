@@ -15,6 +15,9 @@ import org.springframework.stereotype.Service;
 @ConditionalOnProperty(name = "app.deployment-environment", havingValue = "local")
 @ConditionalOnProperty(name = "app.local-test.author-enabled", havingValue = "true")
 public class AuthorPreviewAccessService {
+    private com.lookahead.domain.access.StaffAccessService staff;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureStaffAccess(com.lookahead.domain.access.StaffAccessService staff) { this.staff=staff; }
     private final LocalAuthorAccess authorAccess;
     private final AccountRepository accounts;
     private final SnapshotValidator catalog;
@@ -27,7 +30,7 @@ public class AuthorPreviewAccessService {
     }
 
     public void requireAccess(AccountPrincipal principal) {
-        if (!authorAccess.allowed(principal)) throw denied();
+        if (!(staff==null?authorAccess.allowed(principal):staff.permissions(principal).previewDocuments())) throw denied();
         var requiredTopics = catalog.allTopicIds();
         if (requiredTopics.isEmpty()
                 || !accounts.findTopicGrants(principal.accountId()).containsAll(requiredTopics)) {

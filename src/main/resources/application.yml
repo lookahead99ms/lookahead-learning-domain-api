@@ -14,6 +14,12 @@ spring:
       maximum-pool-size: 6
       connection-timeout: 3000
       validation-timeout: 2000
+  servlet:
+    # DLV-928 platform review uploads: 6 images of at most 5 MB, 20 MB of images per item.
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 21MB
+      file-size-threshold: 6MB
   mail:
     properties:
       mail.smtp.connectiontimeout: 3000
@@ -25,6 +31,14 @@ server:
   forward-headers-strategy: none
   shutdown: graceful
 app:
+  platform-reviews:
+    # Local volume or explicitly configured cloud S3; absent configuration answers 503.
+    directory: ${LOOKAHEAD_PLATFORM_REVIEW_DIRECTORY:}
+    bucket: ${LOOKAHEAD_PLATFORM_REVIEW_BUCKET:}
+    prefix: ${LOOKAHEAD_PLATFORM_REVIEW_PREFIX:}
+    kms-key: ${LOOKAHEAD_PLATFORM_REVIEW_KMS_KEY:}
+    # Interim reviewer list (account usernames, comma separated) until roles are managed in the admin pages.
+    reviewers: ${LOOKAHEAD_PLATFORM_REVIEWERS:}
   author-reviews:
     manifest: ${LOOKAHEAD_AUTHOR_REVIEW_MANIFEST:}
   version: "@project.version@"

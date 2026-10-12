@@ -3,6 +3,7 @@ package com.lookahead.learning.content.validator;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import com.lookahead.learning.content.util.CatalogIds;
 import com.lookahead.learning.content.util.StudyActivity;
 import java.time.Instant;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,9 +32,11 @@ public final class SnapshotValidator {
         this(mapper, readCatalog(mapper, catalogPath));
     }
 
-    public SnapshotValidator(ObjectMapper mapper, JsonNode catalog) {
+    public SnapshotValidator(ObjectMapper mapper, JsonNode source) {
         this.mapper = mapper;
-        this.catalog = catalog.deepCopy();
+        // DLV-931: a publication built before the Blaze rename still yields blaze IDs and routes.
+        JsonNode catalog = CatalogIds.normalize(source);
+        this.catalog = catalog;
         require("account-catalog/v1".equals(text(catalog, "schemaVersion", 64)), "Unsupported trusted catalog");
         require(text(catalog, "catalogVersion", 256).matches("sha256:[a-f0-9]{64}"), "Invalid catalog digest");
         for (JsonNode record : array(catalog, "records", 50000)) {
@@ -241,7 +244,7 @@ public final class SnapshotValidator {
             String id = text(topic, "id", 256);
             require(selected.contains(id), "Topic does not match selection");
             if (included) require(grants.contains(id) || records.values().stream().anyMatch(record->strings(record,"topicIds",100).contains(id) && isAccessible(record.path("id").asText(),grants)), "Topic access denied");
-            enumValue(topic, "path", Set.of("learn", "grow", "look-ahead"));
+            enumValue(topic, "path", CatalogIds.PATHS);
             text(topic, "title", 1000); text(topic, "description", 2000);
             strings(topic, "courseIds", 100); optionalStrings(topic, "contentTypes", 30);
         }

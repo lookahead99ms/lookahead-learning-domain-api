@@ -31,6 +31,18 @@ class CognitoTokenVerifierTest {
         assertThatThrownBy(()->verifier.verify(token(Map.of()))).isInstanceOf(org.springframework.security.oauth2.core.OAuth2AuthenticationException.class);
         assertThat(fixture.calls.get()).isEqualTo(2);
     }
+    @Test void invitationProofUsesProviderVerifiedEmailNotTokenClaimsOrUsername() {
+        fixture.response=request->GetUserResponse.builder().username("typed@example.invalid").userAttributes(
+            AttributeType.builder().name("sub").value("synthetic-provider-subject").build(),
+            AttributeType.builder().name("email").value("Verified@Example.invalid").build(),
+            AttributeType.builder().name("email_verified").value("true").build()).build();
+        assertThat(verifier.verify(token(Map.of("email","forged@example.invalid"))).verifiedEmail()).isEqualTo("verified@example.invalid");
+        fixture.response=request->GetUserResponse.builder().username("typed@example.invalid").userAttributes(
+            AttributeType.builder().name("sub").value("synthetic-provider-subject").build(),
+            AttributeType.builder().name("email").value("typed@example.invalid").build(),
+            AttributeType.builder().name("email_verified").value("false").build()).build();
+        assertThat(verifier.verify(token(Map.of("email_verified",true))).verifiedEmail()).isNull();
+    }
     @Test void providerOutageFailsClosedWithoutLeakingDetails(){
         fixture.response=request->{throw new IllegalStateException("synthetic secret");};
         assertThatThrownBy(()->verifier.verify(token(Map.of()))).isInstanceOf(IdentityUnavailableException.class).hasMessageNotContaining("synthetic secret");

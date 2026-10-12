@@ -18,8 +18,14 @@ public final class DomainApiMigration {
         String password = injected != null ? injected : Files.readString(Path.of(file != null ? file : "/run/secrets/spring.flyway.password")).stripTrailing();
         if (password.isBlank()) throw new IllegalStateException("Migration password is required");
         verifyMigrationRole(url, user, password);
-        Flyway.configure().dataSource(com.lookahead.domain.database.DomainDatabaseConnections.boundedDataSource(url, user, password)).defaultSchema("public").schemas("public")
-                .locations("classpath:db/domain").cleanDisabled(true).load().migrate();
+        configure(Flyway.configure().dataSource(com.lookahead.domain.database.DomainDatabaseConnections.boundedDataSource(url, user, password)))
+                .load().migrate();
+    }
+
+    /** SQL migrations live in db/domain; Java migrations are listed here so they are never found twice. */
+    public static org.flywaydb.core.api.configuration.FluentConfiguration configure(org.flywaydb.core.api.configuration.FluentConfiguration flyway) {
+        return flyway.defaultSchema("public").schemas("public").locations("classpath:db/domain")
+                .javaMigrations(new com.lookahead.domain.migration.V5__blaze_catalog_id()).cleanDisabled(true);
     }
     public static void validateMigrationTarget(String user, String url) {
         if (!LegacyStorageNames.MIGRATOR_ROLE.equals(user))

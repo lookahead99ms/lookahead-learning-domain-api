@@ -24,13 +24,29 @@ public class CloudSignInController {
         if(request.getRequestURI().endsWith("/profile"))return ApiResponse.success(registry.profile(identity,proof,null));
         return ApiResponse.success(request.getRequestURI().endsWith("/challenge")?registry.challenge(identity,proof,request.getHeader("X-LookAhead-Challenge")):registry.inventory(identity,proof));
     }
-    @PostMapping({"/admit","/replace","/cancel","/revoke","/revoke-others","/label","/logout","/profile","/password"})
-    public ApiResponse<?> mutate(@AuthenticationPrincipal CognitoIdentity identity,@RequestBody Map<String,Object> body,HttpServletRequest request,HttpServletResponse response){
+    @PostMapping({"/admit","/replace","/cancel","/revoke","/revoke-others","/label","/logout","/profile","/password","/preferences","/links"})
+    public ApiResponse<?> mutate(@AuthenticationPrincipal CognitoIdentity identity,@RequestBody(required=false) Object payload,HttpServletRequest request,HttpServletResponse response){
         response.setHeader("Cache-Control","no-store");String proof=request.getHeader(CloudDomainTokenConverter.PROOF_HEADER),challenge=request.getHeader("X-LookAhead-Challenge");
         String action=request.getRequestURI().substring(request.getRequestURI().lastIndexOf('/')+1);
+        if (!(payload instanceof Map<?,?>)) {
+            if (action.equals("preferences")) throw new AccountFailure(422,"INVALID_PREFERENCES","Choose light, dark or system.");
+            if (action.equals("links")) throw ProfileLinkPolicy.invalidShape();
+            throw invalid();
+        }
+        @SuppressWarnings("unchecked") Map<String,Object> body=(Map<String,Object>)payload;
         if(Set.of("admit","cancel","revoke-others","logout").contains(action)&&!body.isEmpty())throw invalid();
         return switch(action){
             case "profile" -> {if(!body.keySet().equals(Set.of("displayName"))||!(body.get("displayName") instanceof String name))throw invalid();yield ApiResponse.success(registry.profile(identity,proof,name));}
+            case "preferences" -> {
+                if(!body.keySet().equals(Set.of("theme"))||!(body.get("theme") instanceof String theme))throw new AccountFailure(422,"INVALID_PREFERENCES","Choose light, dark or system.");
+                yield ApiResponse.success(registry.preferences(identity,proof,theme));
+            }
+            case "links" -> {
+                if(!body.keySet().equals(Set.copyOf(ProfileLinkPolicy.KINDS)))throw ProfileLinkPolicy.invalidShape();
+                var links=new java.util.LinkedHashMap<String,String>();
+                for(String kind:ProfileLinkPolicy.KINDS){Object value=body.get(kind);if(value!=null&&!(value instanceof String))throw ProfileLinkPolicy.invalidShape();links.put(kind,(String)value);}
+                yield ApiResponse.success(registry.links(identity,proof,links));
+            }
             case "password" -> {
                 if(!body.keySet().equals(Set.of("currentPassword","newPassword","confirmPassword"))||!(body.get("currentPassword") instanceof String old)||!(body.get("newPassword") instanceof String next)||!next.equals(body.get("confirmPassword")))throw invalid();
                 if(old.isEmpty()||old.length()>128||next.codePointCount(0,next.length())<15||next.codePointCount(0,next.length())>128)throw new AccountFailure(422,"INVALID_PASSWORD","Use a password with 15 to 128 characters.");

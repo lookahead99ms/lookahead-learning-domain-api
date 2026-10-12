@@ -6,6 +6,7 @@ import com.lookahead.learning.content.repository.PlanRepository;
 import com.lookahead.learning.content.model.PlanRecord;
 import com.lookahead.learning.content.model.PlanVersion;
 import com.lookahead.learning.content.model.MutationReceipt;
+import com.lookahead.learning.content.util.CatalogIds;
 import com.lookahead.learning.content.util.PlanJson;
 import com.lookahead.learning.content.util.PlanCardMetadata;
 import com.lookahead.learning.content.util.StudyActivity;
@@ -79,11 +80,13 @@ public class PlanService {
     }
 
     @Transactional
-    public Mutation create(UUID account, UUID key, JsonNode body, boolean imported) {
-        fields(body, imported ? "sourceSchemaVersion localSnapshot provenance" : "goal snapshot provenance name");
+    public Mutation create(UUID account, UUID key, JsonNode raw, boolean imported) {
+        fields(raw, imported ? "sourceSchemaVersion localSnapshot provenance" : "goal snapshot provenance name");
         String operation = imported ? "import" : "create";
-        Mutation repeat = replay(account, key, operation, body);
+        // Retry receipts hash the request exactly as sent; everything after works on blaze IDs.
+        Mutation repeat = replay(account, key, operation, raw);
         if (repeat != null) return repeat;
+        JsonNode body = CatalogIds.normalize(raw);
         JsonNode local = body.path("localSnapshot");
         if (imported) require("study-plan-local/v1".equals(text(body, "sourceSchemaVersion", 64)), "Unsupported import source");
         JsonNode snapshot = imported ? local.path("snapshot") : body.path("snapshot");
@@ -104,7 +107,7 @@ public class PlanService {
         repository.createPlan(account, id, versionId, goal, progress, name, planNumber);
         insertVersion(account, id, versionId, null, snapshot, validated.provenance(), recovery, imported ? "import" : "create", mapper.valueToTree(validated.assignmentContentIds()));
         if (imported) event(account, id, versionId, 1, "legacyImport", progress);
-        return receipt(account, key, operation, body, id, 201, view(account, plan(account, id, false), version(account, id, versionId)));
+        return receipt(account, key, operation, raw, id, 201, view(account, plan(account, id, false), version(account, id, versionId)));
     }
 
     static String defaultPlanName(long number, JsonNode snapshot) {
@@ -134,10 +137,12 @@ public class PlanService {
     }
 
     @Transactional
-    public Mutation activity(UUID account, UUID id, UUID key, JsonNode body) {
-        fields(body, "expectedRevision versionId operations studyDay");
-        Mutation repeat = replay(account, key, "activity:" + id, body);
+    public Mutation activity(UUID account, UUID id, UUID key, JsonNode raw) {
+        fields(raw, "expectedRevision versionId operations studyDay");
+        Mutation repeat = replay(account, key, "activity:" + id, raw);
         if (repeat != null) return repeat;
+        // An old tab may still send look-ahead session and content IDs; saved plans hold blaze IDs.
+        JsonNode body = CatalogIds.normalize(raw);
         PlanRecord plan = plan(account, id, true);
         expect(plan, body);
         require(plan.version().equals(uuid(text(body, "versionId", 100))), "Activity targets an inactive version");
@@ -215,14 +220,15 @@ public class PlanService {
             event(account, id, plan.version(), revision, type, op);
         }
         repository.updateProgress(account, id, progress, revision);
-        return receipt(account, key, "activity:" + id, body, id, 200, view(account, plan(account, id, false), version));
+        return receipt(account, key, "activity:" + id, raw, id, 200, view(account, plan(account, id, false), version));
     }
 
     @Transactional
-    public Mutation saveVersion(UUID account, UUID id, UUID key, JsonNode body) {
-        fields(body, "expectedRevision goal snapshot provenance reason recovery");
-        Mutation repeat = replay(account, key, "version:" + id, body);
+    public Mutation saveVersion(UUID account, UUID id, UUID key, JsonNode raw) {
+        fields(raw, "expectedRevision goal snapshot provenance reason recovery");
+        Mutation repeat = replay(account, key, "version:" + id, raw);
         if (repeat != null) return repeat;
+        JsonNode body = CatalogIds.normalize(raw);
         PlanRecord plan = plan(account, id, true); expect(plan, body);
         PlanVersion prior = version(account, id, plan.version());
         JsonNode snapshot = body.path("snapshot"), recovery = body.path("recovery");
@@ -237,7 +243,7 @@ public class PlanService {
         insertVersion(account, id, next, plan.version(), snapshot, validated.provenance(), recovery, reason, mapper.valueToTree(validated.assignmentContentIds()));
         repository.activateVersion(account, id, next, revision, goal);
         event(account, id, next, revision, reason, recovery);
-        return receipt(account, key, "version:" + id, body, id, 201, view(account, plan(account, id, false), version(account, id, next)));
+        return receipt(account, key, "version:" + id, raw, id, 201, view(account, plan(account, id, false), version(account, id, next)));
     }
 
     private void validateRecovery(PlanVersion prior, JsonNode next, JsonNode pins, JsonNode recovery, String reason) {

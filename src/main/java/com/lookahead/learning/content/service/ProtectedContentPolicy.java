@@ -1,6 +1,7 @@
 package com.lookahead.learning.content.service;
 
 import com.lookahead.learning.content.exception.AccountFailure;
+import com.lookahead.learning.content.util.CatalogIds;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
@@ -15,7 +16,8 @@ import java.util.*;
 @Profile("accounts")
 public class ProtectedContentPolicy {
     public record Asset(String path,String sha256,String mediaType,String tier,Set<String> scopes,Set<String> contentIds,String scopeMatch) {
-        public boolean matchesScopes(Set<String> courseGrants) {
+        public boolean matchesScopes(Set<String> grants) {
+            Set<String> courseGrants = CatalogIds.normalize(grants);
             return scopeMatch.equals("all") ? courseGrants.containsAll(scopes) : scopes.stream().anyMatch(courseGrants::contains);
         }
     }
@@ -43,13 +45,14 @@ public class ProtectedContentPolicy {
             for(var item:data.path("assets")) {
                 String path=item.path("path").asText(),sha=item.path("sha256").asText(),type=item.path("mediaType").asText(),tier=item.path("tier").asText();
                 if(!validPath(path) || !sha.matches("[a-f0-9]{64}") || !Set.of("public","free","pro").contains(tier) || !Set.of("application/json","text/html","text/css","text/javascript","image/svg+xml","image/png","image/jpeg","image/webp","font/woff2").contains(type))throw new IllegalArgumentException("Invalid asset entry");
-                Set<String> scopes=strings(item.path("scopes")),ids=strings(item.path("contentIds"));
+                // DLV-931: a manifest built before the Blaze rename still grants blaze scopes and IDs.
+                Set<String> scopes=Set.copyOf(CatalogIds.normalize(strings(item.path("scopes")))),ids=Set.copyOf(CatalogIds.normalize(strings(item.path("contentIds"))));
                 String scopeMatch="any";
                 if(item.has("scopeMatch")) {
                     if(!item.path("scopeMatch").isString() || !Set.of("any","all").contains(item.path("scopeMatch").asText()))throw new IllegalArgumentException("Invalid scope matching rule");
                     scopeMatch=item.path("scopeMatch").asText();
                 }
-                if(scopes.stream().anyMatch(scope->!scope.matches("(?:learn|grow|look-ahead):[a-z0-9-]+")) || (tier.equals("pro") && scopes.isEmpty()))throw new IllegalArgumentException("Invalid course scope");
+                if(scopes.stream().anyMatch(scope->!scope.matches(CatalogIds.SCOPE_PATTERN)) || (tier.equals("pro") && scopes.isEmpty()))throw new IllegalArgumentException("Invalid course scope");
                 if(path.startsWith("/content/study-plans/") && !ids.isEmpty())throw new IllegalArgumentException("Study plan assets cannot grant curriculum access");
                 if(entries.putIfAbsent(path,new Asset(path,sha,type,tier,scopes,ids,scopeMatch))!=null)throw new IllegalArgumentException("Duplicate asset path");
                 if(!tier.equals("pro"))free.addAll(ids);
@@ -64,7 +67,8 @@ public class ProtectedContentPolicy {
     public static boolean validPath(String path){return path.length()<=600 && path.matches("/content/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.(?:json|html|css|js|svg|png|jpg|jpeg|webp|woff2)");}
     public String version(){return version;}
     public Set<String> freeContentIds(){return freeContentIds;}
-    public Set<String> contentGrants(Set<String> courseGrants) {
+    public Set<String> contentGrants(Set<String> grants) {
+        Set<String> courseGrants=CatalogIds.normalize(grants);
         var result=new HashSet<>(freeContentIds);
         for(var asset:assets.values()) if(asset.matchesScopes(courseGrants)) result.addAll(asset.contentIds());
         return Set.copyOf(result);

@@ -123,6 +123,11 @@ class AuthorPreviewAccessControllerTest {
     @Import({DomainSecurityConfiguration.class, AuthorPreviewAccessController.class,
             AuthorPreviewAccessService.class, LocalAuthorAccess.class, AccountErrorHandler.class})
     static class TestApplication {
+        @Bean com.lookahead.domain.access.StaffAccessService staff(LocalAuthorAccess owner) {
+            var access=mock(com.lookahead.domain.access.StaffAccessService.class);
+            when(access.permissions(any())).thenAnswer(call -> com.lookahead.domain.access.StaffPermissions.forRoles(owner.allowed(call.getArgument(0)), Set.of()));
+            return access;
+        }
         @Bean AccountRepository accounts() {
             return mock(AccountRepository.class, withSettings().mockMaker(MockMakers.SUBCLASS));
         }
