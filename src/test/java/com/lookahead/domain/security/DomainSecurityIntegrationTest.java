@@ -118,6 +118,17 @@ class DomainSecurityIntegrationTest {
         http.perform(get(route).header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
         http.perform(put(route+"/"+SUBJECT+"/triage").header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
     }
+    @Test void staffAccessRequiresBearerAndAccountScopeWithoutBrowserSession() throws Exception {
+        for (String route : List.of("/api/v1/admin/access", "/api/v1/admin/access/lookup", "/api/v1/account/permissions")) {
+            http.perform(get(route).cookie(new jakarta.servlet.http.Cookie("JSESSIONID", "forged")))
+                    .andExpect(status().isUnauthorized());
+            http.perform(post(route).cookie(new jakarta.servlet.http.Cookie("JSESSIONID", "forged")))
+                    .andExpect(status().isUnauthorized());
+            when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
+            http.perform(post(route).header("Authorization", "Bearer synthetic-token"))
+                    .andExpect(status().isForbidden());
+        }
+    }
     private static Jwt token(String client, String scope) {
         return Jwt.withTokenValue("synthetic-token").header("alg", "RS256").subject(SUBJECT).issuer("http://127.0.0.1:4380")
                 .audience(List.of("lookahead-api")).claim("client_id", client).claim("scope", scope)
