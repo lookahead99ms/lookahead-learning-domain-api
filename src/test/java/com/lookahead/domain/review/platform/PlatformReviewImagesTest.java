@@ -20,7 +20,7 @@ class PlatformReviewImagesTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
     @Test void rejectsShortRiffAndPartialChunkHeader() {
-        for(int declared : new int[]{0,3,5,11}) {
+        for(int declared : new int[]{0,3,5,11,Integer.MAX_VALUE,Integer.MIN_VALUE,-1}) {
             assertThatThrownBy(()->PlatformReviewImages.clean("image/webp",riff(declared,0,0)))
                     .isInstanceOf(IllegalArgumentException.class);
         }

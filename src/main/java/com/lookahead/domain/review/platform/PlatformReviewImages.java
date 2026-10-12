@@ -85,15 +85,17 @@ final class PlatformReviewImages {
     private static byte[] webp(byte[] in) {
         long declared = Integer.toUnsignedLong(int32le(in, 4)) + 8;
         if (declared < 12 || declared > in.length) throw new IndexOutOfBoundsException();
+        // The validated RIFF boundary fits this Java array and therefore an int.
+        int end = Math.toIntExact(declared);
         var out = new ByteArrayOutputStream(in.length);
         out.write(in, 0, 12);
         int at = 12;
-        while (at < declared) {
-            if (declared - at < 8L) throw new IndexOutOfBoundsException();
+        while (at < end) {
+            if (end - at < 8) throw new IndexOutOfBoundsException();
             String type = ascii(in, at, 4);
             long size = Integer.toUnsignedLong(int32le(in, at + 4));
             long padded = size + (size & 1);
-            long remaining = declared - at - 8L;
+            long remaining = (long) end - at - 8L;
             if (padded > remaining) throw new IndexOutOfBoundsException();
             int total = Math.toIntExact(8L + padded);
             if (!WEBP_METADATA.contains(type)) {
