@@ -90,6 +90,12 @@ class DomainSecurityIntegrationTest {
                 .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("code").value("ACCOUNT_STORAGE_UNAVAILABLE"))
                 .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("private database"))));
     }
+    @Test void accountReadRejectsCookiesAndBrowserSuppliedIdentityWithoutBearer() throws Exception {
+        http.perform(get("/api/v1/auth/me").cookie(new jakarta.servlet.http.Cookie("JSESSIONID", "forged"))
+                .header("Origin", "https://attacker.invalid").param("verifiedEmail", "invited@example.invalid"))
+                .andExpect(status().isUnauthorized());
+        verifyNoInteractions(identity, accounts, decoder);
+    }
     @Test void tokenScopeAndDenyByDefaultAreEnforced() throws Exception {
         when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
         http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token")).andExpect(status().isForbidden());
@@ -109,6 +115,25 @@ class DomainSecurityIntegrationTest {
         when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
         http.perform(get(route).header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
         http.perform(delete("/api/v1/author/review-artifacts/study-plan-review/events").header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
+    }
+    @Test void platformReviewsRequireBearerAndAccountScope() throws Exception {
+        String route="/api/v1/platform-reviews";
+        http.perform(get(route)).andExpect(status().isUnauthorized());
+        http.perform(get(route+"/me").cookie(new jakarta.servlet.http.Cookie("JSESSIONID","forged"))).andExpect(status().isUnauthorized());
+        when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
+        http.perform(get(route).header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
+        http.perform(put(route+"/"+SUBJECT+"/triage").header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
+    }
+    @Test void staffAccessRequiresBearerAndAccountScopeWithoutBrowserSession() throws Exception {
+        for (String route : List.of("/api/v1/admin/access", "/api/v1/admin/access/lookup", "/api/v1/account/permissions")) {
+            http.perform(get(route).cookie(new jakarta.servlet.http.Cookie("JSESSIONID", "forged")))
+                    .andExpect(status().isUnauthorized());
+            http.perform(post(route).cookie(new jakarta.servlet.http.Cookie("JSESSIONID", "forged")))
+                    .andExpect(status().isUnauthorized());
+            when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
+            http.perform(post(route).header("Authorization", "Bearer synthetic-token"))
+                    .andExpect(status().isForbidden());
+        }
     }
     private static Jwt token(String client, String scope) {
         return Jwt.withTokenValue("synthetic-token").header("alg", "RS256").subject(SUBJECT).issuer("http://127.0.0.1:4380")

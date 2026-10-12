@@ -74,10 +74,12 @@ public final class ReadyMadeAdoptionPreparation {
         JsonNode template;
         try {
             // The production loader validates actual bytes, path boundaries and symlinks on every preparation.
-            template = mapper.readTree(publication.read(asset));
-            if (!templateId.equals(template.path("templateId").asText())) throw unavailable();
+            JsonNode source = mapper.readTree(publication.read(asset));
+            if (!templateId.equals(source.path("templateId").asText())) throw unavailable();
+            // DLV-931: the mapper verifies the published bytes; catalog checks use blaze IDs.
+            template = com.lookahead.learning.content.util.CatalogIds.normalize(source);
             catalog.validateTemplateReferences(template);
-            mapping = templates.map(template, asset.sha256());
+            mapping = templates.map(source, asset.sha256());
             if (!mapping.topicIds().equals(asset.scopes())) throw unavailable();
         } catch (AccountFailure failure) {
             throw failure;

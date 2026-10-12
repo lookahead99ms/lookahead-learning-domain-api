@@ -38,7 +38,10 @@ class PublicJsonContractTest {
         JsonNode expected = mapper.readTree("""
                 {"data":{"accountId":"12345678-1234-4234-8234-123456789abc",
                 "username":"synthetic-learner","displayName":"Synthetic Learner",
-                "topicGrants":["learn:java"],"contentGrants":["lesson-one"],"authorPreview":false},
+                "topicGrants":["learn:java"],"contentGrants":["lesson-one"],"authorPreview":false,
+                "permissions":{"manageAccess":false,"previewDocuments":false,"deliveryRead":false,
+                "deliveryCreate":false,"deliveryReview":false,"deliveryDone":false,"triageFeedback":false,
+                "fullCurriculum":false,"feedbackRole":"user"}},
                 "timestamp":"2026-01-02T03:04:05Z"}
                 """);
         assertThat(actual).isEqualTo(expected);

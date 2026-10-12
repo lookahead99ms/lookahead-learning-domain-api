@@ -127,6 +127,27 @@ class ProtectedContentServiceTest {
             denied(()->service.read("/content/legacy.json",learner),403,"CONTENT_SCOPE_REQUIRED");
         }
     }
+    @Test void legacyLookAheadScopesAndGrantsAreReadAsBlaze() throws Exception {
+        // DLV-931: a manifest or a stored grant from before the rename keeps working, under blaze IDs only.
+        var legacy=asset("/content/blaze/system-design/lesson.json","pro",List.of("look-ahead:system-design:caching"));
+        legacy.put("scopes",List.of("look-ahead:system-design"));
+        var policy=policy(List.of(legacy));
+        var asset=policy.find("/content/blaze/system-design/lesson.json").orElseThrow();
+        assertThat(asset.scopes()).containsExactly("blaze:system-design");
+        assertThat(asset.contentIds()).containsExactly("blaze:system-design:caching");
+        assertThat(policy.contentGrants(Set.of("blaze:system-design"))).containsExactly("blaze:system-design:caching");
+        assertThat(policy.contentGrants(Set.of("look-ahead:system-design"))).containsExactly("blaze:system-design:caching");
+        var service=new ProtectedContentService(policy,accounts);
+        when(accounts.isEnabled(learner.accountId())).thenReturn(true);
+        for(String grant:List.of("blaze:system-design","look-ahead:system-design")) {
+            when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of(grant));
+            assertThat(service.read("/content/blaze/system-design/lesson.json",learner).bytes()).isNotEmpty();
+        }
+        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("blaze:other-course"));
+        denied(()->service.read("/content/blaze/system-design/lesson.json",learner),403,"CONTENT_SCOPE_REQUIRED");
+        var invalid=asset("/content/blaze/x.json","pro",List.of());invalid.put("scopes",List.of("look-ahead"));
+        assertThatThrownBy(()->policy(List.of(invalid))).isInstanceOf(IllegalStateException.class);
+    }
     @Test void contentGrantsNeverUnlockAllScopeBundleFromOneCourseAndReevaluateRevocation() throws Exception {
         var all=asset("/content/bundle.json","pro",List.of("bundle-first","bundle-second"));all.put("scopeMatch","all");
         var any=asset("/content/legacy.json","pro",List.of("legacy-lesson"));

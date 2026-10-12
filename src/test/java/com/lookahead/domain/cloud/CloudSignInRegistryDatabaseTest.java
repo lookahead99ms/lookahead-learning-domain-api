@@ -25,6 +25,7 @@ class CloudSignInRegistryDatabaseTest {
         source=new DriverManagerDataSource(url+"?currentSchema="+schema,"postgres",password);jdbc=new JdbcTemplate(source);
         jdbc.execute("GRANT USAGE ON SCHEMA "+schema+" TO lookahead_platform_app");
         jdbc.execute("CREATE TABLE platform_subjects(id uuid PRIMARY KEY)");jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V4__cloud_identity_and_sign_ins.sql")));
+        jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V7__cloud_account_preferences.sql")));
         registry=service();
     }
     CloudSignInRegistry service(){return new CloudSignInRegistry(jdbc,new DataSourceTransactionManager(source));}
@@ -32,6 +33,27 @@ class CloudSignInRegistryDatabaseTest {
     CognitoIdentity identity(String subject){return new CognitoIdentity(issuer,subject,UUID.randomUUID().toString(),"same@example.invalid","Learner",Instant.now());}
     UUID provision(CognitoIdentity identity){UUID id=UUID.randomUUID();jdbc.update("INSERT INTO platform_subjects VALUES(?)",id);jdbc.update("INSERT INTO cloud_accounts(account_id,issuer,subject,admitted,username,display_name) VALUES(?,?,?,true,?,?)",id,identity.issuer(),identity.subject(),identity.username(),identity.displayName());return id;}
     String proof(){return Base64.getUrlEncoder().withoutPadding().encodeToString(UUID.randomUUID().toString().substring(0,32).getBytes(java.nio.charset.StandardCharsets.UTF_8));}
+    @Test void preferencesAndLinksPersistAcrossInstancesAndRemainAccountBound() {
+        var a=identity("profile-preferences");var b=identity("other-profile-preferences");provision(a);provision(b);
+        String ap=proof(),bp=proof();registry.admit(a,ap);registry.admit(b,bp);
+        assertThat(registry.profile(a,ap,null).get("themePreference")).isEqualTo("system");
+        assertThat(registry.preferences(a,ap,"dark").get("themePreference")).isEqualTo("dark");
+        var links=new LinkedHashMap<String,String>();
+        links.put("github","https://github.com/synthetic-learner");links.put("linkedin",null);links.put("x",null);links.put("website","https://example.org/about");
+        assertThat(registry.links(a,ap,links).get("links")).isEqualTo(links);
+        assertThat(service().profile(a,ap,null).get("links")).isEqualTo(links);
+        assertThat(service().profile(a,ap,"Changed name").get("themePreference")).isEqualTo("dark");
+        assertThat(registry.profile(b,bp,null).get("themePreference")).isEqualTo("system");
+        assertThat(registry.profile(b,bp,null).get("links")).isNotEqualTo(links);
+        assertThatThrownBy(()->registry.preferences(a,bp,"light")).isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(()->registry.preferences(a,ap,"unknown")).isInstanceOf(RuntimeException.class);
+        var invalid=new LinkedHashMap<>(links);invalid.put("github","https://github.com.evil.invalid/account");
+        assertThatThrownBy(()->registry.links(a,ap,invalid)).isInstanceOf(RuntimeException.class);
+        assertThat(service().profile(a,ap,null).get("links")).isEqualTo(links);
+        registry.terminate(a,ap);
+        assertThatThrownBy(()->registry.links(a,ap,links)).isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(()->registry.preferences(a,ap,"light")).isInstanceOf(RuntimeException.class);
+    }
     @Test void mapsByIssuerSubjectNotEmailAndRequiresAdmission(){
         var a=identity("first");var b=identity("second");var aid=provision(a);var bid=provision(b);String ap=proof(),bp=proof();
         registry.admit(a,ap);registry.admit(b,bp);

@@ -58,6 +58,8 @@ public class DomainSecurityConfiguration {
                         .requestMatchers(HttpMethod.GET, "/api/v1/author/review-artifacts", "/api/v1/author/review-artifacts/*/events").hasAuthority("SCOPE_account")
                         .requestMatchers(HttpMethod.POST, "/api/v1/author/review-artifacts/*/events").hasAuthority("SCOPE_account")
                         .requestMatchers("/api/v1/support").hasAuthority("SCOPE_support")
+                        .requestMatchers("/api/v1/admin/access", "/api/v1/admin/access/**", "/api/v1/account/permissions").hasAuthority("SCOPE_account")
+                        .requestMatchers("/api/v1/platform-reviews", "/api/v1/platform-reviews/**").hasAuthority("SCOPE_account")
                         .requestMatchers("/api/v1/auth/me", "/api/v1/account-catalog", "/api/v1/author/previews/access", "/api/v1/plans", "/api/v1/plans/**").hasAuthority("SCOPE_account")
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resource -> resource.jwt(jwt -> jwt.decoder(decoder)

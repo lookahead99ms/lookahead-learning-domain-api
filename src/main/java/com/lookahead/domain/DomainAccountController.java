@@ -16,14 +16,19 @@ public class DomainAccountController {
     private final AccountRepository accounts;
     private final ProtectedContentPolicy publication;
     private final LocalAuthorAccess author;
+    private com.lookahead.domain.access.StaffAccessService access;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureStaffAccess(com.lookahead.domain.access.StaffAccessService access){this.access=access;}
     public DomainAccountController(AccountRepository accounts, ProtectedContentPolicy publication, LocalAuthorAccess author) {
         this.accounts = accounts; this.publication = publication; this.author = author;
     }
     @GetMapping("/api/v1/auth/me")
     public ApiResponse<AccountView> me(@AuthenticationPrincipal AccountPrincipal principal, HttpServletResponse response) {
         response.setHeader("Cache-Control", "no-store");
+        if(access!=null)access.claimVerified(principal,principal.verifiedEmail());
         var grants = accounts.findTopicGrants(principal.accountId());
         return ApiResponse.success(new AccountView(principal.accountId(), principal.getUsername(), principal.displayName(),
-                grants, publication.contentGrants(grants), author.allowed(principal)));
+                grants, publication.contentGrants(grants), author.allowed(principal),
+                access==null?com.lookahead.domain.access.StaffPermissions.forRoles(author.allowed(principal),java.util.Set.of()):access.permissions(principal)));
     }
 }

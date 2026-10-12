@@ -58,7 +58,7 @@ public final class CloudSignInRegistry {
         });
     }
     public AccountPrincipal authenticate(CognitoIdentity identity,String proof) {
-        return locked(identity,account->{current(account,identity,proof,true);return new AccountPrincipal(account.id,account.username,account.name,true,account.author);});
+        return locked(identity,account->{current(account,identity,proof,true);return new AccountPrincipal(account.id,account.username,account.name,true,account.author,identity.verifiedEmail());});
     }
     public Inventory inventory(CognitoIdentity identity,String proof){return locked(identity,a->{SignIn current=current(a,identity,proof,true);return new Inventory(2,entries(a.id,current.id));});}
     public ChallengeView challenge(CognitoIdentity identity,String proof,String token){return locked(identity,a->{Challenge c=challenge(a,identity,proof,token);expire(a.id,now());return new ChallengeView(2,entries(a.id,null),c.expires);});}
@@ -87,8 +87,36 @@ public final class CloudSignInRegistry {
     public Map<String,Object> profile(CognitoIdentity identity,String proof,String displayName){return locked(identity,a->{
         current(a,identity,proof,true);String name=a.name;
         if(displayName!=null){name=displayName.strip();if(name.isEmpty()||name.codePointCount(0,name.length())>160||name.codePoints().anyMatch(c->Character.isISOControl(c)||c>=0xD800&&c<=0xDFFF))throw failure(422,"INVALID_PROFILE");jdbc.update("UPDATE cloud_accounts SET display_name=? WHERE account_id=?",name,a.id);}
-        return Map.of("accountId",a.id,"username",a.username,"displayName",name,"signInMethod","cognito");
+        return profileView(a,name);
     });}
+    /** The existing account lock and current sign-in proof also protect preference writes. */
+    public Map<String,Object> preferences(CognitoIdentity identity,String proof,String theme) {
+        if(theme==null||!Set.of("light","dark","system").contains(theme))throw failure(422,"INVALID_PREFERENCES");
+        return locked(identity,a->{
+            current(a,identity,proof,true);
+            jdbc.update("INSERT INTO cloud_account_preferences(account_id,theme) VALUES(?,?) ON CONFLICT(account_id) DO UPDATE SET theme=EXCLUDED.theme,updated_at=clock_timestamp()",a.id,theme);
+            return profileView(a,a.name);
+        });
+    }
+    public Map<String,Object> links(CognitoIdentity identity,String proof,Map<String,String> links) {
+        if(links==null||!links.keySet().equals(Set.copyOf(ProfileLinkPolicy.KINDS)))throw ProfileLinkPolicy.invalidShape();
+        var values=new java.util.LinkedHashMap<String,String>();
+        for(String kind:ProfileLinkPolicy.KINDS)values.put(kind,ProfileLinkPolicy.validate(kind,links.get(kind)));
+        return locked(identity,a->{
+            current(a,identity,proof,true);
+            jdbc.update("DELETE FROM cloud_account_profile_links WHERE account_id=?",a.id);
+            values.forEach((kind,url)->{if(url!=null)jdbc.update("INSERT INTO cloud_account_profile_links(account_id,kind,url) VALUES(?,?,?)",a.id,kind,url);});
+            return profileView(a,a.name);
+        });
+    }
+    private Map<String,Object> profileView(Account account,String name) {
+        var theme=jdbc.query("SELECT theme FROM cloud_account_preferences WHERE account_id=?",(row,index)->row.getString(1),account.id);
+        var links=new java.util.LinkedHashMap<String,String>();
+        for(String kind:ProfileLinkPolicy.KINDS)links.put(kind,null);
+        jdbc.query("SELECT kind,url FROM cloud_account_profile_links WHERE account_id=?",(org.springframework.jdbc.core.RowCallbackHandler) row->links.put(row.getString(1),row.getString(2)),account.id);
+        return Map.of("accountId",account.id,"username",account.username,"displayName",name,"signInMethod","cognito",
+                "themePreference",theme.isEmpty()?"system":theme.getFirst(),"links",links);
+    }
     public void changeCredentials(CognitoIdentity identity,String proof,Runnable providerChange){
         // Commit a fail-closed intent before crossing the provider/database boundary.
         // A process crash or failed completion commit leaves all account access blocked.

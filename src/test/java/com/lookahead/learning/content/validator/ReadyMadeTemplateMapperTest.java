@@ -134,6 +134,35 @@ class ReadyMadeTemplateMapperTest {
         rejects(source -> ((ObjectNode) source.path("references").get(0)).putArray("route").add("https://example.invalid"));
     }
 
+    @Test void legacyLookAheadTemplateIdsAreVerifiedAsPublishedAndProjectedAsBlaze() throws Exception {
+        // A template published before DLV-931 still verifies against its own digest, then maps to blaze IDs.
+        var legacy = catalogTemplate("look-ahead");
+        var current = catalogTemplate("blaze");
+        var mapped = mapper.map(legacy, rawHash);
+        assertEquals(legacy, mapped.snapshot().path("template"));
+        assertEquals(java.util.Set.of("blaze:sample-api", "blaze:sample-data"), mapped.topicIds());
+        var snapshot = mapped.snapshot();
+        assertEquals("blaze", snapshot.path("includedTopics").get(0).path("path").asText());
+        var assignment = snapshot.path("days").get(0).path("assignments").get(0);
+        assertTrue(assignment.path("topicId").asText().startsWith("blaze:"));
+        assertTrue(assignment.path("sourceContentId").asText().startsWith("blaze:"));
+        assertEquals("blaze", assignment.path("route").get(1).asText());
+        assertFalse(com.lookahead.learning.content.util.CatalogIds.containsLegacy(((ObjectNode) snapshot.deepCopy()).without("template")));
+        var native_ = mapper.map(current, rawHash).snapshot();
+        assertEquals(((ObjectNode) native_.deepCopy()).without("template"), ((ObjectNode) snapshot.deepCopy()).without("template"));
+        assertEquals(mapper.map(current, rawHash).assignmentContentIds(), mapped.assignmentContentIds());
+    }
+
+    private ObjectNode catalogTemplate(String catalog) throws Exception {
+        var source = (ObjectNode) json.readTree(json.writeValueAsString(fixture())
+                .replace("\"grow:", "\"" + catalog + ":").replace("\"grow\"", "\"" + catalog + "\""));
+        source.remove("templateVersion");
+        String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest((json.writeValueAsString(sorted(source)) + "\n").getBytes(StandardCharsets.UTF_8)));
+        source.put("templateVersion", "sha256:" + digest);
+        return source;
+    }
+
     private ObjectNode session(ObjectNode source, int day, int index) {
         return (ObjectNode) source.path("days").get(day).path("sessions").get(index);
     }

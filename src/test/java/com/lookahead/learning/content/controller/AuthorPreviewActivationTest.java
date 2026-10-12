@@ -16,6 +16,7 @@ import static org.mockito.Mockito.withSettings;
 class AuthorPreviewActivationTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withUserConfiguration(AuthorPreviewAccessController.class, AuthorPreviewAccessService.class)
+            .withBean(com.lookahead.domain.access.StaffAccessService.class, () -> mock(com.lookahead.domain.access.StaffAccessService.class))
             .withBean(LocalAuthorAccess.class, () -> new LocalAuthorAccess(new MockEnvironment()))
             .withBean(AccountRepository.class, () -> mock(AccountRepository.class,
                     withSettings().mockMaker(MockMakers.SUBCLASS)))

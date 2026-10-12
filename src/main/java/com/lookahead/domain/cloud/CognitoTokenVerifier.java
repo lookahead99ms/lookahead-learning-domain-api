@@ -41,7 +41,12 @@ public final class CognitoTokenVerifier {
             String username=bounded(user.username(),320);
             String display=attributes.getOrDefault("name",username);
             if(display.length()>160)display=username.substring(0,Math.min(username.length(),160));
-            return new CognitoIdentity(settings.issuer(),subject,family,username,display,auth);
+            String verifiedEmail=null;
+            if("true".equals(attributes.get("email_verified")) && attributes.get("email")!=null) {
+                try {verifiedEmail=com.lookahead.domain.access.StaffAccessService.normalizeEmail(attributes.get("email"));}
+                catch(com.lookahead.learning.content.exception.AccountFailure invalidEmail){throw invalid();}
+            }
+            return new CognitoIdentity(settings.issuer(),subject,family,username,display,auth,verifiedEmail);
         } catch(NotAuthorizedException|UserNotFoundException rejected){throw invalid();}
         catch(OAuth2AuthenticationException rejected){throw rejected;}
         catch(RuntimeException unavailable){throw new IdentityUnavailableException();}

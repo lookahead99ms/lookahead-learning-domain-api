@@ -4,10 +4,10 @@
     {
       "ruleId": "java/spring-disabled-csrf-protection",
       "file": "src/main/java/com/lookahead/domain/security/DomainSecurityConfiguration.java",
-      "sourceSha256": "4d19e10c1694ea462fea207c219df75ddbe1e9efa7963d4629414062c9af3004",
+      "sourceSha256": "10a6cd9af8b90d27b8a1e424cbc978550ce2d7edd732ffd56a0b50a0082fd5b4",
       "expiresAt": "2026-10-19",
       "ticket": "DLV-804",
-      "rationale": "This stateless OAuth2 resource server accepts Authorization bearer tokens and no browser session cookie; browsers do not attach bearer tokens automatically, so CSRF is not the applicable control."
+      "rationale": "This stateless OAuth2 resource server accepts Authorization bearer tokens and no browser session cookie; browsers do not attach bearer tokens automatically, so CSRF is not the applicable control. Re-reviewed 2026-10-12: The added staff and review routes require SCOPE_account; the stateless bearer chain remains unchanged, with no browser cookie authentication. Role checks remain service-owned. Fresh hosted CodeQL analysis remains required."
     },
     {
       "ruleId": "java/spring-disabled-csrf-protection",
@@ -16,6 +16,14 @@
       "expiresAt": "2026-10-19",
       "ticket": "DLV-918",
       "rationale": "DEV/PROD internal Gateway admission is a stateless server-to-server bearer resource chain; it accepts no session-cookie, HTTP Basic or form authentication. Every admission requires a decoded and Cognito-verified access token plus a constant-time comparison with the server-configured Gateway secret. Browser session CSRF remains enforced by Gateway. CloudAdmissionSecurityTest covers cookie-only and missing credential denial in both profiles."
+    },
+    {
+      "ruleId": "java/csrf-unprotected-request-type",
+      "file": "src/main/java/com/lookahead/domain/DomainAccountController.java",
+      "sourceSha256": "75d3a07fbca757b234902667e01f1a44a28ec5c8d8a154b9ea1ce38c835700da",
+      "expiresAt": "2026-10-19",
+      "ticket": "DLV-918",
+      "rationale": "Reviewed 2026-10-12 against the reported hosted finding. Domain auth/me requires a verified bearer with account scope; its stateless resource chain rejects browser cookies and has no Basic/form authentication. Invitation claiming uses only the server principal verified email (Cognito GetUser), never query/body identity, and only an existing owner-created pending grant. Local principals lack verified email. This is not a cookie-authorized CSRF path. GET mutation semantics remain a DLV-930 follow-up; this exact rule/file/source exception does not waive that issue or other findings."
     }
   ]
 }

@@ -21,7 +21,10 @@ RUN ./mvnw --batch-mode --no-transfer-progress verify \
 
 FROM eclipse-temurin:21-jre-alpine@sha256:51ab5e3302e7141ce665ca3ea85e8b5cd648eafbc3c0c90dd79d6537684e4555 AS runtime
 WORKDIR /opt/lookahead
-RUN addgroup -g 10001 lookahead && adduser -D -H -u 10001 -G lookahead lookahead
+RUN addgroup -g 10001 lookahead && adduser -D -H -u 10001 -G lookahead lookahead \
+    # DLV-928: a new named volume mounted here copies this owner, so Domain can write platform reviews.
+    && mkdir -p /var/lib/lookahead/platform-reviews \
+    && chown 10001:10001 /var/lib/lookahead/platform-reviews && chmod 700 /var/lib/lookahead/platform-reviews
 COPY --from=build --chown=10001:10001 /workspace/target/lookahead-domain-api.jar /opt/lookahead/app.jar
 COPY --from=build --chown=10001:10001 /workspace/health /opt/lookahead/health
 COPY --from=build --chown=10001:10001 /workspace/tools/container/trust/rds-global-bundle.pem /opt/lookahead/trust/rds-global-bundle.pem
