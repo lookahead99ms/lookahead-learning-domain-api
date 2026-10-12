@@ -18,6 +18,7 @@ import static org.mockito.Mockito.*;
 @EnabledIfEnvironmentVariable(named="CLOUD_AUTH_TEST_DATABASE_URL",matches=".+")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class StaffAccessDatabaseTest {
+    boolean createdRuntimeRole;
     JdbcTemplate jdbc; String schema; TransactionTemplate tx; StaffAccessRepository repository; StaffAccessService service;
     AccountPrincipal owner, learner, other;
     @BeforeAll void start() throws Exception {
@@ -28,6 +29,8 @@ class StaffAccessDatabaseTest {
         var admin=new JdbcTemplate(new DriverManagerDataSource(url,"postgres",password));admin.execute("CREATE SCHEMA "+schema);
         var source=new DriverManagerDataSource(url+"?currentSchema="+schema,"postgres",password);
         jdbc=new JdbcTemplate(source);tx=new TransactionTemplate(new DataSourceTransactionManager(source));
+        createdRuntimeRole=jdbc.queryForObject("SELECT count(*) FROM pg_roles WHERE rolname='lookahead_platform_app'",Integer.class)==0;
+        if(createdRuntimeRole)jdbc.execute("CREATE ROLE lookahead_platform_app NOLOGIN");
         jdbc.execute("CREATE TABLE platform_subjects(id uuid PRIMARY KEY)");
         jdbc.execute("CREATE FUNCTION reject_author_review_mutation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'immutable'; END; $$");
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V6__staff_access.sql")));
@@ -43,7 +46,7 @@ class StaffAccessDatabaseTest {
     StaffAccessRepository.Assignment save(AccountPrincipal actor, StaffAccessService.Change change) {
         return tx.execute(status->service.save(actor,change));
     }
-    @AfterAll void stop(){if(jdbc!=null)jdbc.execute("DROP SCHEMA "+schema+" CASCADE");}
+    @AfterAll void stop(){if(jdbc!=null){jdbc.execute("DROP SCHEMA "+schema+" CASCADE");if(createdRuntimeRole)jdbc.execute("DROP ROLE lookahead_platform_app");}}
     @Test void ownerOnlyRevisionCheckedAuditedAndRevocationTakesEffect() {
         UUID id=UUID.randomUUID();
         var change=new StaffAccessService.Change(id,learner.accountId(),null,Set.of("admin"),Set.of("java"),false,0);

@@ -66,8 +66,9 @@ class BlazeCatalogMigrationDatabaseTest {
     }
 
     org.flywaydb.core.api.configuration.FluentConfiguration flyway() {
-        // Production configuration; only the schema is redirected to this test's own schema.
-        return DomainApiMigration.configure(Flyway.configure().dataSource(url, "postgres", password)).defaultSchema(schema).schemas(schema);
+        // Production migration discovery, isolated schema, and explicit V5 boundary.
+        // Later migrations are covered by the full bootstrap/database suites.
+        return DomainApiMigration.configure(Flyway.configure().dataSource(url, "postgres", password)).defaultSchema(schema).schemas(schema).target("5");
     }
 
     @AfterAll void cleanup() { if (jdbc != null) jdbc.execute("DROP SCHEMA " + schema + " CASCADE"); }

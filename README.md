@@ -90,6 +90,14 @@ curriculum. Integrated local orchestration remains infrastructure-owned.
 
 ## Required release coverage gate
 
+Database fixture maintenance: the Blaze migration test explicitly targets V5
+(after seeding V4 data), so later migrations do not change its one-migration
+assertion. The author-review HTTP fixture installs V6 and imports the real staff
+access repository/service required by account and preview authorization. Keep
+these test contexts aligned with application dependencies; do not bypass staff
+checks to make isolated contexts start.
+
+
 CI and release validation run `./mvnw -Pcoverage clean verify` with both disposable
 PostgreSQL fixtures configured. JaCoCo 0.8.15 measures every production class,
 without source exclusions, and fails verification below **85% line coverage**.

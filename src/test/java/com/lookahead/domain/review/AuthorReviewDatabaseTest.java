@@ -40,6 +40,7 @@ class AuthorReviewDatabaseTest {
         String migration=Files.readString(Path.of("src/main/resources/db/domain/V2__author_review_events.sql"));
         // PostgreSQL JDBC executes the complete migration, preserving the trigger's dollar quoting.
         jdbc.execute(migration);
+        jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V6__staff_access.sql")));
         Path manifest=directory.resolve("manifest.json");Files.writeString(manifest,mapper.writeValueAsString(List.of(new Artifact("study-plan-review","dlv-704/review-2026-09-19.1","a".repeat(64),"DLV-704"))));
         catalog=new ReviewArtifactCatalog(manifest.toString(),mapper);access=mock(AuthorPreviewAccessService.class);
     }
@@ -149,6 +150,8 @@ class AuthorReviewDatabaseTest {
         com.lookahead.learning.content.service.AuthorPreviewAccessService.class,
         com.lookahead.learning.content.security.LocalAuthorAccess.class,
         com.lookahead.learning.content.repository.AccountRepository.class,
+        com.lookahead.domain.access.StaffAccessRepository.class,
+        com.lookahead.domain.access.StaffAccessService.class,
         com.lookahead.domain.security.DomainSecurityConfiguration.class})
     static class HttpApp {
         @org.springframework.context.annotation.Bean javax.sql.DataSource dataSource(){return httpSource;}
