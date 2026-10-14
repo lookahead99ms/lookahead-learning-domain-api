@@ -440,3 +440,28 @@ Domain account lock, preserving Local request shapes. `CloudSignInRegistryDataba
 checks persistence, account isolation and revocation against the documented
 disposable PostgreSQL fixture; `S3PlatformReviewObjectsTest` checks concurrent
 conditional writes with a stubbed SDK client. Neither is live AWS certification.
+
+### Lower-cost DEV candidate
+
+The `lower-cost-dev` profile serves application mTLS on8443 and loopback-only
+management readiness on8081. TLS validates the peer chain; the application filter
+also requires the Gateway client identity `gateway.lookahead-dev.internal` and
+clientAuth usage. OAuth and Domain account/ownership checks remain required.
+Startup credentials use exact-version files under `/run/credentials`; database
+runtime, migration and bootstrap connections retain `sslmode=verify-full`.
+Bootstrap can read its three passwords from the restricted credential directory.
+
+This is local candidate code, not AWS deployment evidence. The standard Local
+configuration and preserved Service Connect mode remain separate. Infra owns
+orchestration, runtime templates and operation runbooks; SQL migrations stay here.
+
+The lower-cost bootstrap credential directory must be absolute and private
+(mode0700). Its three fixed credential files must be regular, non-symlink,
+mode0400 files, matching the initializer's output. Reads are bounded to128bytes;
+duplicate environment/file sources and invalid password bytes fail before any
+connection. `BootstrapCredentialFilesTest` covers these startup boundaries.
+
+Lower-cost DEV security events use the dedicated `lookahead.security.audit` logger
+with fixed outcome names and random event IDs. The filter preserves HTTP responses
+and emits no request paths, tokens or bodies. Infra owns the separately scoped
+audit relay and90-day archive; local tests do not verify AWS delivery.

@@ -23,7 +23,7 @@ public final class DomainApiBootstrap {
     public static void main(String[] args) {
         try {
             if (args.length != 0) throw new IllegalStateException("Arguments are forbidden");
-            var environment = System.getenv();
+            var environment = credentialEnvironment(System.getenv());
             validateConfiguration(environment);
             bootstrap(required(environment, "SPRING_FLYWAY_URL"),
                     required(environment, "LOOKAHEAD_BOOTSTRAP_PASSWORD"),
@@ -35,6 +35,29 @@ public final class DomainApiBootstrap {
             System.err.println("Domain database bootstrap failed; activation remains blocked");
             System.exit(1);
         }
+    }
+
+    static Map<String,String> credentialEnvironment(Map<String,String> source) throws java.io.IOException {
+        var environment = new java.util.HashMap<>(source);
+        String directory = source.get("LOOKAHEAD_CREDENTIAL_DIRECTORY");
+        if (directory == null) return environment;
+        var root = java.nio.file.Path.of(directory);
+        if (!root.isAbsolute() || !java.nio.file.Files.isDirectory(root, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                || !java.nio.file.Files.getPosixFilePermissions(root).equals(java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")))
+            throw new IllegalStateException("Private credential directory required");
+        for (var entry : Map.of("LOOKAHEAD_BOOTSTRAP_PASSWORD", "bootstrap.password", "LOOKAHEAD_APP_PASSWORD", "app.password", "LOOKAHEAD_MIGRATOR_PASSWORD", "migrator.password").entrySet()) {
+            if (source.containsKey(entry.getKey())) throw new IllegalStateException("Choose one credential source");
+            var path = root.resolve(entry.getValue());
+            if (!java.nio.file.Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    || !java.nio.file.Files.getPosixFilePermissions(path).equals(java.nio.file.attribute.PosixFilePermissions.fromString("r--------")))
+                throw new IllegalStateException("Invalid credential file");
+            byte[] bytes;
+            try (var input = java.nio.file.Files.newInputStream(path)) { bytes = input.readNBytes(129); }
+            String value = new String(bytes, java.nio.charset.StandardCharsets.US_ASCII);
+            validatePassword(value);
+            environment.put(entry.getKey(), value);
+        }
+        return environment;
     }
 
     public static void validateConfiguration(Map<String, String> environment) {

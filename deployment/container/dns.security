@@ -1,0 +1,2 @@
+networkaddress.cache.ttl=30
+networkaddress.cache.negative.ttl=5

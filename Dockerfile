@@ -28,6 +28,7 @@ RUN addgroup -g 10001 lookahead && adduser -D -H -u 10001 -G lookahead lookahead
 COPY --from=build --chown=10001:10001 /workspace/target/lookahead-domain-api.jar /opt/lookahead/app.jar
 COPY --from=build --chown=10001:10001 /workspace/health /opt/lookahead/health
 COPY --from=build --chown=10001:10001 /workspace/tools/container/trust/rds-global-bundle.pem /opt/lookahead/trust/rds-global-bundle.pem
+COPY deployment/container/dns.security /opt/lookahead/dns.security
 USER 10001:10001
 ENV LOOKAHEAD_BIND_ADDRESS=0.0.0.0 PORT=8080
 EXPOSE 8080
