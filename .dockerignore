@@ -23,6 +23,11 @@
 !src/test/resources/**
 !tools/
 !tools/container/
+# Exact public JVM DNS cache configuration required by the runtime COPY.
+!deployment/
+!deployment/container/
+!deployment/container/dns.security
+
 # Exclusions remain last so newly added private inputs cannot override them.
 **/.env*
 **/secrets/**

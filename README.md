@@ -465,3 +465,7 @@ Lower-cost DEV security events use the dedicated `lookahead.security.audit` logg
 with fixed outcome names and random event IDs. The filter preserves HTTP responses
 and emits no request paths, tokens or bodies. Infra owns the separately scoped
 audit relay and90-day archive; local tests do not verify AWS delivery.
+
+The Docker context explicitly includes only `deployment/container/dns.security`
+from that configuration directory. Keep this exact allowance when changing the
+runtime COPY; credential/private-file exclusions remain in effect.
