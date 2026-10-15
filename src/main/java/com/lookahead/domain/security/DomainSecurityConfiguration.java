@@ -50,6 +50,8 @@ public class DomainSecurityConfiguration {
                 .logout(AbstractHttpConfigurer::disable).requestCache(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(HttpMethod.GET, "/api/v1/membership/plans", "/api/v1/sales/active").permitAll()
+                        .requestMatchers("/api/v1/account/access-records", "/api/v1/account/purchases", "/api/v1/account/purchases/**", "/api/v1/admin/accounts/**", "/api/v1/admin/sales", "/api/v1/admin/sales/**", "/api/v1/admin/membership/**").hasAuthority("SCOPE_account")
                         .requestMatchers(HttpMethod.GET, "/api/v1/status", "/actuator/health", "/actuator/health/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/content/**").access((authentication, request) -> {
                             var value = authentication.get();

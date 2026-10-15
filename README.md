@@ -482,3 +482,11 @@ claim event. Conflicting existing assignments return 409. The flow does not chan
 the sign-in return URL or enable first-time cloud admission. Local signup still
 cannot prove mailbox ownership. Deploy Domain and Gateway before the updated Web
 client; do not use the old mutating GET as fallback if POST fails.
+
+## Local membership purchases (DLV-209)
+
+Domain owns `/api/v1/membership/plans`, `/api/v1/sales/active`, account purchase/quote/access-record endpoints and staff upgrades/sales/price endpoints. Saved study plans retain `/api/v1/plans`. Migration V8 adds only membership tables. Purchases require `Idempotency-Key`; `expectedPriceCents` optionally rejects a stale quote. Effective catalog access is computed dynamically with server-time expiry. Nothing renews automatically.
+
+Local and DEV accept only mock payments (`APP_PAYMENTS_PROVIDER=mock`, default). Select `APP_PAYMENTS_MOCK_SCENARIO`: `success` (default), `decline`, `requires-action`, `network`, `rate-limit`, `server-error`, or `timeout-after-success`. Only change this on an isolated test deployment; pending outcomes never grant access. At most three attempts per purchase, jittered exponential delay and a three-second retry-loop budget. Unknown outcomes need investigation; real settlement/refunds/webhooks are not enabled. The Stripe SDK adapter is unregistered and never used in Local/DEV; do not supply keys. Student/regional discount rules and Course Pass duration remain pending.
+
+`./mvnw test` runs unit/contract checks. `MembershipDatabaseTest` requires the existing isolated `CLOUD_AUTH_TEST_DATABASE_URL` and password-file environment variables from Infra’s cloud-auth test database helper; it creates and removes only its synthetic test schema. Never point it at application databases.

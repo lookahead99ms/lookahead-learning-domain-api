@@ -21,6 +21,10 @@ public class AccountRepository {
         this.jdbc=jdbc;this.staff=staff;this.catalog=catalog;
     }
 
+    private com.lookahead.domain.membership.MembershipGrants memberships;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    void memberships(com.lookahead.domain.membership.MembershipGrants value){memberships=value;}
+
     public void ensureSubject(UUID subject) {
         jdbc.update("INSERT INTO " + LegacyStorageNames.SUBJECTS_TABLE + "(id) VALUES (?) ON CONFLICT (id) DO NOTHING", subject);
     }
@@ -36,6 +40,7 @@ public class AccountRepository {
                 if(assignment.fullCurriculum()||assignment.roles().contains("tester"))result.addAll(catalog.allTopicIds());
             }
         }
+        if(memberships!=null)result.addAll(memberships.topics(subject));
         return Set.copyOf(result);
     }
 

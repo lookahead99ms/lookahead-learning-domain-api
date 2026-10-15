@@ -31,10 +31,15 @@ public class PlanRepository {
         this.json = json;
     }
 
+    private com.lookahead.domain.membership.MembershipGrants memberships;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    void memberships(com.lookahead.domain.membership.MembershipGrants value){memberships=value;}
+
     public Set<String> grants(UUID account) {
         // DLV-931: grants are read in their blaze form even if an old tool wrote a look-ahead ID.
         var result=new HashSet<>(com.lookahead.learning.content.util.CatalogIds.normalize(jdbc.queryForList(
                 "SELECT topic_id FROM account_grants WHERE account_id=? AND (valid_until IS NULL OR valid_until > now())", String.class, account)));
+        if(memberships!=null)result.addAll(memberships.topics(account));
         if(publication!=null && com.lookahead.learning.content.repository.AccountRepository.currentIdentityEnabled(account))
             publication.contentGrants(Set.copyOf(result)).forEach(id->result.add("content:"+id));
         return result;
