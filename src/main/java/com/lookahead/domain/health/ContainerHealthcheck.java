@@ -15,7 +15,8 @@ public final class ContainerHealthcheck {
     }
 
     public static void main(String[] args) {
-        System.exit(check(READINESS_URI));
+        System.exit(check("lower-cost-dev".equals(System.getenv("LOOKAHEAD_RUNTIME_MODE"))
+                ? URI.create("http://127.0.0.1:8081/actuator/health/readiness") : READINESS_URI));
     }
 
     static int check(URI endpoint) {

@@ -16,7 +16,13 @@ public final class CloudRuntimeGuard {
         if (password.length() < 16 || password.length() > 4096 || password.startsWith("arn:") || password.contains("${")
                 || password.codePoints().anyMatch(Character::isISOControl))
             throw new IllegalStateException("Cloud database requires an injected secret value");
-        if (!"127.0.0.1".equals(environment.getProperty("server.address", "")))
+        if (environment.acceptsProfiles(org.springframework.core.env.Profiles.of("lower-cost-dev"))) {
+            if (!"dev".equals(environment.getProperty("app.deployment-environment"))
+                    || !environment.getProperty("server.ssl.enabled", Boolean.class, false)
+                    || !"need".equals(environment.getProperty("server.ssl.client-auth"))
+                    || !"serving".equals(environment.getProperty("server.ssl.bundle")))
+                throw new IllegalStateException("Lower-cost DEV requires application mTLS");
+        } else if (!"127.0.0.1".equals(environment.getProperty("server.address", "")))
             throw new IllegalStateException("Cloud Domain HTTP must bind to 127.0.0.1 behind Service Connect TLS");
         DomainDatabaseConnections.validateTarget(environment.getRequiredProperty("app.deployment-environment"),
                 environment.getRequiredProperty("app.publication.region"), environment.getRequiredProperty("spring.datasource.url"));

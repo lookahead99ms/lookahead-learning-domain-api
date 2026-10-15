@@ -1,0 +1,27 @@
+# Explicit DEV-only application TLS; the ordinary local profile is unchanged.
+spring:
+  config:
+    import: configtree:/run/credentials/
+  ssl:
+    bundle:
+      pem:
+        serving:
+          keystore:
+            certificate: file:/run/credentials/server.crt
+            private-key: file:/run/credentials/server.key
+          truststore:
+            certificate: file:/run/credentials/trust.pem
+server:
+  address: 0.0.0.0
+  port: 8443
+  ssl:
+    enabled: true
+    bundle: serving
+    enabled-protocols: TLSv1.3,TLSv1.2
+    client-auth: need
+management:
+  server:
+    port: 8081
+    address: 127.0.0.1
+    ssl:
+      enabled: false
