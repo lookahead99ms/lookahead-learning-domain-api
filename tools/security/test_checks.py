@@ -27,7 +27,7 @@ class SecurityGateTests(unittest.TestCase):
         changed['runs'][0]['results'][0]['locations'][0]['physicalLocation']['artifactLocation']['uri'] = 'src/main/java/Unreviewed.java'
         self.assertEqual(checks.sarif_gate([changed], exceptions=exceptions), 1)
 
-    def test_account_get_review_does_not_hide_image_or_unreviewed_csrf_findings(self):
+    def test_retired_account_get_exception_cannot_hide_reappearing_findings(self):
         exceptions = checks.load_sast_exceptions()
         rule = 'java/csrf-unprotected-request-type'
         file = 'src/main/java/com/lookahead/domain/DomainAccountController.java'
@@ -36,8 +36,7 @@ class SecurityGateTests(unittest.TestCase):
             {'id': 'java/comparison-with-wider-type', 'properties': {'security-severity': '8.1'}}]}},
             'invocations': [{'executionSuccessful': True}], 'results': [
                 {'ruleId': rule, 'locations': [{'physicalLocation': {'artifactLocation': {'uri': file}}}]}]}]}
-        self.assertEqual(0, checks.sarif_gate([document], exceptions=exceptions))
-        exceptions.pop((rule, file))
+        self.assertNotIn((rule, file), exceptions)
         self.assertEqual(1, checks.sarif_gate([document], exceptions=exceptions))
         document['runs'][0]['results'][0]['ruleId'] = 'java/comparison-with-wider-type'
         self.assertEqual(1, checks.sarif_gate([document], exceptions=checks.load_sast_exceptions()))
@@ -66,7 +65,7 @@ class SecurityGateTests(unittest.TestCase):
     def test_retired_bypass_exception_cannot_suppress_a_reappearing_finding(self):
         exceptions = checks.load_sast_exceptions()
         self.assertTrue(exceptions)
-        self.assertEqual({'java/spring-disabled-csrf-protection', 'java/csrf-unprotected-request-type'}, {rule for rule, file in exceptions})
+        self.assertEqual({'java/spring-disabled-csrf-protection'}, {rule for rule, file in exceptions})
         rule = 'java/user-controlled-bypass'
         document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': [
             {'id': rule, 'properties': {'security-severity': '7.8'}}]}},

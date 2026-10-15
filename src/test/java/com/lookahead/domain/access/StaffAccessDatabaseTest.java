@@ -89,4 +89,26 @@ class StaffAccessDatabaseTest {
         assertThat(repository.forAccount(recipient.accountId())).isNull();
     }
 
+    @Test void concurrentClaimsAndRetriesProduceOneAssignmentAndOneClaimEvent() throws Exception {
+        UUID id=UUID.randomUUID();var recipient=account(false);
+        String email="race-"+id+"@example.invalid";
+        save(owner,new StaffAccessService.Change(id,null,email,Set.of("reviewer"),Set.of(),false,0));
+        var ready=new java.util.concurrent.CountDownLatch(2);
+        var start=new java.util.concurrent.CountDownLatch(1);
+        try(var executor=java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var jobs=new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for(int n=0;n<2;n++) jobs.add(executor.submit(()->{
+                ready.countDown();
+                try { if(!start.await(10,java.util.concurrent.TimeUnit.SECONDS))throw new AssertionError("Start timed out"); }
+                catch(InterruptedException error){Thread.currentThread().interrupt();throw new RuntimeException(error);}
+                tx.executeWithoutResult(status->service.claimVerified(recipient,email));
+            }));
+            assertThat(ready.await(10,java.util.concurrent.TimeUnit.SECONDS)).isTrue();start.countDown();
+            for(var job:jobs)job.get(10,java.util.concurrent.TimeUnit.SECONDS);
+        }
+        tx.executeWithoutResult(status->service.claimVerified(recipient,email));
+        assertThat(repository.forAccount(recipient.accountId()).revision()).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM staff_access_events WHERE assignment_id=? AND action='claim'",Integer.class,id)).isEqualTo(1);
+    }
+
 }

@@ -469,3 +469,16 @@ audit relay and90-day archive; local tests do not verify AWS delivery.
 The Docker context explicitly includes only `deployment/container/dns.security`
 from that configuration directory. Keep this exact allowance when changing the
 runtime COPY; credential/private-file exclusions remain in effect.
+
+
+DLV-930 invitation activation: `GET /api/v1/auth/me` does not claim staff access.
+Managed sign-in restoration first reads the account, then submits the bodyless
+`POST /bff/api/v1/auth/invitations/activate` with the session CSRF token, and loads
+current grants/plans from the returned account. Gateway forwards only POST without
+query parameters to Domain `/api/v1/auth/invitations/activate` using its server-held
+bearer. Domain requires account scope and uses only provider-verified principal
+email. No eligible invitation is a no-op; retries/concurrent claims append one
+claim event. Conflicting existing assignments return 409. The flow does not change
+the sign-in return URL or enable first-time cloud admission. Local signup still
+cannot prove mailbox ownership. Deploy Domain and Gateway before the updated Web
+client; do not use the old mutating GET as fallback if POST fails.
