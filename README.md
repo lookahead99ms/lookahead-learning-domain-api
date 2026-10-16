@@ -570,7 +570,11 @@ before Domain erases plans, progress, access, synthetic payment fixtures and
 purchase audit details; minimal tombstones preserve the lifetime count. Ordinary
 membership audit remains append-only. `GET /api/v1/admin/test-accounts/allowance`, `POST
 /api/v1/admin/test-accounts` and `DELETE .../{id}` are active on the working
-Local stack behind 4301 as of 2026-10-16. Staff accounts are protected.
+Local stack behind 4301 as of 2026-10-16. The follow-up deletion policy
+allows the owner to delete any other managed test account, co-authors to delete
+admins and learners, and admins to delete learners. Domain returns `canDelete`
+per row; Identity disables the target before Domain clears its roles and data.
+The Local author account remains protected.
 Owner/admin may explicitly reset a registered fixture; co-author reads only. Disable the
 legacy startup seeder when using managed maintenance to preserve existing author grants.
 Do not include fixture publications or secret files in this repository or its image.
@@ -578,3 +582,13 @@ Do not include fixture publications or secret files in this repository or its im
 ## People account directory
 
 Owner-only `GET /api/v1/admin/accounts?query=&page=0` returns `{data:{accounts,page,hasNext}}`. Identity provides enabled account identity fields; Domain adds roles, `testAccount`, `fullCurriculum` and effective `access`. The owner check precedes enumeration. Other staff use their existing restricted sources. Fixed page size 50; literal search, stable username/id ordering, no-store and no account writes.
+The follow-up adds `canDowngrade` and `canDelete` action flags. An owner in Local
+or DEV may `POST /api/v1/admin/accounts/{id}/downgrade` with confirmation
+`DOWNGRADE`, clearing roles, grants and effective purchases while retaining
+identity, plans and immutable purchase history. An already-free real learner
+may then be separately deleted in Local with `POST .../{id}/delete` and
+confirmation `DELETE`: Identity first disables sign-in and scrubs profile and
+credentials, then Domain erases plans and progress while retaining purchase
+and minimal maintenance audit. The owner and managed test accounts are
+excluded. DEV provider-owned deletion remains operator-only and is not exposed
+by this browser route. Domain migration V13 owns the maintenance audit.

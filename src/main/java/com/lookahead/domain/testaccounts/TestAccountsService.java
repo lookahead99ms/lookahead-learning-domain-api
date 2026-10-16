@@ -48,14 +48,18 @@ public class TestAccountsService {
         return fresh.size();
     }
     @Transactional(readOnly=true)
-    public List<ObjectNode> list(AccountPrincipal actor){reader(actor);return jdbc.query("SELECT * FROM test_account_registry WHERE creation_state='active' ORDER BY username",(r,n)->{
+    public List<ObjectNode> list(AccountPrincipal actor){reader(actor);var actorRole=staff.permissions(actor).feedbackRole();return jdbc.query("SELECT * FROM test_account_registry WHERE creation_state='active' ORDER BY username",(r,n)->{
         var item=json.createObjectNode().put("accountId",r.getString("account_id")).put("username",r.getString("username"))
                 .put("isTestAccount",true).put("revision",r.getLong("revision")).put("initialization",r.getString("initialization"))
                 .put("lastChangedBy",r.getString("last_changed_by")).put("lastChangedAt",r.getTimestamp("last_changed_at").toInstant().toString());
         if(r.getObject("creator_id",UUID.class)!=null)item.put("creatorId",r.getObject("creator_id",UUID.class).toString());
         UUID id=r.getObject("account_id",UUID.class);
         var roleRows=jdbc.queryForList("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,id);
-        item.set("roles",roleRows.isEmpty()?json.createArrayNode():json.readTree(roleRows.getFirst()));
+        var targetRoles=new HashSet<String>();
+        var roleNode=roleRows.isEmpty()?json.createArrayNode():json.readTree(roleRows.getFirst());
+        roleNode.forEach(role -> targetRoles.add(role.asText()));
+        item.set("roles",roleNode);
+        item.put("canDelete",TestAccountDeletionPolicy.allows(actorRole,actor.accountId(),id,targetRoles));
         item.set("access",json.valueToTree(summaries.get(actor,id)));
         item.put("legacyPresetAvailable",r.getString("username").matches("learner(0[1-9]|10)"));
         return item;

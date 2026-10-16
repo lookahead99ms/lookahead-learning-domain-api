@@ -110,8 +110,9 @@ public class CreatedTestAccounts {
     private Reservation authorizedTarget(AccountPrincipal actor, UUID id) {
         policy.requireEnabled();
         if (id==null) throw new AccountFailure(404,"TEST_ACCOUNT_NOT_FOUND","Managed test account not found.");
+        if (actor==null || !actor.isEnabled()) throw new AccountFailure(401,"AUTHENTICATION_REQUIRED","Sign in to continue.");
         boolean isOwner=owner.allowed(actor);
-        var assignment=actor==null?null:staff.forAccount(actor.accountId());
+        var assignment=staff.forAccount(actor.accountId());
         Set<String> roles=assignment==null?Set.of():assignment.roles();
         boolean coauthor=roles.contains("co-author");
         boolean admin=roles.contains("admin");
@@ -119,12 +120,14 @@ public class CreatedTestAccounts {
         var targets=jdbc.query("SELECT username,creator_id,creation_state FROM test_account_registry WHERE account_id=? FOR UPDATE",
                 (r,i)->new Object[]{r.getString(1),r.getObject(2,UUID.class),r.getString(3)},id);
         if (targets.isEmpty()) throw new AccountFailure(404,"TEST_ACCOUNT_NOT_FOUND","Managed test account not found.");
-        String username=(String)targets.getFirst()[0]; UUID creator=(UUID)targets.getFirst()[1];
-        if (LocalAuthorAccess.ACCOUNT_ID.equals(id) || username.matches("(admin|coauthor)[0-9]{2}")
-                || !jdbc.queryForList("SELECT account_id FROM staff_access WHERE account_id=? AND roles <> '[]'::jsonb",UUID.class,id).isEmpty())
-            throw new AccountFailure(403,"PROTECTED_TEST_ACCOUNT","Staff accounts cannot be deleted here.");
-        if (!isOwner&&!coauthor&&!actor.accountId().equals(creator))
-            throw new AccountFailure(403,"DELETE_FORBIDDEN","Only the creator, owner or co-author may delete this learner.");
+        String username=(String)targets.getFirst()[0];
+        if (LocalAuthorAccess.ACCOUNT_ID.equals(id))
+            throw new AccountFailure(403,"PROTECTED_TEST_ACCOUNT","The Local author account cannot be deleted.");
+        var targetAssignment=staff.forAccount(id);
+        Set<String> targetRoles=targetAssignment==null?Set.of():targetAssignment.roles();
+        String actorRole=isOwner?"owner":coauthor?"co-author":"admin";
+        if (!TestAccountDeletionPolicy.allows(actorRole,actor.accountId(),id,targetRoles))
+            throw new AccountFailure(403,"DELETE_FORBIDDEN","Your role cannot delete this test account.");
         return new Reservation(id,username,(String)targets.getFirst()[2]);
     }
     private void erase(AccountPrincipal actor, UUID id) {
@@ -139,6 +142,7 @@ public class CreatedTestAccounts {
         jdbc.update("DELETE FROM plans WHERE account_id=?",id);
         jdbc.update("DELETE FROM account_grants WHERE account_id=?",id);
         jdbc.update("DELETE FROM support_receipts WHERE account_id=?",id);
+        jdbc.update("UPDATE staff_access SET roles='[]',topic_grants='[]',full_curriculum=false,revision=revision+1,updated_at=clock_timestamp() WHERE account_id=?",id);
         jdbc.query("SELECT set_config('lookahead.test_account_purge',?,true)",rs->{},id.toString());
         jdbc.update("DELETE FROM membership_audit WHERE subject_id IN (SELECT id::text FROM membership_purchases WHERE account_id=?)",id);
         jdbc.update("DELETE FROM membership_mock_payments WHERE idempotency_key IN (SELECT idempotency_key FROM membership_purchases WHERE account_id=?)",id);

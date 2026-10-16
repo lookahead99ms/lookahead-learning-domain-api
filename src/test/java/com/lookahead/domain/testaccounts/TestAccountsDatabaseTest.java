@@ -30,7 +30,7 @@ class TestAccountsDatabaseTest {
   jdbc=new JdbcTemplate(source);tx=new TransactionTemplate(new DataSourceTransactionManager(source));
   jdbc.execute("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='lookahead_platform_app') THEN CREATE ROLE lookahead_platform_app NOLOGIN; END IF; END $$");
   jdbc.execute("CREATE TABLE flyway_schema_history(installed_rank integer)");
-  for(String file:List.of("V1__platform.sql","V2__author_review_events.sql","V3__plan_names.sql","V6__staff_access.sql","V8__memberships.sql","V9__plan_lifecycle.sql","V10__test_account_registry.sql","V11__free_plan_allowances.sql","V12__created_test_accounts.sql"))
+  for(String file:List.of("V1__platform.sql","V2__author_review_events.sql","V3__plan_names.sql","V4__cloud_identity_and_sign_ins.sql","V6__staff_access.sql","V8__memberships.sql","V9__plan_lifecycle.sql","V10__test_account_registry.sql","V11__free_plan_allowances.sql","V12__created_test_accounts.sql","V13__real_account_maintenance.sql"))
    jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain",file)));
   jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",admin.accountId());
  }
@@ -185,7 +185,59 @@ class TestAccountsDatabaseTest {
   assertThatThrownBy(()->created.create(coauthor,new CreatedTestAccounts.Create(UUID.randomUUID(),"synthetic-learner-fixture-only"))).hasMessageContaining("limit");
   seed();
   var staffId=TestAccountRoster.entries().stream().filter(TestAccountRoster.Entry::staff).findFirst().orElseThrow().accountId();
-  assertThatThrownBy(()->created.delete(coauthor,staffId)).hasMessageContaining("Staff accounts");
+  when(repository.forAccount(staffId)).thenReturn(new StaffAccessRepository.Assignment(
+      UUID.randomUUID(),staffId,null,Set.of("co-author"),Set.of(),false,1));
+  assertThatThrownBy(()->created.delete(coauthor,staffId)).hasMessageContaining("role cannot delete");
+ }
+ @Test void ownerAndCoauthorCanDeleteLowerRankedStaffAndRevokeAssignments() {
+  seed();
+  var roster=TestAccountRoster.entries();
+  var coauthorTarget=roster.stream().filter(e->e.username().equals("coauthor01")).findFirst().orElseThrow();
+  var coauthorActor=roster.stream().filter(e->e.username().equals("coauthor02")).findFirst().orElseThrow();
+  var adminTarget=roster.stream().filter(e->e.username().equals("admin01")).findFirst().orElseThrow();
+  var owner=mock(LocalAuthorAccess.class);when(owner.allowed(admin)).thenReturn(true);
+  var identity=mock(TestIdentityOperator.class);
+  var managed=new CreatedTestAccounts(jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),
+      new TestAccountPolicy(TestAccountPolicyTest.local()),new StaffAccessRepository(jdbc,json),owner,identity);
+  tx.executeWithoutResult(status->{
+   managed.delete(admin,coauthorTarget.accountId());
+   assertThat(jdbc.queryForObject("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,coauthorTarget.accountId())).isEqualTo("[]");
+   assertThat(jdbc.queryForObject("SELECT creation_state FROM test_account_registry WHERE account_id=?",String.class,coauthorTarget.accountId())).isEqualTo("deleted");
+   var coauthor=new AccountPrincipal(coauthorActor.accountId(),coauthorActor.username(),"Co-author",true,false);
+   managed.delete(coauthor,adminTarget.accountId());
+   assertThat(jdbc.queryForObject("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,adminTarget.accountId())).isEqualTo("[]");
+   verify(identity).disable(coauthorTarget.accountId(),coauthorTarget.username());
+   verify(identity).disable(adminTarget.accountId(),adminTarget.username());
+   status.setRollbackOnly();
+  });
+ }
+ @Test void realAccountMustBeDowngradedBeforeLocalDeletionAndPurchaseAuditSurvives() {
+  UUID real=UUID.randomUUID(),purchase=UUID.randomUUID();
+  jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",real);
+  jdbc.update("INSERT INTO staff_access(id,account_id,roles,topic_grants,full_curriculum) VALUES (?,?,'[\"admin\"]'::jsonb,'[]'::jsonb,true)",UUID.randomUUID(),real);
+  jdbc.update("INSERT INTO account_grants(account_id,topic_id) VALUES (?,'learn:core-java')",real);
+  jdbc.update("""
+      INSERT INTO membership_purchases(id,account_id,plan_id,plan_snapshot,request_fingerprint,idempotency_key,
+        price_paid_cents,status,starts_at,ends_at,source,actor_id,provider)
+      VALUES (?,?,'learn','{}'::jsonb,?,?,0,'succeeded',now(),now()+interval '1 day','checkout',?,'mock')
+      """,purchase,real,"0".repeat(64),"fixture-"+purchase,real);
+  var owner=mock(StaffAccessService.class);var directory=mock(AccountDirectory.class);
+  when(directory.byId(real)).thenReturn(new AccountDirectory.Account(real,"real-user","Real User",null));
+  var identity=mock(TestIdentityOperator.class);
+  var maintenance=new RealAccountMaintenance(jdbc,owner,directory,new TestAccountPolicy(TestAccountPolicyTest.local()),identity,
+      new DataSourceTransactionManager(jdbc.getDataSource()));
+  assertThatThrownBy(()->maintenance.deleteLearner(admin,real,new RealAccountMaintenance.Confirmation("DELETE"))).hasMessageContaining("Downgrade");
+  verifyNoInteractions(identity);
+  maintenance.downgrade(admin,real,new RealAccountMaintenance.Confirmation("DOWNGRADE"));
+  assertThat(jdbc.queryForObject("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,real)).isEqualTo("[]");
+  assertThat(jdbc.queryForObject("SELECT count(*) FROM account_grants WHERE account_id=?",Integer.class,real)).isZero();
+  assertThat(jdbc.queryForObject("SELECT superseded_at IS NOT NULL FROM membership_purchases WHERE id=?",Boolean.class,purchase)).isTrue();
+  maintenance.deleteLearner(admin,real,new RealAccountMaintenance.Confirmation("DELETE"));
+  verify(identity).disableReal(real);
+  assertThat(jdbc.queryForObject("SELECT count(*) FROM membership_purchases WHERE id=?",Integer.class,purchase)).isEqualTo(1);
+  assertThat(jdbc.queryForObject("SELECT count(*) FROM real_account_maintenance WHERE account_id=? AND action='delete'",Integer.class,real)).isEqualTo(1);
+  maintenance.deleteLearner(admin,real,new RealAccountMaintenance.Confirmation("DELETE"));
+  verify(identity,times(1)).disableReal(real);
  }
  @Test void ownerCanDeleteRosterLearnerWithPurchaseAuditWithoutLeavingLoginDisabledOnly() {
   seed();

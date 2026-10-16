@@ -32,6 +32,7 @@ public class TestIdentityOperator {
     }
     void activate(UUID id, String username) { call("activate", Map.of("accountId", id, "username", username)); }
     void disable(UUID id, String username) { call("disable", Map.of("accountId", id, "username", username)); }
+    public void disableReal(UUID id) { call("disable-real", Map.of("accountId", id)); }
     private void call(String operation, Map<String, ?> body) {
         if (client == null || secret.length() < 32) throw unavailable();
         try {
