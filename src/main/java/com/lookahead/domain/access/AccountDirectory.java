@@ -76,6 +76,28 @@ public class AccountDirectory {
                 });
         } catch(AccountFailure expected){throw expected;}catch(RuntimeException failure){throw unavailable();}
     }
+    public Account byId(UUID id) {
+        if (id == null) throw invalid();
+        if (identity == null) {
+            var rows=jdbc.query("SELECT account_id,username,display_name FROM cloud_accounts WHERE account_id=? AND admitted AND enabled",
+                (r,i)->new Account(r.getObject(1,UUID.class),r.getString(2),r.getString(3),null),id);
+            if (rows.isEmpty()) throw missing();
+            return rows.getFirst();
+        }
+        try {
+            return http.get().uri(identity.upstream()+"/internal/v1/accounts/"+id)
+                .headers(h->h.setBasicAuth("lookahead-domain-verifier",identity.verifierSecret()))
+                .exchange((sent,response)-> {
+                    if(response.getStatusCode().value()==404)throw missing();
+                    if(response.getStatusCode().value()!=200)throw unavailable();
+                    byte[] bytes=response.getBody().readNBytes(4097);
+                    if(bytes.length>4096)throw unavailable();
+                    var account=new tools.jackson.databind.ObjectMapper().readValue(bytes,Account.class);
+                    if(account==null||!id.equals(account.accountId()))throw unavailable();
+                    return account;
+                });
+        } catch(AccountFailure expected){throw expected;}catch(RuntimeException failure){throw unavailable();}
+    }
     private static AccountFailure invalid(){return new AccountFailure(422,"INVALID_ACCOUNT_LOOKUP","Enter an exact email or username.");}
     private static AccountFailure missing(){return new AccountFailure(404,"ACCOUNT_NOT_FOUND","No eligible existing account matched. You can prepare a pending email assignment.");}
     private static AccountFailure unavailable(){return new AccountFailure(503,"ACCOUNT_LOOKUP_UNAVAILABLE","Account lookup is unavailable. Retry later.");}

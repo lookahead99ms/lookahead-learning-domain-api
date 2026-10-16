@@ -10,10 +10,18 @@ import java.util.*;
 @RestController
 public class TestAccountsController {
     private final TestAccountsService service;
-    public TestAccountsController(TestAccountsService service){this.service=service;}
+    private final CreatedTestAccounts created;
+    public TestAccountsController(TestAccountsService service,CreatedTestAccounts created){this.service=service;this.created=created;}
     @ModelAttribute void noCache(HttpServletResponse response){response.setHeader("Cache-Control","no-store");}
     @PostMapping("/internal/v1/test-accounts/seed") public Map<String,Integer> seed(){return Map.of("created",service.seed());}
     @GetMapping("/api/v1/admin/test-accounts") public ApiResponse<?> list(@AuthenticationPrincipal AccountPrincipal actor){return ApiResponse.success(service.list(actor));}
+    @GetMapping("/api/v1/admin/test-accounts/allowance") public ApiResponse<?> allowance(@AuthenticationPrincipal AccountPrincipal actor){return ApiResponse.success(created.allowance(actor));}
+    @PostMapping("/api/v1/admin/test-accounts") public ApiResponse<?> create(@AuthenticationPrincipal AccountPrincipal actor,@RequestBody CreatedTestAccounts.Create request){
+        return ApiResponse.success(created.create(actor,request));
+    }
+    @DeleteMapping("/api/v1/admin/test-accounts/{id}") public ApiResponse<?> delete(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable UUID id){
+        created.delete(actor,id);return ApiResponse.success(Map.of("deleted",true));
+    }
     @PostMapping("/api/v1/admin/test-accounts/{id}/reset") public ApiResponse<?> reset(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable UUID id,@RequestBody TestAccountsService.Reset request){
         service.reset(actor,id,request);return ApiResponse.success(Map.of("reset",true));
     }

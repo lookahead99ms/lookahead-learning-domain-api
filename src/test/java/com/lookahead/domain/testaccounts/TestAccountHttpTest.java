@@ -31,6 +31,7 @@ class TestAccountHttpTest {
             when(service.seed()).thenReturn(35);
             return service;
         }
+        @Bean CreatedTestAccounts created() { return mock(CreatedTestAccounts.class); }
     }
     @LocalServerPort int port;
     private HttpResponse<String> send(String method, String path, String credentials) throws Exception {

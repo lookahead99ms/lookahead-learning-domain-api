@@ -58,6 +58,7 @@ class PlanLifecycleDatabaseTest {
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V1__platform.sql")));
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V3__plan_names.sql")));
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V9__plan_lifecycle.sql")));
+        jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V11__free_plan_allowances.sql")));
         try (var input = getClass().getResourceAsStream("/accounts/generated-plan.json")) {
             template = (ObjectNode) mapper.readTree(input);
         }
@@ -78,6 +79,20 @@ class PlanLifecycleDatabaseTest {
         try (var input = getClass().getResourceAsStream("/accounts/catalog.json")) { catalog = mapper.readTree(input); }
         var json = new PlanJson(mapper);
         var target = new PlanService(new PlanRepository(jdbc, json), mapper, new SnapshotValidator(mapper, catalog), json);
+        var factory = new ProxyFactory(target);
+        factory.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(source), new AnnotationTransactionAttributeSource()));
+        return (PlanService) factory.getProxy();
+    }
+
+    PlanService newFreeService() throws Exception {
+        JsonNode catalog;
+        try (var input = getClass().getResourceAsStream("/accounts/catalog.json")) { catalog = mapper.readTree(input); }
+        var json = new PlanJson(mapper);
+        var target = new PlanService(new PlanRepository(jdbc, json), mapper, new SnapshotValidator(mapper, catalog), json);
+        var publication = org.mockito.Mockito.mock(ProtectedContentPolicy.class);
+        org.mockito.Mockito.when(publication.freeContentIds()).thenReturn(java.util.Set.of("fixture-a"));
+        target.configureFreeAllowance(new FreePlanAllowance(jdbc,
+                new com.lookahead.learning.content.repository.AccountRepository(jdbc), publication, json));
         var factory = new ProxyFactory(target);
         factory.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(source), new AnnotationTransactionAttributeSource()));
         return (PlanService) factory.getProxy();
@@ -115,6 +130,35 @@ class PlanLifecycleDatabaseTest {
         // Compare every serialized field exactly, independent of map order and JVM numeric node class.
         var json = new PlanJson(mapper);
         assertThat(json.canonical(actual)).isEqualTo(json.canonical(expected));
+    }
+
+    @Test void freePlanSlotsDeletionWindowAndLifetimeReceiptsAreTransactional() throws Exception {
+        jdbc.update("DELETE FROM account_grants WHERE account_id=?", owner());
+        jdbc.update("INSERT INTO account_grants(account_id,topic_id) VALUES (?,?)", owner(), "content:fixture-a");
+        var free = newFreeService();
+        var first = free.create(owner(), UUID.randomUUID(), template, false).data();
+        free.create(owner(), UUID.randomUUID(), template, false);
+        assertThat(free.list(owner(), 10, null).path("plans").get(0).path("freeContentPlan").asBoolean()).isTrue();
+        jdbc.update("DELETE FROM account_grants WHERE account_id=?", owner());
+        assertThat(free.list(owner(), 10, null).path("plans").get(0).path("accessNeeded").asBoolean()).isTrue();
+        jdbc.update("INSERT INTO account_grants(account_id,topic_id) VALUES (?,?)", owner(), "content:fixture-a");
+        failure("FREE_ACTIVE_PLAN_LIMIT", () -> free.create(owner(), UUID.randomUUID(), template, false));
+        UUID key = UUID.randomUUID();
+        free.delete(owner(), id(first), key, 1);
+        assertThat(free.delete(owner(), id(first), key, 1).status()).isEqualTo(204);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM free_plan_deletions WHERE account_id=?", Integer.class, owner())).isEqualTo(1);
+        var third = free.create(owner(), UUID.randomUUID(), template, false).data();
+        free.delete(owner(), id(third), UUID.randomUUID(), 1);
+        var fourth = free.create(owner(), UUID.randomUUID(), template, false).data();
+        free.delete(owner(), id(fourth), UUID.randomUUID(), 1);
+        var fifth = free.create(owner(), UUID.randomUUID(), template, false).data();
+        failure("FREE_DELETE_LIMIT", () -> free.delete(owner(), id(fifth), UUID.randomUUID(), 1));
+        assertThat(free.get(owner(), id(fifth), null).path("planId").asText()).isEqualTo(id(fifth).toString());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM free_plan_creations WHERE account_id=?", Integer.class, owner())).isEqualTo(5);
+        for (int index = 0; index < 10; index++)
+            jdbc.update("INSERT INTO free_plan_creations(account_id,plan_id) VALUES (?,?)", owner(), UUID.randomUUID());
+        jdbc.update("DELETE FROM plans WHERE account_id=? AND id=?", owner(), id(fifth));
+        failure("FREE_LIFETIME_PLAN_LIMIT", () -> free.create(owner(), UUID.randomUUID(), template, false));
     }
 
     @Test void persistedCreateRetryPaginationOwnershipAndRenamingSurviveServiceReconstruction() throws Exception {
