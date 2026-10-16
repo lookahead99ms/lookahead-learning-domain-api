@@ -575,6 +575,11 @@ allows the owner to delete any other managed test account, co-authors to delete
 admins and learners, and admins to delete learners. Domain returns `canDelete`
 per row; Identity disables the target before Domain clears its roles and data.
 The Local author account remains protected.
+Migration V14 grants the runtime database role the three remaining synthetic
+purchase-table deletes needed after sign-in is disabled. The preceding grant
+gap caused deletion to return `ACCOUNT_STORAGE_UNAVAILABLE` on stable Local
+even though privileged database tests passed; the database suite now checks
+those runtime privileges directly.
 Owner/admin may explicitly reset a registered fixture; co-author reads only. Disable the
 legacy startup seeder when using managed maintenance to preserve existing author grants.
 Do not include fixture publications or secret files in this repository or its image.

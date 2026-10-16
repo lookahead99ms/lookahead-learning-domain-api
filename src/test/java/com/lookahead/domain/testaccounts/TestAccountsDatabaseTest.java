@@ -30,7 +30,7 @@ class TestAccountsDatabaseTest {
   jdbc=new JdbcTemplate(source);tx=new TransactionTemplate(new DataSourceTransactionManager(source));
   jdbc.execute("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='lookahead_platform_app') THEN CREATE ROLE lookahead_platform_app NOLOGIN; END IF; END $$");
   jdbc.execute("CREATE TABLE flyway_schema_history(installed_rank integer)");
-  for(String file:List.of("V1__platform.sql","V2__author_review_events.sql","V3__plan_names.sql","V4__cloud_identity_and_sign_ins.sql","V6__staff_access.sql","V8__memberships.sql","V9__plan_lifecycle.sql","V10__test_account_registry.sql","V11__free_plan_allowances.sql","V12__created_test_accounts.sql","V13__real_account_maintenance.sql"))
+  for(String file:List.of("V1__platform.sql","V2__author_review_events.sql","V3__plan_names.sql","V4__cloud_identity_and_sign_ins.sql","V6__staff_access.sql","V8__memberships.sql","V9__plan_lifecycle.sql","V10__test_account_registry.sql","V11__free_plan_allowances.sql","V12__created_test_accounts.sql","V13__real_account_maintenance.sql","V14__managed_test_purchase_purge_grants.sql"))
    jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain",file)));
   jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",admin.accountId());
  }
@@ -45,6 +45,12 @@ class TestAccountsDatabaseTest {
   service=new TestAccountsService(jdbc,json,policy,new ScenarioPurchases(jdbc,json,policy),plans,staff,new AccessSummaryService(jdbc,json,staff),catalog);
  }
  @AfterAll void cleanup(){if(jdbc!=null)jdbc.execute("DROP SCHEMA "+schema+" CASCADE");}
+ @Test void runtimeRoleCanEraseSyntheticPurchaseRows() {
+  for(String table:List.of("membership_audit","membership_mock_payments","membership_payment_attempts",
+      "membership_provider_events","membership_purchases"))
+   assertThat(jdbc.queryForObject("SELECT has_table_privilege('lookahead_platform_app',?, 'DELETE')",Boolean.class,table))
+       .as("runtime DELETE on %s",table).isTrue();
+ }
  UUID learner(int n){return TestAccountRoster.entries().get(n-1).accountId();}
  long revision(UUID id){return jdbc.queryForObject("SELECT revision FROM test_account_registry WHERE account_id=?",Long.class,id);}
  void seed(){tx.executeWithoutResult(t->service.seed());}
