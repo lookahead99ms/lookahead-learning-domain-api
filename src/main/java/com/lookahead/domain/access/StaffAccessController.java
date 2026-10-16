@@ -19,7 +19,7 @@ public class StaffAccessController {
     @GetMapping("/api/v1/admin/access/catalog")
     public ApiResponse<?> catalog(@AuthenticationPrincipal AccountPrincipal actor,HttpServletResponse response){noStore(response);return ApiResponse.success(access.catalog(actor));}
     @PostMapping("/api/v1/admin/access/lookup")
-    public ApiResponse<?> lookup(@AuthenticationPrincipal AccountPrincipal actor,@RequestBody Map<String,String> request,HttpServletResponse response){noStore(response);access.requireOwner(actor);return ApiResponse.success(directory.lookup(request.get("query")));}
+    public ApiResponse<?> lookup(@AuthenticationPrincipal AccountPrincipal actor,@RequestBody Map<String,String> request,HttpServletResponse response){noStore(response);access.requireAccessReader(actor);return ApiResponse.success(directory.lookup(request.get("query")));}
     @PostMapping("/api/v1/admin/access")
     public ApiResponse<?> save(@AuthenticationPrincipal AccountPrincipal actor,@RequestBody StaffAccessService.Change request,HttpServletResponse response){noStore(response);return ApiResponse.success(access.save(actor,request));}
     private static void noStore(HttpServletResponse response){response.setHeader("Cache-Control","no-store");}

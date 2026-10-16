@@ -63,7 +63,13 @@ public class MembershipService {
     }
     public ObjectNode get(AccountPrincipal actor,UUID id){identity(actor);var p=purchase(actor.accountId(),id,false);p.remove("fingerprint");return p;}
     public List<ObjectNode> access(AccountPrincipal actor,UUID target) {
-        identity(actor);if(!actor.accountId().equals(target))requireStaff(actor);
+        identity(actor);
+        if (!actor.accountId().equals(target)) {
+            var permissions = staff.permissions(actor);
+            if (!permissions.manageAccess() && !permissions.triageFeedback()
+                    && !"co-author".equals(permissions.feedbackRole()))
+                throw new AccountFailure(403, "STAFF_REQUIRED", "Author, co-author or admin required");
+        }
         return jdbc.queryForList("SELECT id FROM membership_purchases WHERE account_id=? AND status IN ('succeeded','scheduled','expired') ORDER BY created_at DESC",UUID.class,target).stream().map(id->{
             var p=purchase(target,id,false);p.remove("fingerprint");Instant start=Instant.parse(p.path("startsAt").asText()),end=Instant.parse(p.path("endsAt").asText());
             p.put("status",!p.path("supersededAt").isNull()||!now().isBefore(end)?"expired":now().isBefore(start)?"scheduled":"active");return p;
@@ -84,6 +90,7 @@ public class MembershipService {
         if(request==null||request.planId()==null||(request.chosenCourses()!=null&&!request.chosenCourses().isEmpty()))throw invalid("Course purchases are not available");
         String source=staffUpgrade?"staff-upgrade":"checkout",fingerprint=fingerprint(request,source,actor.accountId());
         UUID id=tx.execute(s->{
+            jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor.accountId().toString());
             accountLock(target);
             var existing=jdbc.queryForList("SELECT id FROM membership_purchases WHERE account_id=? AND idempotency_key=?",UUID.class,target,key);
             if(!existing.isEmpty()){var prior=purchase(target,existing.getFirst(),false);if(!fingerprint.equals(prior.path("fingerprint").asText()))throw new AccountFailure(409,"IDEMPOTENCY_CONFLICT","Key was used for a different request");return existing.getFirst();}
@@ -114,6 +121,7 @@ public class MembershipService {
     }
     private ObjectNode process(AccountPrincipal actor,UUID target,UUID id) {
         return tx.execute(s->{
+            jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor.accountId().toString());
             accountLock(target);var p=purchase(target,id,true);
             if(!p.path("status").asText().equals("pending")){p.remove("fingerprint");return p;}
             PaymentGateway.Result result=null;long deadline=System.nanoTime()+Duration.ofSeconds(3).toNanos();

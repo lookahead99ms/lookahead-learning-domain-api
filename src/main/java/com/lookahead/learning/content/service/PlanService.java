@@ -27,6 +27,10 @@ public class PlanService {
     private final PlanJson planJson;
     private final ObjectMapper mapper;
     private final SnapshotValidator validator;
+    private PlanLifecycle lifecycle;
+    private ReadyMadeWrites readyMade;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureLifecycle(PlanLifecycle lifecycle,ReadyMadeWrites readyMade){this.lifecycle=lifecycle;this.readyMade=readyMade;}
     public PlanService(PlanRepository repository, ObjectMapper mapper, SnapshotValidator validator, PlanJson planJson) {
         this.repository = repository; this.mapper = mapper; this.validator = validator; this.planJson = planJson;
     }
@@ -39,6 +43,8 @@ public class PlanService {
     public JsonNode catalogMetadata() {
         ObjectNode metadata = (ObjectNode) validator.metadata().deepCopy();
         metadata.putArray("planNamingPolicies").add("plan-name-v1");
+        if(lifecycle!=null){metadata.putArray("planLifecyclePolicies").add("dated-plan-v1");
+            metadata.putArray("readyMadePlanPolicies").add("ready-made-template-v1");}
         return metadata;
     }
 
@@ -68,6 +74,7 @@ public class PlanService {
             node.put("createdAt", plan.createdAt()); node.put("updatedAt", plan.updatedAt());
             PlanVersion current = version(account, plan.id(), plan.version());
             node.set("card", PlanCardMetadata.from(current.snapshot(), plan.progress(), mapper));
+            if(lifecycle!=null)node.set("lifecycle",lifecycle.view(account,plan.id()));
             return node;
         }).toList();
         ObjectNode result = mapper.createObjectNode();
@@ -81,7 +88,7 @@ public class PlanService {
 
     @Transactional
     public Mutation create(UUID account, UUID key, JsonNode raw, boolean imported) {
-        fields(raw, imported ? "sourceSchemaVersion localSnapshot provenance" : "goal snapshot provenance name");
+        fields(raw, imported ? "sourceSchemaVersion localSnapshot provenance startDate" : "goal snapshot provenance name startDate");
         String operation = imported ? "import" : "create";
         // Retry receipts hash the request exactly as sent; everything after works on blaze IDs.
         Mutation repeat = replay(account, key, operation, raw);
@@ -91,7 +98,13 @@ public class PlanService {
         if (imported) require("study-plan-local/v1".equals(text(body, "sourceSchemaVersion", 64)), "Unsupported import source");
         JsonNode snapshot = imported ? local.path("snapshot") : body.path("snapshot");
         JsonNode provenance = body.path("provenance");
-        var validated = validator.validate(snapshot, provenance, imported, grants(account));
+        SnapshotValidator.ValidationResult validated;
+        if("ready-made-template".equals(provenance.path("origin").asText())){
+            require(readyMade!=null,"Ready-made persistence is unavailable");
+            var mapped=readyMade.adopt(account,imported?raw.path("localSnapshot").path("snapshot"):raw.path("snapshot"),raw.path("provenance"));
+            snapshot=mapped.snapshot();provenance=mapped.provenance();
+            validated=new SnapshotValidator.ValidationResult(mapped.assignmentContentIds(),Set.copyOf(mapped.assignmentContentIds().values()),validator.catalogVersion(),provenance);
+        }else validated = validator.validate(snapshot, provenance, imported, grants(account));
         String goal = text(imported ? local : body, "goal", 160);
         JsonNode progress = imported ? validator.mapImportedProgress(local, validated) : emptyProgress();
         UUID id = UUID.randomUUID(), versionId = UUID.randomUUID();
@@ -106,6 +119,7 @@ public class PlanService {
         String name = namingSource.has("name") ? planName(namingSource) : defaultPlanName(planNumber, snapshot);
         repository.createPlan(account, id, versionId, goal, progress, name, planNumber);
         insertVersion(account, id, versionId, null, snapshot, validated.provenance(), recovery, imported ? "import" : "create", mapper.valueToTree(validated.assignmentContentIds()));
+        if(lifecycle!=null)lifecycle.create(account,id,snapshot,body.path("startDate"),imported);
         if (imported) event(account, id, versionId, 1, "legacyImport", progress);
         return receipt(account, key, operation, raw, id, 201, view(account, plan(account, id, false), version(account, id, versionId)));
     }
@@ -234,16 +248,45 @@ public class PlanService {
         JsonNode snapshot = body.path("snapshot"), recovery = body.path("recovery");
         String reason = text(body, "reason", 160);
         require(Set.of("recovery", "update-plan", "extend-deadline").contains(reason), "Invalid version reason");
-        var validated = reason.equals("update-plan")
-                ? validator.validate(snapshot, body.path("provenance"), false, grants(account))
-                : validator.validateExistingVersion(snapshot, body.path("provenance"), grants(account));
+        SnapshotValidator.ValidationResult validated;
+        if("ready-made-template".equals(prior.provenance().path("origin").asText())&&!reason.equals("update-plan")){
+            require(raw.path("snapshot").path("template").equals(prior.snapshot().path("template")),"Recovery must preserve the original template");
+            require(raw.path("provenance").equals(prior.provenance()),"Recovery must preserve all template pins");
+            snapshot=raw.path("snapshot");
+            validated=validator.validateOwnedTemplateVersion(snapshot,prior.provenance(),grants(account));
+        }else if("ready-made-template".equals(body.path("provenance").path("origin").asText())){
+            require(readyMade!=null,"Ready-made persistence is unavailable");
+            var mapped=readyMade.adopt(account,raw.path("snapshot"),raw.path("provenance"));snapshot=mapped.snapshot();
+            validated=new SnapshotValidator.ValidationResult(mapped.assignmentContentIds(),Set.copyOf(mapped.assignmentContentIds().values()),validator.catalogVersion(),mapped.provenance());
+        }else validated = reason.equals("update-plan") ? validator.validate(snapshot,body.path("provenance"),false,grants(account))
+                : validator.validateExistingVersion(snapshot,body.path("provenance"),grants(account));
         validateRecovery(prior, snapshot, validated.provenance(), recovery, reason);
+        if(lifecycle!=null)lifecycle.replace(account,id,snapshot);
         String goal = text(body, "goal", 160);
         UUID next = UUID.randomUUID(); long revision = plan.revision() + 1;
         insertVersion(account, id, next, plan.version(), snapshot, validated.provenance(), recovery, reason, mapper.valueToTree(validated.assignmentContentIds()));
         repository.activateVersion(account, id, next, revision, goal);
         event(account, id, next, revision, reason, recovery);
         return receipt(account, key, "version:" + id, raw, id, 201, view(account, plan(account, id, false), version(account, id, next)));
+    }
+
+    @Transactional
+    public Mutation lifecycle(UUID account,UUID id,UUID key,JsonNode body){
+        fields(body,"expectedRevision state startDate");
+        Mutation repeat=replay(account,key,"lifecycle:"+id,body);if(repeat!=null)return repeat;
+        require(lifecycle!=null,"Plan lifecycle is unavailable");
+        PlanRecord plan=plan(account,id,true);expect(plan,body);
+        PlanVersion current=version(account,id,plan.version());String state=text(body,"state",20);
+        if(state.equals("active")){
+            var grants=grants(account);
+            for(var assignment:assignments(current.snapshot()).values())accessible(current.snapshot(),source(assignment),grants);
+            for(var topic:current.snapshot().path("config").path("topicIds"))
+                require(grants.contains(topic.asText()),"Current access must cover every selected course before activation");
+        }
+        lifecycle.transition(account,id,current.snapshot(),state,body.path("startDate"));
+        repository.updateProgress(account,id,plan.progress(),plan.revision()+1);
+        event(account,id,plan.version(),plan.revision()+1,"lifecycle",body);
+        return receipt(account,key,"lifecycle:"+id,body,id,200,view(account,plan(account,id,false),current));
     }
 
     private void validateRecovery(PlanVersion prior, JsonNode next, JsonNode pins, JsonNode recovery, String reason) {
@@ -317,6 +360,15 @@ public class PlanService {
             }
         }
         Set<String> deferredIds = new HashSet<>(); deferred.forEach(n -> deferredIds.add(n.asText()));
+        if (prior.snapshot().has("template")) {
+            Set<String> nextFuture = new HashSet<>();
+            for(JsonNode item:next.path("futureReviews")) {
+                String id=item.path("id").asText();
+                require(nextFuture.add(id)&&item.equals(oldAssignments.get(id)),"Future template reviews must preserve their original metadata");
+            }
+            for(JsonNode old:prior.snapshot().path("futureReviews"))
+                require(newAssignments.containsKey(old.path("id").asText())||nextFuture.contains(old.path("id").asText())||deferredIds.contains(source(old)),"Omitted future review must be disclosed as deferred");
+        }
         for (var entry : scheduledBefore.entrySet())
             if (!newAssignments.containsKey(entry.getKey())) require(deferredIds.contains(source(entry.getValue())), "Omitted work must be disclosed as deferred");
         // Days that have already elapsed may retain historical work, but cannot gain a new assignment.
@@ -398,6 +450,7 @@ public class PlanService {
         result.put("name", plan.name()); result.put("planNumber", plan.planNumber());
         result.put("goal", plan.goal()); result.set("snapshot", version.snapshot()); result.set("provenance", version.provenance());
         result.set("progress", plan.progress()); result.set("recovery", version.recovery());
+        if(lifecycle!=null)result.set("lifecycle",lifecycle.view(account,plan.id()));
         result.put("createdAt", plan.createdAt()); result.put("updatedAt", plan.updatedAt());
         applyAccess(result, grants(account)); return result;
     }

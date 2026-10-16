@@ -63,6 +63,22 @@ class StaffAccessDatabaseTest {
         assertThat(jdbc.queryForObject("SELECT has_table_privilege('lookahead_platform_app','staff_access_events','UPDATE')",Boolean.class)).isFalse();
         assertThatThrownBy(()->jdbc.update("DELETE FROM staff_access_events WHERE assignment_id=?",id)).isInstanceOf(RuntimeException.class);
     }
+    @Test void coauthorReadsAssignmentsButCannotAssignRolesOrManageAccess() {
+        var coauthor = account(false);
+        var assignment = new StaffAccessService.Change(UUID.randomUUID(), coauthor.accountId(), null,
+                Set.of("co-author"), Set.of(), false, 0);
+        save(owner, assignment);
+        assertThat(service.list(coauthor)).isNotEmpty();
+        assertThat(service.catalog(coauthor)).contains("java");
+        assertThatThrownBy(() -> service.requireOwner(coauthor)).isInstanceOf(
+                com.lookahead.learning.content.exception.AccountFailure.class);
+        assertThatThrownBy(() -> save(coauthor, new StaffAccessService.Change(UUID.randomUUID(),
+                other.accountId(), null, Set.of("admin"), Set.of(), true, 0)))
+                .isInstanceOf(com.lookahead.learning.content.exception.AccountFailure.class);
+        assertThat(service.permissions(coauthor).manageAccess()).isFalse();
+        assertThatThrownBy(() -> service.list(account(false))).isInstanceOf(
+                com.lookahead.learning.content.exception.AccountFailure.class);
+    }
     @Test void pendingClaimRequiresVerifiedIdentityAndNeverMergesAccountsOrReplays() {
         UUID id=UUID.randomUUID();var recipient=account(false);var impostor=account(false);
         save(owner,new StaffAccessService.Change(id,null,"Invited@Example.invalid",Set.of("tester"),Set.of(),false,0));

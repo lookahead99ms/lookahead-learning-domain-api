@@ -490,3 +490,58 @@ Domain owns `/api/v1/membership/plans`, `/api/v1/sales/active`, account purchase
 Local and DEV accept only mock payments (`APP_PAYMENTS_PROVIDER=mock`, default). Select `APP_PAYMENTS_MOCK_SCENARIO`: `success` (default), `decline`, `requires-action`, `network`, `rate-limit`, `server-error`, or `timeout-after-success`. Only change this on an isolated test deployment; pending outcomes never grant access. At most three attempts per purchase, jittered exponential delay and a three-second retry-loop budget. Unknown outcomes need investigation; real settlement/refunds/webhooks are not enabled. The Stripe SDK adapter is unregistered and never used in Local/DEV; do not supply keys. Student/regional discount rules and Course Pass duration remain pending.
 
 `./mvnw test` runs unit/contract checks. `MembershipDatabaseTest` requires the existing isolated `CLOUD_AUTH_TEST_DATABASE_URL` and password-file environment variables from Infra’s cloud-auth test database helper; it creates and removes only its synthetic test schema. Never point it at application databases.
+
+## DLV-961 co-author policy (source work, not activated)
+
+The assignable `co-author` role permits document/preview reads, delivery reads,
+People and access reads/lookup, and membership-record reads. It does not grant
+owner access management, delivery writes, sale/price writes or staff upgrades.
+Admin and co-author roles imply full curriculum in effective-grant computation;
+other staff assignments and commercial purchases remain separate. The final
+permission set and the complete UI/publishing boundary still need review before
+merge or activation. DLV-930 owns that role verification.
+
+DLV-961's full test-account seed/reset integration is not implemented in Domain.
+Ready-made account persistence remains the DLV-705 dependency: the existing
+preparation mapper is read-only and must not be treated as an enabled save
+capability. Existing author and learner records have not been reset by this work.
+
+Saved-plan mutation transactions now lock the owning `platform_subjects` row before
+request-key and plan locks, including retries. This serializes distinct mutation
+keys for the same account across instances, while other owners remain independent.
+`PlanLifecycleDatabaseTest` checks lock contention and rollback against the documented
+disposable PostgreSQL fixture. This source change is not yet activated and does not
+advertise ready-made adoption or enforce the unfinished DLV-705 reservation policy.
+
+
+DLV-961 source now includes the fixed 27-row scenario catalog and a guarded Local
+purchase-fixture writer. It uses normal membership purchases, replacement links,
+mock-payment receipts and staff-upgrade audit rows. Student/regional/sale categories
+are explicit synthetic metadata with zero configured discount amount; no commercial
+eligibility or rate is inferred. The writer is not wired into startup or live resets
+yet. Plan seeding and lifecycle integration remain unfinished.
+
+Authenticated `GET /api/v1/account/access-summary` and the staff-readable
+`GET /api/v1/admin/accounts/{id}/access-summary` return derived current access labels.
+Only owner, admin and co-author may read another account. These read projections
+exclude future, expired and superseded purchases; manual course grants are labeled
+`Granted`. They neither grant access nor create stored roles. Local activation and
+frontend integration remain pending the DLV-961 batch.
+
+### Dated account plans and managed Local fixtures
+
+DLV-705 adds `POST /api/v1/plans/{id}/lifecycle` with revision/idempotency protection.
+New plans require an explicit UTC `startDate`; legacy imports may remain unactivated.
+Activation validates current access, four active plans, exclusive courses and overlapping
+1080-minute daily capacity. Archive/completion retains versions and progress. Automatic
+archive is derived 90 days after the latest saved exclusive end, without read-side writes.
+Ready-made saves compare the complete client snapshot against a hash-verified server mapping.
+Explicit `compatibleTemplateCatalogVersions` permits verified historical pins while every
+reference continues to be checked against the current catalog.
+
+Test maintenance requires `accounts,local-test`, `app.deployment-environment=local`,
+`app.test-accounts.enabled=true`, a separate operator secret and prepared private custom-plan
+fixtures (`app.test-accounts.plan-fixtures`). Internal seed is never exposed by Gateway.
+Owner/admin may explicitly reset a registered fixture; co-author reads only. Disable the
+legacy startup seeder when using managed maintenance to preserve existing author grants.
+Do not include fixture publications or secret files in this repository or its image.

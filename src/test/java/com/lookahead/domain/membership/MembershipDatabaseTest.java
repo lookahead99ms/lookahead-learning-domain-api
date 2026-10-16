@@ -47,5 +47,17 @@ class MembershipDatabaseTest {
     @Test void roundingAndCalendarDuration(){Instant start=Instant.parse("2026-01-01T00:00:00Z"),end=start.plus(Duration.ofDays(100));assertThat(MembershipRules.prorateHalfUpCents(101,start,end,start.plus(Duration.ofDays(50)))).isEqualTo(51);assertThat(MembershipRules.end(Instant.parse("2026-01-31T12:00:00Z"),"months",1)).isEqualTo(Instant.parse("2026-02-28T12:00:00Z"));}
     @Test void renewalSchedulesFullTermAndRejectsSecondOrExpiredRenewal(){var a=actor();var s=service("success");var first=s.buy(a,a.accountId(),buy("learn"),"renew-base",false);UUID id=UUID.fromString(first.path("id").asText());var req=new MembershipService.Buy("learn",id,List.of());var q=s.quote(a,req);assertThat(q.path("startsAt").asText()).isEqualTo(first.path("endsAt").asText());var renewal=s.buy(a,a.accountId(),req,"renew-next",false);assertThat(renewal.path("status").asText()).isEqualTo("scheduled");assertThatThrownBy(()->s.buy(a,a.accountId(),req,"renew-again",false)).hasMessageContaining("already scheduled");jdbc.update("UPDATE membership_purchases SET ends_at=starts_at+interval '1 day' WHERE id=?",id);var future=new MembershipService(jdbc,json,manager,new MockStripePaymentGateway(jdbc,manager,"success"),staff,Clock.fixed(clock.instant().plus(Duration.ofDays(2)),ZoneOffset.UTC));assertThatThrownBy(()->future.quote(a,req)).hasMessageContaining("active purchase");}
     @Test void staleQuoteCannotBuyAtChangedPrice(){var a=actor();var s=service("success");assertThatThrownBy(()->s.buy(a,a.accountId(),new MembershipService.Buy("learn",null,List.of(),1),"stale-price",false)).hasMessageContaining("price changed");assertThat(s.access(a,a.accountId())).isEmpty();}
-    @Test void learnerCannotReadOrUpgradeAnotherAccount(){var a=actor();var target=actor();when(staff.permissions(a)).thenReturn(StaffPermissions.forRoles(false,Set.of()));var s=service("success");assertThatThrownBy(()->s.access(a,target.accountId())).hasMessageContaining("Author or admin");assertThatThrownBy(()->s.buy(a,target.accountId(),buy("complete"),"forbidden-key",true)).hasMessageContaining("Author or admin");}
+    @Test void learnerCannotReadOrUpgradeAnotherAccount(){var a=actor();var target=actor();when(staff.permissions(a)).thenReturn(StaffPermissions.forRoles(false,Set.of()));var s=service("success");assertThatThrownBy(()->s.access(a,target.accountId())).hasMessageContaining("Author, co-author or admin");assertThatThrownBy(()->s.buy(a,target.accountId(),buy("complete"),"forbidden-key",true)).hasMessageContaining("Author or admin");}
+    @Test void coauthorCanReadPurchasesButCannotIncreaseAccess() {
+        var learner=actor(); var coauthor=actor(); var s=service("success");
+        var purchase=s.buy(learner,learner.accountId(),buy("learn"),"coauthor-read-base",false);
+        when(staff.permissions(coauthor)).thenReturn(StaffPermissions.forRoles(false,Set.of("co-author")));
+        assertThat(s.access(coauthor,learner.accountId())).hasSize(1);
+        assertThatThrownBy(() -> s.buy(coauthor,learner.accountId(),
+                new MembershipService.Buy("complete",UUID.fromString(purchase.path("id").asText()),List.of()),
+                "coauthor-denied-upgrade",true)).hasMessageContaining("Author or admin");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM membership_purchases WHERE account_id=?",Integer.class,
+                learner.accountId())).isEqualTo(1);
+    }
+
 }

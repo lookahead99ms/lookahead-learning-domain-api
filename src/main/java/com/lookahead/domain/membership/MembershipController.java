@@ -12,10 +12,15 @@ import tools.jackson.databind.node.ObjectNode;
 public class MembershipController {
     private final MembershipService service;
     public MembershipController(MembershipService service){this.service=service;}
+    private AccessSummaryService summaries;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureSummaries(AccessSummaryService summaries){this.summaries=summaries;}
     @ModelAttribute void noCache(HttpServletResponse response){response.setHeader("Cache-Control","no-store");}
     @GetMapping("/api/v1/membership/plans") public ApiResponse<?> catalog(){return ApiResponse.success(service.catalog());}
     @GetMapping("/api/v1/sales/active") public ApiResponse<?> sale(){return ApiResponse.success(service.activeSale());}
     @GetMapping("/api/v1/account/access-records") public ApiResponse<?> access(@AuthenticationPrincipal AccountPrincipal actor){return ApiResponse.success(service.access(actor,actor.accountId()));}
+    @GetMapping("/api/v1/account/access-summary") public ApiResponse<?> summary(@AuthenticationPrincipal AccountPrincipal actor){return ApiResponse.success(summaries.get(actor,actor.accountId()));}
+    @GetMapping("/api/v1/admin/accounts/{id}/access-summary") public ApiResponse<?> summaryFor(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable UUID id){return ApiResponse.success(summaries.get(actor,id));}
     @PostMapping("/api/v1/account/purchases/quote") public ApiResponse<?> quote(@AuthenticationPrincipal AccountPrincipal actor,@RequestBody MembershipService.Buy request){return ApiResponse.success(service.quote(actor,request));}
     @PostMapping("/api/v1/account/purchases") public ApiResponse<?> buy(@AuthenticationPrincipal AccountPrincipal actor,@RequestBody MembershipService.Buy request,@RequestHeader(value="Idempotency-Key",required=false) String key){return ApiResponse.success(service.buy(actor,actor.accountId(),request,key,false));}
     @GetMapping("/api/v1/account/purchases/{id}") public ApiResponse<?> get(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable UUID id){return ApiResponse.success(service.get(actor,id));}

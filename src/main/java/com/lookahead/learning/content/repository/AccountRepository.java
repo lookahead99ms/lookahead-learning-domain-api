@@ -37,7 +37,7 @@ public class AccountRepository {
             var assignment=staff.forAccount(subject);
             if(assignment!=null) {
                 result.addAll(assignment.topicGrants());
-                if(assignment.fullCurriculum()||assignment.roles().contains("tester"))result.addAll(catalog.allTopicIds());
+                if(assignment.fullCurriculum()||com.lookahead.domain.access.StaffPermissions.forRoles(false, assignment.roles()).fullCurriculum())result.addAll(catalog.allTopicIds());
             }
         }
         if(memberships!=null)result.addAll(memberships.topics(subject));

@@ -5,6 +5,15 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class StaffPermissionsTest {
+    @Test void coauthorCanReadAuthorSurfacesWithoutOwnerOrWritePermissions() {
+        var p = StaffPermissions.forRoles(false, Set.of("co-author"));
+        assertTrue(p.previewDocuments()); assertTrue(p.deliveryRead()); assertTrue(p.fullCurriculum());
+        assertEquals("co-author", p.feedbackRole());
+        assertFalse(p.manageAccess()); assertFalse(p.triageFeedback());
+        assertFalse(p.deliveryCreate()); assertFalse(p.deliveryReview()); assertFalse(p.deliveryDone());
+        assertFalse(p.permitsDeliveryWrite(true, null, "backlog"));
+        assertFalse(p.permitsDeliveryWrite(false, "review", "done"));
+    }
     @Test void testerGetsCurriculumButNoAdministrativeAccess() {
         var p = StaffPermissions.forRoles(false, Set.of("tester"));
         assertTrue(p.fullCurriculum()); assertEquals("tester", p.feedbackRole());
@@ -19,7 +28,7 @@ class StaffPermissionsTest {
         assertFalse(p.permitsDeliveryWrite(true, null, "done"));
         assertFalse(p.permitsDeliveryWrite(false, "review", "done"));
         assertFalse(p.permitsDeliveryWrite(false, "done", "review"));
-        assertFalse(p.manageAccess()); assertFalse(p.fullCurriculum());
+        assertFalse(p.manageAccess()); assertTrue(p.fullCurriculum());
     }
     @Test void reviewerCanSignOffOnlyAStoryAlreadyInReview() {
         var p = StaffPermissions.forRoles(false, Set.of("reviewer"));

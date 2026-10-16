@@ -48,4 +48,11 @@ class IdentitySettingsTest {
         env.withProperty("app.deployment-environment", "prod");
         assertThatThrownBy(() -> new DomainFixtureGuard(env)).isInstanceOf(IllegalStateException.class);
     }
+    @org.junit.jupiter.api.Test void managedMaintenanceDoesNotRequireLegacyAuthorWrites() {
+        var env=new org.springframework.mock.env.MockEnvironment().withProperty("app.deployment-environment","local").withProperty("app.test-accounts.enabled","true").withProperty("app.local-test.author-enabled","true");
+        env.setActiveProfiles("accounts","local-test");
+        assertThatCode(()->new DomainFixtureGuard(env)).doesNotThrowAnyException();
+        env.setActiveProfiles("accounts","local-test","dev");
+        assertThatThrownBy(()->new DomainFixtureGuard(env)).isInstanceOf(RuntimeException.class);
+    }
 }

@@ -32,8 +32,13 @@ public class StaffAccessService {
         requireIdentity(actor);
         if(!owner.allowed(actor))throw new AccountFailure(403,"OWNER_REQUIRED","Only the owner can manage access.");
     }
-    public List<Assignment> list(AccountPrincipal actor) { requireOwner(actor);return repository.list(); }
-    public Set<String> catalog(AccountPrincipal actor) { requireOwner(actor);return catalog.allTopicIds(); }
+    public void requireAccessReader(AccountPrincipal actor) {
+        var current = permissions(actor);
+        if (!current.manageAccess() && !"co-author".equals(current.feedbackRole()))
+            throw new AccountFailure(403, "ACCESS_READER_REQUIRED", "Owner or co-author required.");
+    }
+    public List<Assignment> list(AccountPrincipal actor) { requireAccessReader(actor);return repository.list(); }
+    public Set<String> catalog(AccountPrincipal actor) { requireAccessReader(actor);return catalog.allTopicIds(); }
 
     @Transactional
     public Assignment save(AccountPrincipal actor, Change change) {
@@ -50,6 +55,7 @@ public class StaffAccessService {
         // A saved assignment cannot be moved to a different person.
         if(old!=null && (!java.util.Objects.equals(old.accountId(),change.accountId())||!java.util.Objects.equals(old.pendingEmail(),email)))throw invalid();
         var next=new Assignment(change.id(),change.accountId(),email,Set.copyOf(change.roles()),Set.copyOf(change.topicGrants()),change.fullCurriculum(),change.revision()+1);
+        repository.mutationActor(actor.accountId());
         try { if(old==null)repository.insert(next);else repository.update(next); }
         catch(DuplicateKeyException duplicate){throw conflict();}
         repository.event(actor.accountId(),"assign",old,next);
@@ -66,6 +72,7 @@ public class StaffAccessService {
         if(pending==null)return;
         if(repository.forAccount(actor.accountId())!=null)throw conflict();
         var next=new Assignment(pending.id(),actor.accountId(),null,pending.roles(),pending.topicGrants(),pending.fullCurriculum(),pending.revision()+1);
+        repository.mutationActor(actor.accountId());
         repository.update(next);repository.event(actor.accountId(),"claim",pending,next);
     }
     public static String normalizeEmail(String email) {

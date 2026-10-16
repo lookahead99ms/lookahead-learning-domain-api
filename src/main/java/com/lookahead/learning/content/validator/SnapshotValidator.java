@@ -90,6 +90,24 @@ public final class SnapshotValidator {
         return validateSnapshot(snapshot, provenance, legacy, grants, true);
     }
 
+    /** Only for a template version whose owned immutable source/pins were checked by PlanService. */
+    public ValidationResult validateOwnedTemplateVersion(JsonNode snapshot, JsonNode provenance, Set<String> grants) {
+        ObjectNode compatible=(ObjectNode)snapshot.deepCopy();
+        compatible.remove("template");
+        for(String field:List.of("days","weeks","futureReviews")) stripTemplateFields(compatible.path(field));
+        ObjectNode pins=(ObjectNode)provenance.deepCopy();
+        pins.remove("template");pins.put("origin","generated");
+        var result=validateSnapshot(compatible,pins,false,grants,true);
+        return new ValidationResult(result.assignmentContentIds(),result.canonicalContentIds(),result.validatedAgainstCatalogVersion(),provenance.deepCopy());
+    }
+    private void stripTemplateFields(JsonNode node) {
+        if(node.isArray()){node.forEach(this::stripTemplateFields);return;}
+        if(!node.isObject())return;
+        ObjectNode object=(ObjectNode)node;
+        if(object.has("sourceContentId"))for(String key:List.of("templateKind","requiredSessionIds","reviewBasis","reviewSourceSessionId"))object.remove(key);
+        for(var entry:object.properties())stripTemplateFields(entry.getValue());
+    }
+
     public boolean isAccessible(String canonicalId, Set<String> grants) {
         JsonNode record = records.get(canonicalId);
         return record != null && (grants.contains("content:"+record.path("id").asText()) || strings(record, "topicIds", 100).stream().anyMatch(grants::contains));
@@ -99,7 +117,8 @@ public final class SnapshotValidator {
     public Map<String, String> validateTemplateReferences(JsonNode template) {
         JsonNode pins = template.path("provenance");
         require("ready-made-schedule/v1".equals(text(pins, "algorithmVersion", 256)), "Unsupported template algorithm");
-        require(catalogVersion().equals(text(pins, "catalogVersion", 256)), "Unresolvable template catalog version");
+        String templateCatalog = text(pins, "catalogVersion", 256);
+        require(catalogVersion().equals(templateCatalog) || optionalStrings(catalog, "compatibleTemplateCatalogVersions", 100).contains(templateCatalog), "Unresolvable template catalog version");
         String ranking = optionalText(pins, "rankingVersion", 256);
         require(ranking == null || strings(catalog, "rankingVersions", 100).contains(ranking), "Unresolvable template ranking version");
         Set<String> selected = new HashSet<>(strings(template, "topicIds", 100));
@@ -287,7 +306,7 @@ public final class SnapshotValidator {
 
     /** Preserves imported aggregate evidence without manufacturing attempt counts or timestamps. */
     public JsonNode mapImportedProgress(JsonNode local, ValidationResult validated) {
-        fields(local, "schemaVersion revision name planNumber createdAt customName goal rankingVersion catalogVersion snapshot completedIds shiftedDays recovery deferredSessions sessionOutcomes reviewNotes attemptedContentIds needsReviewContentIds history studyLog");
+        fields(local, "schemaVersion revision name planNumber createdAt customName goal rankingVersion catalogVersion snapshot completedIds shiftedDays recovery deferredSessions sessionOutcomes reviewNotes attemptedContentIds needsReviewContentIds history studyLog readyMade startDate");
         require("study-plan-local/v1".equals(text(local, "schemaVersion", 64)), "Unsupported local snapshot");
         integer(local, "revision", 1, Integer.MAX_VALUE); text(local, "goal", 160); integer(local, "shiftedDays", 0, 10000);
         String localCatalog = optionalText(local, "catalogVersion", 256);
