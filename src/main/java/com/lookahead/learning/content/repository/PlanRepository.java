@@ -31,10 +31,20 @@ public class PlanRepository {
         this.json = json;
     }
 
+    private com.lookahead.domain.membership.MembershipGrants memberships;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    void memberships(com.lookahead.domain.membership.MembershipGrants value){memberships=value;}
+
+    private AccountRepository accounts;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    void accounts(AccountRepository value){accounts=value;}
+
     public Set<String> grants(UUID account) {
         // DLV-931: grants are read in their blaze form even if an old tool wrote a look-ahead ID.
         var result=new HashSet<>(com.lookahead.learning.content.util.CatalogIds.normalize(jdbc.queryForList(
                 "SELECT topic_id FROM account_grants WHERE account_id=? AND (valid_until IS NULL OR valid_until > now())", String.class, account)));
+        if(accounts!=null)result.addAll(accounts.findTopicGrants(account));
+        else if(memberships!=null)result.addAll(memberships.topics(account));
         if(publication!=null && com.lookahead.learning.content.repository.AccountRepository.currentIdentityEnabled(account))
             publication.contentGrants(Set.copyOf(result)).forEach(id->result.add("content:"+id));
         return result;
@@ -113,6 +123,10 @@ public class PlanRepository {
     }
 
     public void lockMutation(UUID account, UUID key) {
+        // Always acquire the owner lock before a receipt or plan lock. Distinct keys
+        // and different service instances must share the same transaction boundary.
+        // Allocation also updates this row, so taking it first prevents lock inversion.
+        jdbc.query("SELECT id FROM platform_subjects WHERE id=? FOR UPDATE", rs -> {}, account);
         jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", rs -> {}, account + ":" + key);
     }
 

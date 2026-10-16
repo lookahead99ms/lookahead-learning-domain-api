@@ -57,6 +57,7 @@ class PlanLifecycleDatabaseTest {
         jdbc.execute("CREATE TABLE flyway_schema_history(installed_rank integer)");
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V1__platform.sql")));
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V3__plan_names.sql")));
+        jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V9__plan_lifecycle.sql")));
         try (var input = getClass().getResourceAsStream("/accounts/generated-plan.json")) {
             template = (ObjectNode) mapper.readTree(input);
         }
@@ -145,6 +146,71 @@ class PlanLifecycleDatabaseTest {
         assertSameJson(service.rename(owner(), id(first), renameKey, rename).data(), renamed);
         failure("REVISION_CONFLICT", () -> service.rename(owner(), id(first), UUID.randomUUID(), rename));
         failure("REVISION_REQUIRED", () -> service.rename(owner(), id(first), UUID.randomUUID(), mapper.createObjectNode().put("name", "Lost revision")));
+    }
+
+    @Test void activeCreateIsAtomicAcrossInstancesAndLifecycleRetriesRetainProgress() throws Exception {
+        var policy=new PlanLifecycle(jdbc,mapper);
+        var ready=org.mockito.Mockito.mock(ReadyMadeWrites.class);
+        PlanService first=newService(), second=newService();
+        first.configureLifecycle(policy,ready);second.configureLifecycle(policy,ready);
+        ObjectNode body=template.deepCopy().put("startDate",java.time.LocalDate.now(java.time.ZoneOffset.UTC).toString());
+        UUID account=owner();
+        var start=new java.util.concurrent.CountDownLatch(1);
+        try(var pool=java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            java.util.concurrent.Callable<Integer> one=()->{start.await();try{first.create(account,UUID.randomUUID(),body,false);return 201;}catch(AccountFailure failure){return failure.status();}};
+            java.util.concurrent.Callable<Integer> two=()->{start.await();try{second.create(account,UUID.randomUUID(),body,false);return 201;}catch(AccountFailure failure){return failure.status();}};
+            var a=pool.submit(one);var b=pool.submit(two);start.countDown();
+            assertThat(java.util.List.of(a.get(5,java.util.concurrent.TimeUnit.SECONDS),b.get(5,java.util.concurrent.TimeUnit.SECONDS))).containsExactlyInAnyOrder(201,409);
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM plans WHERE account_id=?",Integer.class,account)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM mutation_receipts WHERE account_id=?",Integer.class,account)).isEqualTo(1);
+        UUID planId=jdbc.queryForObject("SELECT id FROM plans WHERE account_id=?",UUID.class,account);
+        var initial=first.get(account,planId,null);
+        var archive=mapper.createObjectNode().put("expectedRevision",1).put("state","archived");
+        UUID key=UUID.randomUUID();var archived=first.lifecycle(account,planId,key,archive).data();
+        assertThat(archived.path("lifecycle").path("state").asText()).isEqualTo("archived");
+        assertSameJson(first.lifecycle(account,planId,key,archive).data(),archived);
+        assertThat(archived.path("progress")).isEqualTo(initial.path("progress"));
+        failure("REVISION_CONFLICT",()->first.lifecycle(account,planId,UUID.randomUUID(),archive));
+        failure("PLAN_NOT_FOUND",()->first.lifecycle(UUID.randomUUID(),planId,UUID.randomUUID(),archive));
+        jdbc.update("DELETE FROM account_grants WHERE account_id=?",account);
+        var restore=mapper.createObjectNode().put("expectedRevision",2).put("state","active").put("startDate",body.path("startDate").asText());
+        failure("CONTENT_ACCESS_DENIED",()->first.lifecycle(account,planId,UUID.randomUUID(),restore));
+        assertThat(first.get(account,planId,null).path("revision").asLong()).isEqualTo(2);
+    }
+
+    @Test void differentMutationKeysSerializePerOwnerAcrossDatabaseConnectionsAndReleaseOnRollback() {
+        var transactions = new org.springframework.transaction.support.TransactionTemplate(
+                new DataSourceTransactionManager(source));
+        var independent = new org.springframework.transaction.support.TransactionTemplate(
+                new DataSourceTransactionManager(source));
+        independent.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        var first = new PlanRepository(jdbc, new PlanJson(mapper));
+        var second = new PlanRepository(new JdbcTemplate(source), new PlanJson(mapper));
+        UUID account = owner(), other = UUID.randomUUID();
+        jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)", other);
+        transactions.executeWithoutResult(outer -> {
+            first.lockMutation(account, UUID.randomUUID());
+            // A separate connection with a distinct key cannot pass the same owner's boundary.
+            assertThatThrownBy(() -> independent.executeWithoutResult(inner -> {
+                jdbc.execute("SET LOCAL lock_timeout = '100ms'");
+                second.lockMutation(account, UUID.randomUUID());
+            })).isInstanceOf(org.springframework.dao.DataAccessException.class)
+                    .rootCause().isInstanceOfSatisfying(java.sql.SQLException.class,
+                            failure -> assertThat(failure.getSQLState()).isEqualTo("55P03"));
+            // Unrelated accounts are not serialized globally.
+            independent.executeWithoutResult(inner -> {
+                jdbc.execute("SET LOCAL lock_timeout = '100ms'");
+                second.lockMutation(other, UUID.randomUUID());
+            });
+            outer.setRollbackOnly();
+        });
+        // A failed transaction leaves no durable lock or reservation behind.
+        independent.executeWithoutResult(inner -> {
+            jdbc.execute("SET LOCAL lock_timeout = '100ms'");
+            second.lockMutation(account, UUID.randomUUID());
+        });
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM plans WHERE account_id=?", Integer.class, account)).isZero();
     }
 
     @Test void progressOperationsAreAtomicAndCurrentGrantsApplyToRetriesWhileNotesRemainEditable() {

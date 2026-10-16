@@ -78,6 +78,12 @@ public class PlanController {
         return mutation(planService.activity(user.accountId(), PayloadReaders.uuid(id), key(key), body));
     }
 
+    @PostMapping("/plans/{id}/lifecycle")
+    ResponseEntity<?> lifecycle(@AuthenticationPrincipal AccountPrincipal user,@PathVariable String id,
+            @RequestHeader(value="Idempotency-Key",required=false) String key,@RequestBody JsonNode body){
+        return mutation(planService.lifecycle(user.accountId(),PayloadReaders.uuid(id),key(key),body));
+    }
+
     @PostMapping("/plans/{id}/versions")
     ResponseEntity<?> versions(@AuthenticationPrincipal AccountPrincipal user, @PathVariable String id,
             @RequestHeader(value = "Idempotency-Key", required = false) String key, @RequestBody JsonNode body) {

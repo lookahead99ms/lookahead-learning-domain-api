@@ -9,6 +9,9 @@ import tools.jackson.databind.ObjectMapper;
 
 @Repository
 public class StaffAccessRepository {
+    public void mutationActor(UUID actor) {
+        jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor.toString());
+    }
     public record Assignment(UUID id, UUID accountId, String pendingEmail, Set<String> roles,
             Set<String> topicGrants, boolean fullCurriculum, long revision) {}
     private final JdbcTemplate jdbc;

@@ -60,6 +60,36 @@ class ReadyMadeAdoptionPreparationTest {
         publish(template, allTopics, "pro", "all", "application/json");
     }
 
+    @Test void adoptionWritesRequireExactTrustedSnapshotPinsAndCurrentCoverage() throws Exception {
+        var mapping=prepare().mapping();
+        var writes=new ReadyMadeWrites(service,new com.lookahead.learning.content.util.PlanJson(mapper));
+        var adopted=writes.adopt(OWNER,mapping.snapshot(),mapping.provenance());
+        var browserPins=(ObjectNode)mapping.provenance();
+        ((ObjectNode)browserPins.path("template")).put("pickerCatalogVersion","ready-made-catalog/2026.10.14.1+synthetic");
+        try(var browserSource=getClass().getResourceAsStream("/study-plans/synthetic-browser-adoption-snapshot.json")) {
+            assertNotNull(browserSource);
+            var browserSnapshot=mapper.readTree(browserSource.readAllBytes());
+            assertEquals(mapping.snapshot(),writes.adopt(OWNER,browserSnapshot,browserPins).snapshot());
+        }
+        ((ObjectNode)browserPins.path("template")).put("pickerCatalogVersion","../invalid");
+        assertThrows(IllegalArgumentException.class,()->writes.adopt(OWNER,mapping.snapshot(),browserPins));
+        assertEquals(mapping.snapshot(),adopted.snapshot());
+        var forged=(ObjectNode)mapping.snapshot();forged.put("remainingNewItems",9999);
+        assertThrows(IllegalArgumentException.class,()->writes.adopt(OWNER,forged,mapping.provenance()));
+        var pins=(ObjectNode)mapping.provenance();pins.put("catalogVersion","changed");
+        assertThrows(IllegalArgumentException.class,()->writes.adopt(OWNER,mapping.snapshot(),pins));
+        when(accounts.findTopicGrants(OWNER)).thenReturn(Set.of());
+        assertThrows(com.lookahead.learning.content.exception.AccountFailure.class,()->writes.adopt(OWNER,mapping.snapshot(),mapping.provenance()));
+    }
+
+    @Test void ownedTemplateRecoveryValidatorRetainsAllPinsAndDependencyMetadata() {
+        var mapping=prepare().mapping();
+        var validated=catalog.validateOwnedTemplateVersion(mapping.snapshot(),mapping.provenance(),allTopics);
+        assertEquals(mapping.provenance(),validated.provenance());
+        assertEquals(mapping.assignmentContentIds(),validated.assignmentContentIds());
+        assertThrows(IllegalArgumentException.class,()->catalog.validateOwnedTemplateVersion(mapping.snapshot(),mapping.provenance(),Set.of()));
+    }
+
     @Test void completePreparationIsOwnerBoundAndReadsOnlyCurrentAccountState() {
         var prepared = prepare();
         assertEquals(OWNER, prepared.accountId());
@@ -295,6 +325,18 @@ class ReadyMadeAdoptionPreparationTest {
             record.set("route", reference.path("route").deepCopy());
         }
         return trusted;
+    }
+
+    @org.junit.jupiter.api.Test void historicalTemplatePinsRequireExplicitCompatibilityAndStillValidateReferences() {
+        var current=(ObjectNode)trustedCatalog(template);
+        String old=template.path("provenance").path("catalogVersion").asText();
+        current.put("catalogVersion","sha256:"+"d".repeat(64));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,()->new SnapshotValidator(mapper,current).validateTemplateReferences(template));
+        current.putArray("compatibleTemplateCatalogVersions").add(old);
+        new SnapshotValidator(mapper,current).validateTemplateReferences(template);
+        var altered=template.deepCopy();
+        ((ObjectNode)altered.path("references").get(0)).putArray("route").add("/unexpected");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,()->new SnapshotValidator(mapper,current).validateTemplateReferences(altered));
     }
 
     private void publish(JsonNode source, Set<String> scopes, String tier, String scopeMatch, String mediaType)

@@ -50,6 +50,8 @@ public class DomainSecurityConfiguration {
                 .logout(AbstractHttpConfigurer::disable).requestCache(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(HttpMethod.GET, "/api/v1/membership/plans", "/api/v1/sales/active").permitAll()
+                        .requestMatchers("/api/v1/account/access-summary", "/api/v1/account/access-records", "/api/v1/account/purchases", "/api/v1/account/purchases/**", "/api/v1/admin/accounts/**", "/api/v1/admin/sales", "/api/v1/admin/sales/**", "/api/v1/admin/membership/**").hasAuthority("SCOPE_account")
                         .requestMatchers(HttpMethod.GET, "/api/v1/status", "/actuator/health", "/actuator/health/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/content/**").access((authentication, request) -> {
                             var value = authentication.get();
@@ -58,8 +60,9 @@ public class DomainSecurityConfiguration {
                         .requestMatchers(HttpMethod.GET, "/api/v1/author/review-artifacts", "/api/v1/author/review-artifacts/*/events").hasAuthority("SCOPE_account")
                         .requestMatchers(HttpMethod.POST, "/api/v1/author/review-artifacts/*/events").hasAuthority("SCOPE_account")
                         .requestMatchers("/api/v1/support").hasAuthority("SCOPE_support")
-                        .requestMatchers("/api/v1/admin/access", "/api/v1/admin/access/**", "/api/v1/account/permissions").hasAuthority("SCOPE_account")
+                        .requestMatchers("/api/v1/admin/test-accounts", "/api/v1/admin/test-accounts/**", "/api/v1/admin/access", "/api/v1/admin/access/**", "/api/v1/account/permissions").hasAuthority("SCOPE_account")
                         .requestMatchers("/api/v1/platform-reviews", "/api/v1/platform-reviews/**").hasAuthority("SCOPE_account")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/invitations/activate").hasAuthority("SCOPE_account")
                         .requestMatchers("/api/v1/auth/me", "/api/v1/account-catalog", "/api/v1/author/previews/access", "/api/v1/plans", "/api/v1/plans/**").hasAuthority("SCOPE_account")
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resource -> resource.jwt(jwt -> jwt.decoder(decoder)

@@ -9,6 +9,7 @@ import com.lookahead.learning.content.service.ProtectedContentPolicy;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -22,10 +23,15 @@ public class DomainAccountController {
     public DomainAccountController(AccountRepository accounts, ProtectedContentPolicy publication, LocalAuthorAccess author) {
         this.accounts = accounts; this.publication = publication; this.author = author;
     }
+    @PostMapping("/api/v1/auth/invitations/activate")
+    public ApiResponse<AccountView> activateInvitation(@AuthenticationPrincipal AccountPrincipal principal, HttpServletResponse response) {
+        access.claimVerified(principal, principal.verifiedEmail());
+        return me(principal, response);
+    }
+
     @GetMapping("/api/v1/auth/me")
     public ApiResponse<AccountView> me(@AuthenticationPrincipal AccountPrincipal principal, HttpServletResponse response) {
         response.setHeader("Cache-Control", "no-store");
-        if(access!=null)access.claimVerified(principal,principal.verifiedEmail());
         var grants = accounts.findTopicGrants(principal.accountId());
         return ApiResponse.success(new AccountView(principal.accountId(), principal.getUsername(), principal.displayName(),
                 grants, publication.contentGrants(grants), author.allowed(principal),
