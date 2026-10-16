@@ -107,3 +107,16 @@ DLV-961 review 2026-10-16: added access-summary and managed test-account matcher
 The security helper regressions copy the real exception-bound sources and prove that
 subsequent edits still fail closed. A fresh hosted full CodeQL analysis remains
 required; passing local helpers alone does not certify the hosted security gate.
+
+## Local test-account maintenance CSRF review (October 16)
+
+The completed hosted scan reported disabled CSRF in `TestAccountSecurity`. Basic
+authentication is not inherently immune to CSRF. The Local-only internal seed
+chain now rejects Origin and Sec-Fetch-Site headers and non-JSON POSTs before
+authentication or mutation. Preflight is denied; the endpoint is not proxied by
+Gateway. Infra's existing non-browser JSON request remains compatible.
+
+A new exact rule/file/source-bound DLV-918 exception expires October 19, alongside
+the existing reviews. Browser/form rejection with valid operator credentials and
+positive script-style requests are tested. This is not a blanket exception for
+other maintenance code or permission to enable DEV/PROD.

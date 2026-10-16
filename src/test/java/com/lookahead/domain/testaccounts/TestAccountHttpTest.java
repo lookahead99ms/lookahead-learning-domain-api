@@ -60,6 +60,32 @@ class TestAccountHttpTest {
         }
         assertThat(send("POST","seed",OPERATOR).body()).contains("\"created\":35");
     }
+    @org.springframework.beans.factory.annotation.Autowired TestAccountsService service;
+    @Test void browserAndSimpleRequestsCannotSeedEvenWithOperatorCredentials() throws Exception {
+        clearInvocations(service);
+        for (String type : List.of("text/plain", "application/x-www-form-urlencoded", "multipart/form-data", "")) {
+            var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+"/internal/v1/test-accounts/seed"))
+                    .header("Authorization", "Basic "+Base64.getEncoder().encodeToString(OPERATOR.getBytes(StandardCharsets.UTF_8)));
+            if (!type.isEmpty()) request.header("Content-Type", type);
+            var response=HttpClient.newHttpClient().send(request.POST(HttpRequest.BodyPublishers.ofString("{}"))
+                    .build(),HttpResponse.BodyHandlers.ofString());
+            assertThat(response.statusCode()).isEqualTo(403);
+            assertThat(response.headers().firstValue("cache-control")).contains("no-store");
+        }
+        for (String header : List.of("Origin", "Sec-Fetch-Site")) {
+            for (String method : List.of("POST", "OPTIONS")) {
+                var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+"/internal/v1/test-accounts/seed"))
+                        .header("Authorization", "Basic "+Base64.getEncoder().encodeToString(OPERATOR.getBytes(StandardCharsets.UTF_8)))
+                        .header("Content-Type", "application/json")
+                        .header(header, header.equals("Origin") ? "https://attacker.invalid" : "cross-site")
+                        .method(method,HttpRequest.BodyPublishers.ofString("{}"));
+                var response=HttpClient.newHttpClient().send(request.build(),HttpResponse.BodyHandlers.ofString());
+                assertThat(response.statusCode()).isEqualTo(403);
+                assertThat(response.headers().firstValue("access-control-allow-origin")).isEmpty();
+            }
+        }
+        verifyNoInteractions(service);
+    }
     @Test void safeMethodsAndUnlistedOperationsCannotMutate() throws Exception {
         assertThat(send("GET","seed",OPERATOR).statusCode()).isEqualTo(403);
         assertThat(send("POST","reset",OPERATOR).statusCode()).isEqualTo(403);

@@ -549,3 +549,9 @@ Do not include fixture publications or secret files in this repository or its im
 ## People account directory
 
 Owner-only `GET /api/v1/admin/accounts?query=&page=0` returns `{data:{accounts,page,hasNext}}`. Identity provides enabled account identity fields; Domain adds roles, `testAccount`, `fullCurriculum` and effective `access`. The owner check precedes enumeration. Other staff use their existing restricted sources. Fixed page size 50; literal search, stable username/id ordering, no-store and no account writes.
+
+Local internal test-account seeding requires a non-browser JSON POST with the
+dedicated operator credential. Requests carrying Origin or Sec-Fetch-Site,
+non-JSON POSTs and cross-origin preflight are rejected before seeding. Existing
+Infra Python tooling already uses the supported request shape. See
+[security maintenance](docs/security-ci.md) for the source-bound review.
