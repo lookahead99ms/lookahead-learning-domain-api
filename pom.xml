@@ -17,7 +17,7 @@
         <tomcat.version>11.0.25</tomcat.version>
         <!-- DLV-916: Boot 4.1.1 manages vulnerable Jackson 2/3 patch levels. -->
         <jackson-2-bom.version>2.21.7</jackson-2-bom.version>
-        <jackson-bom.version>3.1.7</jackson-bom.version>
+        <jackson-bom.version>3.2.3</jackson-bom.version>
         <maven.compiler.parameters>true</maven.compiler.parameters>
         <project.build.outputTimestamp>2026-09-18T00:00:00Z</project.build.outputTimestamp>
     </properties>
