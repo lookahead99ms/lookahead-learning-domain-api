@@ -47,6 +47,24 @@ public class TestAccountSecurity {
             }
         };
         return http.securityMatcher("/internal/v1/test-accounts/**")
+                .addFilterBefore(new org.springframework.web.filter.OncePerRequestFilter() {
+                    @Override protected void doFilterInternal(jakarta.servlet.http.HttpServletRequest request,
+                            jakarta.servlet.http.HttpServletResponse response, jakarta.servlet.FilterChain chain)
+                            throws jakarta.servlet.ServletException, java.io.IOException {
+                        // Basic credentials can be ambient in browsers. Permit only non-browser JSON
+                        // maintenance calls; no CORS/preflight or simple form request may reach seeding.
+                        String contentType = request.getContentType();
+                        boolean json = contentType != null && contentType.split(";", 2)[0].strip()
+                                .equalsIgnoreCase("application/json");
+                        if (request.getHeader("Origin") != null || request.getHeader("Sec-Fetch-Site") != null
+                                || ("POST".equals(request.getMethod()) && !json)) {
+                            response.setStatus(403);
+                            response.setHeader("Cache-Control", "no-store");
+                            return;
+                        }
+                        chain.doFilter(request, response);
+                    }
+                }, org.springframework.security.web.authentication.www.BasicAuthenticationFilter.class)
                 .authenticationManager(new ProviderManager(provider))
                 .csrf(AbstractHttpConfigurer::disable).requestCache(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))

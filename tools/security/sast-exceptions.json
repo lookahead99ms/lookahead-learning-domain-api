@@ -4,10 +4,10 @@
     {
       "ruleId": "java/spring-disabled-csrf-protection",
       "file": "src/main/java/com/lookahead/domain/security/DomainSecurityConfiguration.java",
-      "sourceSha256": "b6d2be6607ab66a60c49a9d06c68aec901b131b88310a7d4a20d74e0aaac2864",
+      "sourceSha256": "a54e6717bea3c0174006c79f40f0025badd406451e9e849082343d3b2c01fc24",
       "expiresAt": "2026-10-19",
       "ticket": "DLV-804",
-      "rationale": "This stateless OAuth2 resource server accepts Authorization bearer tokens and no browser session cookie; browsers do not attach bearer tokens automatically, so CSRF is not the applicable control. Re-reviewed 2026-10-12: The added staff and review routes require SCOPE_account; the stateless bearer chain remains unchanged, with no browser cookie authentication. Role checks remain service-owned. Fresh hosted CodeQL analysis remains required. DLV-930: reviewed explicit account-scoped POST invitation activation; bearer-only boundary unchanged. GET no longer claims invitations. Expiry unchanged. DLV-209 reviewed membership routes: public GET catalog only; purchases and staff writes retain bearer scopes and Gateway session CSRF. Role enforcement remains in the Domain service. Expiry unchanged."
+      "rationale": "This stateless OAuth2 resource server accepts Authorization bearer tokens and no browser session cookie; browsers do not attach bearer tokens automatically, so CSRF is not the applicable control. Re-reviewed 2026-10-12: The added staff and review routes require SCOPE_account; the stateless bearer chain remains unchanged, with no browser cookie authentication. Role checks remain service-owned. Fresh hosted CodeQL analysis remains required. DLV-930: reviewed explicit account-scoped POST invitation activation; bearer-only boundary unchanged. GET no longer claims invitations. Expiry unchanged. DLV-209 reviewed membership routes: public GET catalog only; purchases and staff writes retain bearer scopes and Gateway session CSRF. Role enforcement remains in the Domain service. Expiry unchanged. DLV-961 review 2026-10-16: added access-summary and managed test-account matchers still require SCOPE_account in the stateless bearer-only chain. No cookie, Basic or form authentication added; staff/reset ownership remains service-enforced. Exact rule/file and expiry unchanged. DLV-962/963 merge preparation review 2026-10-16: the new owner maintenance routes retain account bearer scope and service-owned authorization; no browser session authentication is added. Exact rule/file and expiry unchanged; fresh hosted CodeQL remains required."
     },
     {
       "ruleId": "java/spring-disabled-csrf-protection",
@@ -16,6 +16,14 @@
       "expiresAt": "2026-10-19",
       "ticket": "DLV-918",
       "rationale": "DEV/PROD internal Gateway admission is a stateless server-to-server bearer resource chain; it accepts no session-cookie, HTTP Basic or form authentication. Every admission requires a decoded and Cognito-verified access token plus a constant-time comparison with the server-configured Gateway secret. Browser session CSRF remains enforced by Gateway. CloudAdmissionSecurityTest covers cookie-only and missing credential denial in both profiles."
+    },
+    {
+      "ruleId": "java/spring-disabled-csrf-protection",
+      "file": "src/main/java/com/lookahead/domain/testaccounts/TestAccountSecurity.java",
+      "sourceSha256": "07df39dae68f31f8cb6f0bde04dbc358953ab6c5098fcd74fcb63a6f455e7221",
+      "expiresAt": "2026-10-19",
+      "ticket": "DLV-918",
+      "rationale": "Reviewed 2026-10-16 for DLV-961: this Local-only internal seed chain accepts a separate Infra operator Basic credential, not browser sessions. Basic can be ambient, so the source-bound filter rejects Origin and Sec-Fetch-Site requests and all non-JSON POSTs before authentication/mutation; CORS preflight is denied. No browser challenge, session creation or Gateway exposure. TestAccountHttpTest proves even valid operator credentials cannot seed via simple content types or browser-origin requests, while the existing Python JSON call works. DEV/PROD remain prohibited. Exact rule/file only; expires 2026-10-19; fresh full hosted CodeQL required."
     }
   ]
 }

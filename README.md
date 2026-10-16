@@ -592,3 +592,9 @@ credentials, then Domain erases plans and progress while retaining purchase
 and minimal maintenance audit. The owner and managed test accounts are
 excluded. DEV provider-owned deletion remains operator-only and is not exposed
 by this browser route. Domain migration V13 owns the maintenance audit.
+
+Local internal test-account seeding requires a non-browser JSON POST with the
+dedicated operator credential. Requests carrying Origin or Sec-Fetch-Site,
+non-JSON POSTs and cross-origin preflight are rejected before seeding. Existing
+Infra Python tooling already uses the supported request shape. See
+[security maintenance](docs/security-ci.md) for the source-bound review.
