@@ -125,7 +125,7 @@ class DomainSecurityIntegrationTest {
         http.perform(put(route+"/"+SUBJECT+"/triage").header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
     }
     @Test void staffAccessRequiresBearerAndAccountScopeWithoutBrowserSession() throws Exception {
-        for (String route : List.of("/api/v1/admin/access", "/api/v1/admin/access/lookup", "/api/v1/account/permissions", "/api/v1/auth/invitations/activate")) {
+        for (String route : List.of("/api/v1/admin/access", "/api/v1/admin/access/lookup", "/api/v1/account/permissions", "/api/v1/auth/invitations/activate", "/api/v1/account/access-summary", "/api/v1/admin/test-accounts", "/api/v1/admin/test-accounts/"+SUBJECT+"/reset", "/api/v1/admin/accounts")) {
             http.perform(get(route).cookie(new jakarta.servlet.http.Cookie("JSESSIONID", "forged")))
                     .andExpect(status().isUnauthorized());
             http.perform(post(route).cookie(new jakarta.servlet.http.Cookie("JSESSIONID", "forged")))

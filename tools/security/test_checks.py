@@ -107,6 +107,26 @@ class SecurityGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '^SAST notification inventory invalid$'):
             checks.sarif_gate([{'runs': [run]}])
 
+    def test_reviewed_repository_sources_reject_subsequent_changes(self):
+        policy = checks.json.loads(checks.SAST_EXCEPTIONS.read_text())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policyPath = root / 'exceptions.json'
+            policyPath.write_text(checks.json.dumps(policy))
+            for entry in policy['exceptions']:
+                source = root / entry['file']
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes((checks.ROOT / entry['file']).read_bytes())
+            checks.load_sast_exceptions(policyPath, root)
+            for entry in policy['exceptions']:
+                with self.subTest(file=entry['file']):
+                    source = root / entry['file']
+                    original = source.read_bytes()
+                    source.write_bytes(original + b'\n// unreviewed change\n')
+                    with self.assertRaisesRegex(ValueError, '^SAST exception source changed or is missing$'):
+                        checks.load_sast_exceptions(policyPath, root)
+                    source.write_bytes(original)
+
     def test_repository_sast_exception_binding_is_current(self):
         checks.load_sast_exceptions()
 

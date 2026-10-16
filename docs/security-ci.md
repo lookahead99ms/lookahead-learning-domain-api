@@ -99,3 +99,11 @@ The WebP bounds finding is corrected in code using remaining-byte checks before
 narrowing chunk lengths. Truncated headers, unsigned oversized lengths and missing
 padding are rejected. No exception is added for the image parser. A new full
 hosted CodeQL run must confirm the finding is absent.
+
+## DLV-961 source-binding review (October 16)
+
+DLV-961 review 2026-10-16: added access-summary and managed test-account matchers still require SCOPE_account in the stateless bearer-only chain. No cookie, Basic or form authentication added; staff/reset ownership remains service-enforced. Exact rule/file and expiry unchanged.
+
+The security helper regressions copy the real exception-bound sources and prove that
+subsequent edits still fail closed. A fresh hosted full CodeQL analysis remains
+required; passing local helpers alone does not certify the hosted security gate.
