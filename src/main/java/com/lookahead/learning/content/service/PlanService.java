@@ -29,8 +29,11 @@ public class PlanService {
     private final SnapshotValidator validator;
     private PlanLifecycle lifecycle;
     private ReadyMadeWrites readyMade;
+    private FreePlanAllowance freeAllowance;
     @org.springframework.beans.factory.annotation.Autowired
     public void configureLifecycle(PlanLifecycle lifecycle,ReadyMadeWrites readyMade){this.lifecycle=lifecycle;this.readyMade=readyMade;}
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureFreeAllowance(FreePlanAllowance freeAllowance){this.freeAllowance=freeAllowance;}
     public PlanService(PlanRepository repository, ObjectMapper mapper, SnapshotValidator validator, PlanJson planJson) {
         this.repository = repository; this.mapper = mapper; this.validator = validator; this.planJson = planJson;
     }
@@ -66,6 +69,7 @@ public class PlanService {
             require(offset >= 0 && offset <= 100000, "Invalid plan cursor");
         }
         var page = repository.list(account, limit + 1, offset);
+        Set<String> currentGrants = freeAllowance == null ? Set.of() : grants(account);
         var rows = page.stream().limit(limit).map(plan -> {
             ObjectNode node = mapper.createObjectNode();
             node.put("planId", plan.id().toString()); node.put("versionId", plan.version().toString());
@@ -74,6 +78,10 @@ public class PlanService {
             node.put("createdAt", plan.createdAt()); node.put("updatedAt", plan.updatedAt());
             PlanVersion current = version(account, plan.id(), plan.version());
             node.set("card", PlanCardMetadata.from(current.snapshot(), plan.progress(), mapper));
+            if(freeAllowance!=null){Set<String> content=new HashSet<>();
+                current.membership().properties().forEach(entry->content.add(entry.getValue().asText()));
+                node.put("freeContentPlan",freeAllowance.freeContent(content));
+                node.put("accessNeeded",content.stream().anyMatch(id->!validator.isAccessible(id,currentGrants)));}
             if(lifecycle!=null)node.set("lifecycle",lifecycle.view(account,plan.id()));
             return node;
         }).toList();
@@ -114,12 +122,14 @@ public class PlanService {
             recovery.put("deadlineDays", snapshot.path("config").path("days").asInt());
             recovery.set("deferredContentIds", mapper.createArrayNode());
         }
+        boolean freeCreation = freeAllowance != null && freeAllowance.beforeCreate(account, validated.canonicalContentIds());
         long planNumber = repository.allocatePlanNumber(account);
         JsonNode namingSource = imported ? local : body;
         String name = namingSource.has("name") ? planName(namingSource) : defaultPlanName(planNumber, snapshot);
         repository.createPlan(account, id, versionId, goal, progress, name, planNumber);
         insertVersion(account, id, versionId, null, snapshot, validated.provenance(), recovery, imported ? "import" : "create", mapper.valueToTree(validated.assignmentContentIds()));
         if(lifecycle!=null)lifecycle.create(account,id,snapshot,body.path("startDate"),imported);
+        if(freeAllowance!=null)freeAllowance.afterCreate(account,id,freeCreation);
         if (imported) event(account, id, versionId, 1, "legacyImport", progress);
         return receipt(account, key, operation, raw, id, 201, view(account, plan(account, id, false), version(account, id, versionId)));
     }
@@ -261,11 +271,20 @@ public class PlanService {
         }else validated = reason.equals("update-plan") ? validator.validate(snapshot,body.path("provenance"),false,grants(account))
                 : validator.validateExistingVersion(snapshot,body.path("provenance"),grants(account));
         validateRecovery(prior, snapshot, validated.provenance(), recovery, reason);
+        boolean freeScopeChange=false;
+        if(freeAllowance!=null){
+            Set<String> priorContent=new HashSet<>();
+            prior.membership().properties().forEach(entry->priorContent.add(entry.getValue().asText()));
+            boolean active=lifecycle!=null && lifecycle.view(account,id).path("state").asText().equals("active");
+            freeScopeChange=freeAllowance.beforeFreeScopeChange(account,id,priorContent,validated.canonicalContentIds(),active);
+            if(active)freeAllowance.beforeActivation(account,id,validated.canonicalContentIds());
+        }
         if(lifecycle!=null)lifecycle.replace(account,id,snapshot);
         String goal = text(body, "goal", 160);
         UUID next = UUID.randomUUID(); long revision = plan.revision() + 1;
         insertVersion(account, id, next, plan.version(), snapshot, validated.provenance(), recovery, reason, mapper.valueToTree(validated.assignmentContentIds()));
         repository.activateVersion(account, id, next, revision, goal);
+        if(freeAllowance!=null)freeAllowance.afterCreate(account,id,freeScopeChange);
         event(account, id, next, revision, reason, recovery);
         return receipt(account, key, "version:" + id, raw, id, 201, view(account, plan(account, id, false), version(account, id, next)));
     }
@@ -280,8 +299,13 @@ public class PlanService {
         if(state.equals("active")){
             var grants=grants(account);
             for(var assignment:assignments(current.snapshot()).values())accessible(current.snapshot(),source(assignment),grants);
-            for(var topic:current.snapshot().path("config").path("topicIds"))
+            Set<String> content=new HashSet<>();
+            current.membership().properties().forEach(entry->content.add(entry.getValue().asText()));
+            boolean freeContentPlan=freeAllowance!=null && freeAllowance.freeAccount(account)
+                    && freeAllowance.freeContent(content);
+            if(!freeContentPlan)for(var topic:current.snapshot().path("config").path("topicIds"))
                 require(grants.contains(topic.asText()),"Current access must cover every selected course before activation");
+            if(freeAllowance!=null)freeAllowance.beforeActivation(account,id,content);
         }
         lifecycle.transition(account,id,current.snapshot(),state,body.path("startDate"));
         repository.updateProgress(account,id,plan.progress(),plan.revision()+1);
@@ -395,8 +419,11 @@ public class PlanService {
         Mutation repeat = replay(account, key, "delete:" + id, body);
         if (repeat != null) return repeat;
         PlanRecord plan = plan(account, id, true); expect(plan, body);
+        boolean freeAccountAtDelete=freeAllowance!=null && freeAllowance.freeAccount(account);
+        if(freeAllowance!=null)freeAllowance.beforeDelete(account);
         repository.tombstoneReceipts(account, id);
         repository.deletePlan(account, id);
+        if(freeAllowance!=null)freeAllowance.afterDelete(account,id,freeAccountAtDelete);
         receipt(account, key, "delete:" + id, body, id, 204, mapper.nullNode());
         return new Mutation(204, mapper.nullNode());
     }

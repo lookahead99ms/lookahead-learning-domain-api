@@ -26,7 +26,7 @@ class AccountDirectoryPageTest {
   });server.start();
   try {
    var provider=mock(ObjectProvider.class);var origin="http://127.0.0.1:"+server.getAddress().getPort();
-   when(provider.getIfAvailable()).thenReturn(new IdentitySettings(origin,origin,"gateway","synthetic-verifier-secret-32-chars",java.time.Duration.ofSeconds(2),java.time.Duration.ofSeconds(2)));
+   doReturn(new IdentitySettings(origin,origin,"gateway","synthetic-verifier-secret-32-chars",java.time.Duration.ofSeconds(2),java.time.Duration.ofSeconds(2))).when(provider).getIfAvailable();
    var jdbc=mock(JdbcTemplate.class);var directory=new AccountDirectory(provider,jdbc);
    assertThat(directory.list("a+b",2).accounts()).isEmpty();verifyNoInteractions(jdbc);
    for(String malformed:new String[]{"{", "null", "{\"accounts\":null,\"page\":2}","{\"accounts\":[],\"page\":1}","{\"accounts\":[{}],\"page\":2}","x".repeat(262145)}) {

@@ -501,7 +501,8 @@ other staff assignments and commercial purchases remain separate. The final
 permission set and the complete UI/publishing boundary still need review before
 merge or activation. DLV-930 owns that role verification.
 
-DLV-961's full test-account seed/reset integration is not implemented in Domain.
+DLV-961's managed Local seed/reset integration is implemented in Domain and
+active behind working4301; DEV provisioning remains deferred.
 Ready-made account persistence remains the DLV-705 dependency: the existing
 preparation mapper is read-only and must not be treated as an enabled save
 capability. Existing author and learner records have not been reset by this work.
@@ -539,9 +540,37 @@ Ready-made saves compare the complete client snapshot against a hash-verified se
 Explicit `compatibleTemplateCatalogVersions` permits verified historical pins while every
 reference continues to be checked against the current catalog.
 
+The integrated DLV-938 Domain candidate adds migration V11 and enforces
+free-account allowances inside the existing owner-locked plan transactions.
+Current server-owned topic grants decide whether an account is free; published
+free content IDs decide whether a plan has free scope. Free accounts can keep
+two active free-content plans, create 15 free plans across their lifetime
+(including imports), and make three successful deletions in any rolling
+21-day window. Durable allowance rows survive plan deletion, and exact
+idempotency retries do not count twice. Existing paid-scope plans remain
+owner-readable after access loss, while protected content remains grant-gated.
+The proposed 30-day access-loss archive is not yet implemented.
+
 Test maintenance requires `accounts,local-test`, `app.deployment-environment=local`,
 `app.test-accounts.enabled=true`, a separate operator secret and prepared private custom-plan
 fixtures (`app.test-accounts.plan-fixtures`). Internal seed is never exposed by Gateway.
+
+DLV-962 adds Local-only staff creation of independent learner test accounts.
+Domain checks the current owner/co-author/admin assignment, reserves a creator
+quota under a database lock, asks Identity to provision a disabled login, records
+the managed learner, then activates login. Owner creations are unlimited;
+co-authors get 20 and admins 10 lifetime successful creations (a dual role uses
+10). Same-key retries complete interrupted work. The creator may delete their
+learner; owner and co-author may delete any learner. An unfinished reservation
+holds capacity for 15 minutes, then ceases to block new requests; completion
+rechecks the lifetime count under the creator lock. A pending Identity login
+remains disabled until successful same-key completion or operator recovery.
+Identity disables login
+before Domain erases plans, progress, access, synthetic payment fixtures and
+purchase audit details; minimal tombstones preserve the lifetime count. Ordinary
+membership audit remains append-only. `GET /api/v1/admin/test-accounts/allowance`, `POST
+/api/v1/admin/test-accounts` and `DELETE .../{id}` are active on the working
+Local stack behind 4301 as of 2026-10-16. Staff accounts are protected.
 Owner/admin may explicitly reset a registered fixture; co-author reads only. Disable the
 legacy startup seeder when using managed maintenance to preserve existing author grants.
 Do not include fixture publications or secret files in this repository or its image.
