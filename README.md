@@ -545,3 +545,7 @@ fixtures (`app.test-accounts.plan-fixtures`). Internal seed is never exposed by 
 Owner/admin may explicitly reset a registered fixture; co-author reads only. Disable the
 legacy startup seeder when using managed maintenance to preserve existing author grants.
 Do not include fixture publications or secret files in this repository or its image.
+
+## People account directory
+
+Owner-only `GET /api/v1/admin/accounts?query=&page=0` returns `{data:{accounts,page,hasNext}}`. Identity provides enabled account identity fields; Domain adds roles, `testAccount`, `fullCurriculum` and effective `access`. The owner check precedes enumeration. Other staff use their existing restricted sources. Fixed page size 50; literal search, stable username/id ordering, no-store and no account writes.
