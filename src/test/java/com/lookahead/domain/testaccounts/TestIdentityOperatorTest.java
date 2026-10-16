@@ -10,10 +10,9 @@ import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.core.env.Environment;
+import org.springframework.beans.factory.support.StaticListableBeanFactory;
+import org.springframework.mock.env.MockEnvironment;
 import static org.assertj.core.api.Assertions.*;
-import static org.mockito.Mockito.*;
 
 class TestIdentityOperatorTest {
     @Test void sendsOnlyFixedOperatorRoutesWithDedicatedCredentials() throws Exception {
@@ -30,13 +29,13 @@ class TestIdentityOperatorTest {
         });
         server.start();
         try {
-            @SuppressWarnings("unchecked") ObjectProvider<IdentitySettings> settings=mock(ObjectProvider.class);
-            doReturn(new IdentitySettings("http://127.0.0.1:"+server.getAddress().getPort(),
+            var beans = new StaticListableBeanFactory();
+            beans.addBean("identitySettings", new IdentitySettings("http://127.0.0.1:"+server.getAddress().getPort(),
                     "http://127.0.0.1:"+server.getAddress().getPort(),"gateway","other-verifier-secret-32-characters",
-                    Duration.ofSeconds(2),Duration.ofSeconds(2))).when(settings).getIfAvailable();
-            var environment=mock(Environment.class);
-            when(environment.getProperty("app.test-accounts.operator-secret", ""))
-                    .thenReturn("synthetic-operator-secret-32-characters");
+                    Duration.ofSeconds(2),Duration.ofSeconds(2)));
+            var settings=beans.getBeanProvider(IdentitySettings.class);
+            var environment=new MockEnvironment().withProperty("app.test-accounts.operator-secret",
+                    "synthetic-operator-secret-32-characters");
             var operator=new TestIdentityOperator(settings,environment);
             UUID id=UUID.randomUUID();String name="test-0123456789abcdef01234567";
             operator.provision(id,name,"synthetic-learner-fixture-only");
