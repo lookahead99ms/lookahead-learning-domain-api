@@ -45,7 +45,7 @@ public class DomainSecurityConfiguration {
     @Bean @org.springframework.core.annotation.Order(2)
     SecurityFilterChain domainSecurity(HttpSecurity http, JwtDecoder decoder,
             org.springframework.core.convert.converter.Converter<org.springframework.security.oauth2.jwt.Jwt,org.springframework.security.authentication.AbstractAuthenticationToken> domainAuthenticationConverter) throws Exception {
-        return http.cors(Customizer.withDefaults()).csrf(AbstractHttpConfigurer::disable)
+        return http.cors(Customizer.withDefaults()).csrf(csrf -> csrf.csrfTokenRepository(new org.springframework.security.web.csrf.CookieCsrfTokenRepository()))
                 .httpBasic(AbstractHttpConfigurer::disable).formLogin(AbstractHttpConfigurer::disable)
                 .logout(AbstractHttpConfigurer::disable).requestCache(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))

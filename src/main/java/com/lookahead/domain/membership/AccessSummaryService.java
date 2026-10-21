@@ -8,6 +8,8 @@ import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.JsonNode;
 import java.util.*;
+import java.time.Clock;
+import java.sql.Timestamp;
 
 /** A read projection of actual purchases and grants. Never persisted as a role. */
 @Service
@@ -16,8 +18,13 @@ public class AccessSummaryService {
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
     private final StaffAccessService staff;
+    private final Clock clock;
+    @org.springframework.beans.factory.annotation.Autowired
     public AccessSummaryService(JdbcTemplate jdbc,ObjectMapper json,StaffAccessService staff) {
-        this.jdbc=jdbc;this.json=json;this.staff=staff;
+        this(jdbc,json,staff,Clock.systemUTC());
+    }
+    public AccessSummaryService(JdbcTemplate jdbc,ObjectMapper json,StaffAccessService staff,Clock clock) {
+        this.jdbc=jdbc;this.json=json;this.staff=staff;this.clock=clock;
     }
     public Summary get(AccountPrincipal actor,UUID target) {
         if(actor==null||!actor.isEnabled()) throw new AccountFailure(401,"AUTHENTICATION_REQUIRED","Sign in to continue");
@@ -26,12 +33,13 @@ public class AccessSummaryService {
             if(!permissions.manageAccess()&&!permissions.triageFeedback()&&!"co-author".equals(permissions.feedbackRole()))
                 throw new AccountFailure(403,"STAFF_REQUIRED","Author, co-author or admin required");
         }
+        Timestamp now=Timestamp.from(clock.instant());
         var purchases=jdbc.query("""
             SELECT plan_snapshot FROM membership_purchases WHERE account_id=?
             AND status IN ('succeeded','scheduled') AND superseded_at IS NULL
-            AND starts_at<=now() AND ends_at>now() ORDER BY plan_id,id
-            """,(r,n)->json.readTree(r.getString(1)),target);
-        var courses=new TreeSet<>(jdbc.queryForList("SELECT topic_id FROM account_grants WHERE account_id=? AND (valid_until IS NULL OR valid_until>now())",String.class,target));
+            AND starts_at<=? AND ends_at>? ORDER BY plan_id,id
+            """,(r,n)->json.readTree(r.getString(1)),target,now,now);
+        var courses=new TreeSet<>(jdbc.queryForList("SELECT topic_id FROM account_grants WHERE account_id=? AND (valid_until IS NULL OR valid_until>?)",String.class,target,now));
         for(String grants:jdbc.queryForList("SELECT topic_grants::text FROM staff_access WHERE account_id=?",String.class,target))
             json.readTree(grants).forEach(value->courses.add(value.asText()));
         return summarize(purchases,courses);

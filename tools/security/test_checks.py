@@ -11,8 +11,26 @@ checks = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checks)
 
 class SecurityGateTests(unittest.TestCase):
+    def fixturePolicy(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        source = root / 'SyntheticSecurity.java'
+        source.write_text('synthetic security fixture')
+        policy = {'version': 1, 'exceptions': [{
+            'ruleId': 'java/spring-disabled-csrf-protection', 'file': source.name,
+            'sourceSha256': checks.hashlib.sha256(source.read_bytes()).hexdigest(),
+            'expiresAt': '2026-10-19', 'ticket': 'TEST-1', 'rationale': 'Synthetic fixture only'}]}
+        path = root / 'exceptions.json'
+        path.write_text(checks.json.dumps(policy))
+        return path, root
+
+    def fixtureExceptions(self):
+        path, root = self.fixturePolicy()
+        return checks.load_sast_exceptions(path, root, today=date(2026, 10, 18))
+
     def test_reviewed_cloud_findings_are_bound_and_other_findings_still_block(self):
-        exceptions = checks.load_sast_exceptions()
+        exceptions = self.fixtureExceptions()
         rules = [{'id': rule, 'properties': {'security-severity': '8.8'}}
                  for rule in sorted({key[0] for key in exceptions})]
         results = [{'ruleId': rule, 'locations': [{'physicalLocation': {
@@ -42,7 +60,7 @@ class SecurityGateTests(unittest.TestCase):
         self.assertEqual(1, checks.sarif_gate([document], exceptions=checks.load_sast_exceptions()))
 
     def test_unused_exception_reports_metadata_before_failing_closed(self):
-        exceptions = checks.load_sast_exceptions()
+        exceptions = self.fixtureExceptions()
         document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': [
             {'id': 'fixture', 'properties': {'security-severity': '8'}}]}},
             'invocations': [{'executionSuccessful': True}], 'results': []}]}
@@ -50,7 +68,7 @@ class SecurityGateTests(unittest.TestCase):
             output = Path(directory)
             (output / 'codeql').mkdir()
             (output / 'codeql/java.sarif').write_text(checks.json.dumps(document))
-            with patch.object(checks, 'OUT', output), patch.object(checks.sys, 'argv', ['check.py', 'sarif']), patch('builtins.print') as printed:
+            with patch.object(checks, 'load_sast_exceptions', return_value=exceptions), patch.object(checks, 'OUT', output), patch.object(checks.sys, 'argv', ['check.py', 'sarif']), patch('builtins.print') as printed:
                 with self.assertRaisesRegex(ValueError, '^SAST exception is stale or was not exercised$'):
                     checks.main()
             summary = checks.json.loads((output / 'sarif-summary.json').read_text())
@@ -64,8 +82,7 @@ class SecurityGateTests(unittest.TestCase):
 
     def test_retired_bypass_exception_cannot_suppress_a_reappearing_finding(self):
         exceptions = checks.load_sast_exceptions()
-        self.assertTrue(exceptions)
-        self.assertEqual({'java/spring-disabled-csrf-protection'}, {rule for rule, file in exceptions})
+        self.assertEqual({}, exceptions)
         rule = 'java/user-controlled-bypass'
         document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': [
             {'id': rule, 'properties': {'security-severity': '7.8'}}]}},
@@ -107,38 +124,35 @@ class SecurityGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '^SAST notification inventory invalid$'):
             checks.sarif_gate([{'runs': [run]}])
 
-    def test_reviewed_repository_sources_reject_subsequent_changes(self):
-        policy = checks.json.loads(checks.SAST_EXCEPTIONS.read_text())
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            policyPath = root / 'exceptions.json'
-            policyPath.write_text(checks.json.dumps(policy))
-            for entry in policy['exceptions']:
-                source = root / entry['file']
-                source.parent.mkdir(parents=True, exist_ok=True)
-                source.write_bytes((checks.ROOT / entry['file']).read_bytes())
-            checks.load_sast_exceptions(policyPath, root)
-            for entry in policy['exceptions']:
-                with self.subTest(file=entry['file']):
-                    source = root / entry['file']
-                    original = source.read_bytes()
-                    source.write_bytes(original + b'\n// unreviewed change\n')
-                    with self.assertRaisesRegex(ValueError, '^SAST exception source changed or is missing$'):
-                        checks.load_sast_exceptions(policyPath, root)
-                    source.write_bytes(original)
+    def test_reviewed_sources_and_expiry_remain_enforced(self):
+        path, root = self.fixturePolicy()
+        checks.load_sast_exceptions(path, root, today=date(2026, 10, 19))
+        with self.assertRaisesRegex(ValueError, '^Expired SAST exception$'):
+            checks.load_sast_exceptions(path, root, today=date(2026, 10, 20))
+        (root / 'SyntheticSecurity.java').write_text('changed')
+        with self.assertRaisesRegex(ValueError, '^SAST exception source changed or is missing$'):
+            checks.load_sast_exceptions(path, root, today=date(2026, 10, 19))
 
-    def test_internal_seed_exception_does_not_cover_other_maintenance_files(self):
+    def test_retired_csrf_exceptions_cannot_hide_findings(self):
         exceptions = checks.load_sast_exceptions()
-        rule = 'java/spring-disabled-csrf-protection'
-        source = 'src/main/java/com/lookahead/domain/testaccounts/TestAccountSecurity.java'
-        self.assertEqual('2026-10-19', exceptions[(rule, source)]['expiresAt'])
-        document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': [
-            {'id': rule, 'properties': {'security-severity': '8.8'}}]}},
-            'invocations': [{'executionSuccessful': True}], 'results': [{'ruleId': rule,
-            'locations': [{'physicalLocation': {'artifactLocation': {'uri': source}}}]}]}]}
-        self.assertEqual(0, checks.sarif_gate([document], exceptions=exceptions))
-        document['runs'][0]['results'][0]['locations'][0]['physicalLocation']['artifactLocation']['uri'] = source.replace('TestAccountSecurity', 'OtherMaintenanceSecurity')
-        self.assertEqual(1, checks.sarif_gate([document], exceptions=exceptions))
+        self.assertEqual({}, exceptions)
+        for source in ('security/DomainSecurityConfiguration', 'cloud/CloudSecurityConfiguration',
+                       'testaccounts/TestAccountSecurity', 'testaccounts/OtherMaintenanceSecurity'):
+            rule = 'java/spring-disabled-csrf-protection'
+            document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': [
+                {'id': rule, 'properties': {'security-severity': '8.8'}}]}},
+                'invocations': [{'executionSuccessful': True}], 'results': [{'ruleId': rule,
+                'locations': [{'physicalLocation': {'artifactLocation': {
+                    'uri': 'src/main/java/com/lookahead/domain/' + source + '.java'}}}]}]}]}
+            self.assertEqual(1, checks.sarif_gate([document], exceptions=exceptions))
+
+    def test_runtime_base_avoids_known_vulnerable_alpine_pin(self):
+        dockerfile = (checks.ROOT / 'Dockerfile').read_text()
+        self.assertEqual('eclipse-temurin:21-jre-noble@sha256:35501d3f93173b420ac9001658eb68157e813316b865087e345c187fca422c4c', checks.base_images(dockerfile)[1])
+        self.assertIn('USER 10001:10001', dockerfile)
+        self.assertIn('--shell /usr/sbin/nologin', dockerfile)
+        self.assertIn('HEALTHCHECK', dockerfile)
+        self.assertNotIn('apk upgrade', dockerfile)
 
     def test_repository_sast_exception_binding_is_current(self):
         checks.load_sast_exceptions()

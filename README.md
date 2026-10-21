@@ -319,8 +319,8 @@ boundary's local integration coverage. Source changes or expiry require review.
 
 
 The Docker builder uses digest-pinned Eclipse Temurin Java 21 Ubuntu 24.04
-(`21-jdk-noble`); the runtime uses a separately pinned Java 21 Alpine image
-(`21-jre-alpine`). The runtime uses musl libc and Alpine's account-creation
+(`21-jdk-noble`); the runtime uses a separately pinned Java 21 Ubuntu 24.04 image
+(`21-jre-noble`). The runtime uses glibc and Ubuntu account-creation
 commands, retains numeric user/group 10001 and the existing Java health probe,
 and needs no added curl or application SDK. Distroless Java 21 Debian candidates
 were investigated but rejected because their complete package scans still found
@@ -603,3 +603,28 @@ dedicated operator credential. Requests carrying Origin or Sec-Fetch-Site,
 non-JSON POSTs and cross-origin preflight are rejected before seeding. Existing
 Infra Python tooling already uses the supported request shape. See
 [security maintenance](docs/security-ci.md) for the source-bound review.
+
+
+### Complete archive and Domain catalog
+
+Content Release generates `account-catalog.json` from the same staged content and
+pinned Web planner. This is curriculum metadata (IDs, routes, topics and version
+pins), not user accounts. It is hash-bound backend-only archive metadata, excluded
+from served assets. Domain verifies and extracts the complete archive before readiness;
+Angular requests individual authorized content files. Older content-only archives must
+be rebuilt and published as a new release; never bypass the catalog requirement.
+
+
+### CSRF protection and Local operator seeding
+
+Security chains retain Spring CSRF protection with cookie-backed token storage (no
+server authentication session). Bearer resource-server requests use Spring's standard
+Bearer-token handling; cookie-only unsafe requests are rejected with 403. Local
+operator clients must GET `/internal/v1/test-accounts/csrf` with the dedicated Basic
+credential, retain the HttpOnly `XSRF-TOKEN` cookie, then POST JSON to the seed endpoint
+with that cookie, the returned `X-XSRF-TOKEN` token and the same Basic credential.
+Origin and Sec-Fetch-Site requests remain rejected. Use the updated Infra seed client.
+This change is locally tested; shared-stack activation and hosted CodeQL are pending.
+The three expired CSRF exceptions have been removed rather than extended.
+
+Membership access summaries evaluate purchase and grant validity at one application UTC instant per request. Tests inject the same clock used for scenario purchases; start is inclusive and expiry exclusive. This changes no response shape or access policy.

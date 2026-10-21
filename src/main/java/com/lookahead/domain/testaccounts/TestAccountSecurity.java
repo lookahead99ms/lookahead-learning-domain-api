@@ -64,11 +64,13 @@ public class TestAccountSecurity {
                         }
                         chain.doFilter(request, response);
                     }
-                }, org.springframework.security.web.authentication.www.BasicAuthenticationFilter.class)
+                }, org.springframework.security.web.csrf.CsrfFilter.class)
                 .authenticationManager(new ProviderManager(provider))
-                .csrf(AbstractHttpConfigurer::disable).requestCache(AbstractHttpConfigurer::disable)
+                .csrf(csrf -> csrf.csrfTokenRepository(new org.springframework.security.web.csrf.CookieCsrfTokenRepository())).requestCache(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .authorizeHttpRequests(auth -> auth.requestMatchers(HttpMethod.POST,
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(HttpMethod.GET, "/internal/v1/test-accounts/csrf").hasRole("TEST_ACCOUNT_OPERATOR")
+                        .requestMatchers(HttpMethod.POST,
                         "/internal/v1/test-accounts/seed")
                         .hasRole("TEST_ACCOUNT_OPERATOR").anyRequest().denyAll())
                 .httpBasic(basic -> basic.authenticationEntryPoint((request, response, failure) -> {
