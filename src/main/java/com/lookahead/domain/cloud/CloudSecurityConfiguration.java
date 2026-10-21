@@ -52,7 +52,7 @@ public class CloudSecurityConfiguration {
     }
     @Bean @Order(1) SecurityFilterChain cloudSignInSecurity(HttpSecurity http,JwtDecoder decoder,CognitoTokenVerifier verifier,CognitoSettings settings,HttpServletRequest request)throws Exception {
         return http.securityMatcher("/internal/v1/cloud-sign-ins/**")
-            .csrf(AbstractHttpConfigurer::disable).httpBasic(AbstractHttpConfigurer::disable).formLogin(AbstractHttpConfigurer::disable)
+            .csrf(csrf -> csrf.csrfTokenRepository(new org.springframework.security.web.csrf.CookieCsrfTokenRepository())).httpBasic(AbstractHttpConfigurer::disable).formLogin(AbstractHttpConfigurer::disable)
             .logout(AbstractHttpConfigurer::disable).requestCache(AbstractHttpConfigurer::disable)
             .sessionManagement(s->s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(a->a.anyRequest().authenticated())

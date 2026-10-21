@@ -58,12 +58,12 @@ class CloudAdmissionSecurityTest {
                                 .header("X-LookAhead-Gateway-Secret", wrong)).andExpect(status().isUnauthorized());
                     }
                     http.perform(post(PATH).header("X-LookAhead-Gateway-Secret", SECRET))
-                            .andExpect(status().isUnauthorized());
+                            .andExpect(status().isForbidden());
                     http.perform(post(PATH).header("X-LookAhead-Gateway-Secret", SECRET)
                             .header("Authorization", "Bearer rejected-token")).andExpect(status().isUnauthorized());
                     // Browser-attached credentials cannot replace either required header.
                     http.perform(post(PATH).cookie(new Cookie("Authorization", "synthetic-access-token"),
-                            new Cookie("X-LookAhead-Gateway-Secret", SECRET))).andExpect(status().isUnauthorized());
+                            new Cookie("X-LookAhead-Gateway-Secret", SECRET))).andExpect(status().isForbidden());
                     assertThat(provider.calls.get()).isZero();
                     http.perform(post(PATH).header("Authorization", "Bearer synthetic-access-token")
                             .header("X-LookAhead-Gateway-Secret", SECRET)).andExpect(status().isOk())

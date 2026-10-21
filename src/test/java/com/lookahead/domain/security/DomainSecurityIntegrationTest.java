@@ -129,7 +129,7 @@ class DomainSecurityIntegrationTest {
             http.perform(get(route).cookie(new jakarta.servlet.http.Cookie("JSESSIONID", "forged")))
                     .andExpect(status().isUnauthorized());
             http.perform(post(route).cookie(new jakarta.servlet.http.Cookie("JSESSIONID", "forged")))
-                    .andExpect(status().isUnauthorized());
+                    .andExpect(status().isForbidden());
             when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
             http.perform(post(route).header("Authorization", "Bearer synthetic-token"))
                     .andExpect(status().isForbidden());

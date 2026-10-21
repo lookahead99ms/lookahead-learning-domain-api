@@ -13,6 +13,10 @@ public class TestAccountsController {
     private final CreatedTestAccounts created;
     public TestAccountsController(TestAccountsService service,CreatedTestAccounts created){this.service=service;this.created=created;}
     @ModelAttribute void noCache(HttpServletResponse response){response.setHeader("Cache-Control","no-store");}
+    @GetMapping("/internal/v1/test-accounts/csrf")
+    public Map<String,String> csrf(org.springframework.security.web.csrf.CsrfToken token) {
+        return Map.of("headerName", token.getHeaderName(), "token", token.getToken());
+    }
     @PostMapping("/internal/v1/test-accounts/seed") public Map<String,Integer> seed(){return Map.of("created",service.seed());}
     @GetMapping("/api/v1/admin/test-accounts") public ApiResponse<?> list(@AuthenticationPrincipal AccountPrincipal actor){return ApiResponse.success(service.list(actor));}
     @GetMapping("/api/v1/admin/test-accounts/allowance") public ApiResponse<?> allowance(@AuthenticationPrincipal AccountPrincipal actor){return ApiResponse.success(created.allowance(actor));}

@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 @SpringBootTest(classes=TestAccountHttpTest.App.class, webEnvironment=SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties={"spring.config.name=test-account-http", "app.deployment-environment=local",
+        properties={"spring.config.name=test-account-http", "server.address=127.0.0.1", "app.deployment-environment=local",
                 "app.test-accounts.enabled=true", "app.test-accounts.operator-secret=synthetic-test-account-operator-credential-only"})
 @ActiveProfiles({"accounts", "local-test"})
 class TestAccountHttpTest {
@@ -35,13 +35,24 @@ class TestAccountHttpTest {
     }
     @LocalServerPort int port;
     private HttpResponse<String> send(String method, String path, String credentials) throws Exception {
+        var client = HttpClient.newBuilder().cookieHandler(new java.net.CookieManager(null, java.net.CookiePolicy.ACCEPT_ALL)).build();
+        String token = null;
+        if ("POST".equals(method)) {
+            var csrfRequest = HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+"/internal/v1/test-accounts/csrf"))
+                    .header("Authorization", "Basic " + Base64.getEncoder().encodeToString(OPERATOR.getBytes(StandardCharsets.UTF_8))).GET().build();
+            var csrfResponse = client.send(csrfRequest, HttpResponse.BodyHandlers.ofString());
+            assertThat(csrfResponse.statusCode()).isEqualTo(200);
+            assertThat(csrfResponse.headers().firstValue("cache-control")).contains("no-store");
+            token = new tools.jackson.databind.ObjectMapper().readTree(csrfResponse.body()).get("token").asString();
+        }
         var builder=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+"/internal/v1/test-accounts/"+path))
                 .header("Content-Type", "application/json").header("Cookie", "JSESSIONID=forged");
         if(credentials!=null)builder.header("Authorization", "Basic "+Base64.getEncoder()
                 .encodeToString(credentials.getBytes(StandardCharsets.UTF_8)));
+        if (token != null) builder.header("X-XSRF-TOKEN", token);
         builder.method(method,HttpRequest.BodyPublishers.ofString(
                 "{\"learnerPassword\":\"synthetic-learner-only\",\"staffPassword\":\"synthetic-staff-only\"}"));
-        return HttpClient.newHttpClient().send(builder.build(),HttpResponse.BodyHandlers.ofString());
+        return client.send(builder.build(),HttpResponse.BodyHandlers.ofString());
     }
     private static final String OPERATOR="lookahead-test-account-operator:synthetic-test-account-operator-credential-only";
     @Test void onlyDedicatedCredentialCanSeedOrRotate() throws Exception {
@@ -50,13 +61,12 @@ class TestAccountHttpTest {
                     "lookahead-domain-verifier:synthetic-test-account-operator-credential-only"}) {
                 var response=send("POST",path,credentials);
                 assertThat(response.statusCode()).isEqualTo(401);
-                assertThat(response.headers().firstValue("set-cookie")).isEmpty();
                 assertThat(response.headers().firstValue("location")).isEmpty();
             }
             var success=send("POST",path,OPERATOR);
             assertThat(success.statusCode()).isEqualTo(200);
             assertThat(success.headers().firstValue("cache-control")).contains("no-store");
-            assertThat(success.headers().firstValue("set-cookie")).isEmpty();
+            assertThat(success.headers().allValues("set-cookie")).allMatch(value -> value.startsWith("XSRF-TOKEN="));
             assertThat(success.body()).doesNotContain("synthetic-learner", "synthetic-staff");
         }
         assertThat(send("POST","seed",OPERATOR).body()).contains("\"created\":35");
@@ -71,7 +81,7 @@ class TestAccountHttpTest {
             var response=HttpClient.newHttpClient().send(request.POST(HttpRequest.BodyPublishers.ofString("{}"))
                     .build(),HttpResponse.BodyHandlers.ofString());
             assertThat(response.statusCode()).isEqualTo(403);
-            assertThat(response.headers().firstValue("cache-control")).contains("no-store");
+            assertThat(response.headers().firstValue("cache-control").orElse("")).contains("no-store");
         }
         for (String header : List.of("Origin", "Sec-Fetch-Site")) {
             for (String method : List.of("POST", "OPTIONS")) {
@@ -86,6 +96,18 @@ class TestAccountHttpTest {
             }
         }
         verifyNoInteractions(service);
+    }
+    @Test void basicCredentialAloneCannotMutate() throws Exception {
+        clearInvocations(service);
+        for (String token : List.of("", "wrong")) {
+            var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+"/internal/v1/test-accounts/seed"))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Basic " + Base64.getEncoder().encodeToString(OPERATOR.getBytes(StandardCharsets.UTF_8)))
+                    .header("X-XSRF-TOKEN", token).POST(HttpRequest.BodyPublishers.ofString("{}"));
+            assertThat(HttpClient.newHttpClient().send(request.build(), HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(403);
+        }
+        verifyNoInteractions(service);
+        assertThat(send("GET", "csrf", null).statusCode()).isEqualTo(401);
     }
     @Test void safeMethodsAndUnlistedOperationsCannotMutate() throws Exception {
         assertThat(send("GET","seed",OPERATOR).statusCode()).isEqualTo(403);

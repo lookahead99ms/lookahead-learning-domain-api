@@ -613,3 +613,16 @@ pins), not user accounts. It is hash-bound backend-only archive metadata, exclud
 from served assets. Domain verifies and extracts the complete archive before readiness;
 Angular requests individual authorized content files. Older content-only archives must
 be rebuilt and published as a new release; never bypass the catalog requirement.
+
+
+### CSRF protection and Local operator seeding
+
+Security chains retain Spring CSRF protection with cookie-backed token storage (no
+server authentication session). Bearer resource-server requests use Spring's standard
+Bearer-token handling; cookie-only unsafe requests are rejected with 403. Local
+operator clients must GET `/internal/v1/test-accounts/csrf` with the dedicated Basic
+credential, retain the HttpOnly `XSRF-TOKEN` cookie, then POST JSON to the seed endpoint
+with that cookie, the returned `X-XSRF-TOKEN` token and the same Basic credential.
+Origin and Sec-Fetch-Site requests remain rejected. Use the updated Infra seed client.
+This change is locally tested; shared-stack activation and hosted CodeQL are pending.
+The three expired CSRF exceptions have been removed rather than extended.
