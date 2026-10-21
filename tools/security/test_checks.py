@@ -146,6 +146,14 @@ class SecurityGateTests(unittest.TestCase):
                     'uri': 'src/main/java/com/lookahead/domain/' + source + '.java'}}}]}]}]}
             self.assertEqual(1, checks.sarif_gate([document], exceptions=exceptions))
 
+    def test_runtime_base_avoids_known_vulnerable_alpine_pin(self):
+        dockerfile = (checks.ROOT / 'Dockerfile').read_text()
+        self.assertEqual('eclipse-temurin:21-jre-noble@sha256:35501d3f93173b420ac9001658eb68157e813316b865087e345c187fca422c4c', checks.base_images(dockerfile)[1])
+        self.assertIn('USER 10001:10001', dockerfile)
+        self.assertIn('--shell /usr/sbin/nologin', dockerfile)
+        self.assertIn('HEALTHCHECK', dockerfile)
+        self.assertNotIn('apk upgrade', dockerfile)
+
     def test_repository_sast_exception_binding_is_current(self):
         checks.load_sast_exceptions()
 
