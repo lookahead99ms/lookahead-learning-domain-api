@@ -119,4 +119,57 @@ class PublicationBootstrapTest {
         assertThat(new com.lookahead.learning.content.service.ProtectedContentPolicy(mapper,location).read(
                 new com.lookahead.learning.content.service.ProtectedContentPolicy(mapper,location).find("/content/sample.json").orElseThrow())).containsExactly("{\"synthetic\":true}".getBytes());
     }
+    @Test void contentOnlyReleaseCannotStartWithoutTrustedCatalog() throws Exception {
+        var good = fixture(null, false, false);
+        var manifest = (tools.jackson.databind.node.ObjectNode) mapper.readTree(good.manifest());
+        var files = (tools.jackson.databind.node.ArrayNode) manifest.path("files");
+        files.remove(0); // sorted inventory starts with account-catalog.json
+        manifest.remove("trustedCatalogSha256");
+        var incomplete = new Fixture(good.archive(), mapper.writeValueAsBytes(manifest), good.release());
+        var requested = new ArrayList<String>();
+        assertThatThrownBy(() -> new PublicationBootstrap(mapper).load(settings(incomplete), key -> {
+            requested.add(key); return source(incomplete).open(key);
+        })).isInstanceOf(IllegalStateException.class);
+        assertThat(requested).hasSize(1);
+        try (var paths = Files.list(directory)) { assertThat(paths.toList()).isEmpty(); }
+    }
+    @Test void startsContentContextAndServesRealReleaseWithoutNetwork() throws Exception {
+        String input = System.getProperty("lookahead.content-release-fixture");
+        org.junit.jupiter.api.Assumptions.assumeTrue(input != null, "Explicit local Content release required");
+        Path root = Path.of(input);
+        byte[] archive = Files.readAllBytes(root.resolve("publication.tar.gz"));
+        byte[] manifest = Files.readAllBytes(root.resolve("publication.tar.gz.manifest.json"));
+        var f = new Fixture(archive, manifest, mapper.readTree(manifest).path("releaseId").asText());
+        var selected = settings(f);
+        new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+            .withBean(PublicationLocation.class, () -> new PublicationBootstrap(mapper).load(selected, source(f)))
+            .run(context -> {
+                assertThat(context).hasNotFailed();
+                var location = context.getBean(PublicationLocation.class);
+                var policy = new com.lookahead.learning.content.service.ProtectedContentPolicy(mapper, location);
+                var catalog = new com.lookahead.learning.content.validator.SnapshotValidator(mapper, location);
+                assertThat(catalog.allTopicIds()).isNotEmpty();
+                assertThat(new PublicationConfiguration().contentPublication(location, policy, catalog).health().getStatus().getCode()).isEqualTo("UP");
+                var service = new com.lookahead.learning.content.service.ProtectedContentService(policy, null);
+                var publication = mapper.readTree(Files.readAllBytes(Path.of(location.manifest())));
+                String publicPath = null, protectedPath = null;
+                for (var asset : publication.path("assets")) {
+                    if (asset.path("tier").asText().equals("public")) publicPath = asset.path("path").asText();
+                    else protectedPath = asset.path("path").asText();
+                }
+                assertThat(publicPath).isNotNull();
+                var controller = new com.lookahead.learning.content.controller.ProtectedContentController(service);
+                var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+                var response = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(publicPath))
+                    .andReturn().getResponse();
+                assertThat(response.getStatus()).isEqualTo(200);
+                assertThat(response.getContentAsByteArray()).isEqualTo(service.read(publicPath, null).bytes()).isNotEmpty();
+                assertThat(response.getHeader("Cache-Control")).isEqualTo("no-store, private");
+                String denied = protectedPath;
+                assertThat(denied).isNotNull();
+                assertThatThrownBy(() -> service.read(denied, null)).isInstanceOf(com.lookahead.learning.content.exception.AccountFailure.class);
+                assertThatThrownBy(() -> service.read("/content/account-catalog.json", null)).isInstanceOf(com.lookahead.learning.content.exception.AccountFailure.class);
+                assertThat(Path.of(location.contentRoot()).getParent().getParent().resolve("download.tar.gz")).doesNotExist();
+            });
+    }
 }

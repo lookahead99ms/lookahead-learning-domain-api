@@ -603,3 +603,13 @@ dedicated operator credential. Requests carrying Origin or Sec-Fetch-Site,
 non-JSON POSTs and cross-origin preflight are rejected before seeding. Existing
 Infra Python tooling already uses the supported request shape. See
 [security maintenance](docs/security-ci.md) for the source-bound review.
+
+
+### Complete archive and Domain catalog
+
+Content Release generates `account-catalog.json` from the same staged content and
+pinned Web planner. This is curriculum metadata (IDs, routes, topics and version
+pins), not user accounts. It is hash-bound backend-only archive metadata, excluded
+from served assets. Domain verifies and extracts the complete archive before readiness;
+Angular requests individual authorized content files. Older content-only archives must
+be rebuilt and published as a new release; never bypass the catalog requirement.
