@@ -49,7 +49,7 @@ class ScenarioPurchasesDatabaseTest {
             new TransactionTemplate(manager).executeWithoutResult(tx->fixtures.populate(id,operator,scenario,now));
             var actor=new AccountPrincipal(id,scenario.username(),"Synthetic",true,false);
             var records=service.access(actor,id);
-            var summary=new AccessSummaryService(jdbc,json,staff).get(actor,id);
+            var summary=new AccessSummaryService(jdbc,json,staff,Clock.fixed(now,ZoneOffset.UTC)).get(actor,id);
             if(scenario.membership()==null||scenario.term()==LearnerScenario.Term.EXPIRED) assertThat(summary.label()).isEqualTo("Free");
             else assertThat(summary.label()).contains(scenario.membership().contains("promo")?"Promo · ":"Regular · ");
             if(scenario.membership()==null){assertThat(records).isEmpty();continue;}
@@ -76,6 +76,30 @@ class ScenarioPurchasesDatabaseTest {
             if(scenario.extraMembership()!=null) assertThat(records.stream().filter(p->p.path("status").asText().equals(scenario.term()==LearnerScenario.Term.EXPIRED?"expired":"active"))).hasSize(2);
         }
         assertThat(jdbc.queryForObject("SELECT count(*) FROM membership_purchases WHERE account_id=?",Integer.class,operator)).isZero();
+    }
+    @Test void summaryUsesOneClockForStartExpiryAndManualGrantBoundaries() {
+        Instant anchor=Instant.parse("2040-01-01T00:00:00Z");
+        UUID id=UUID.randomUUID();
+        jdbc.update("INSERT INTO platform_subjects VALUES (?)",id);
+        var fixtures=new ScenarioPurchases(jdbc,json,new TestAccountPolicy(TestAccountPolicyTest.local()));
+        var scenario=LearnerScenario.all().stream().filter(s->s.membership()!=null
+                && s.term()!=LearnerScenario.Term.EXPIRED && s.scheduled()==null
+                && s.extraMembership()==null && s.upgradedFrom()==null).findFirst().orElseThrow();
+        new TransactionTemplate(manager).executeWithoutResult(tx->fixtures.populate(id,id,scenario,anchor));
+        var row=jdbc.queryForMap("SELECT starts_at,ends_at FROM membership_purchases WHERE account_id=?",id);
+        Instant start=((java.sql.Timestamp)row.get("starts_at")).toInstant();
+        Instant end=((java.sql.Timestamp)row.get("ends_at")).toInstant();
+        jdbc.update("INSERT INTO account_grants VALUES (?, 'learn:clock-fixture', ?)",id,java.sql.Timestamp.from(end));
+        var actor=new AccountPrincipal(id,"clock-fixture","Synthetic",true,false);
+        var staff=mock(StaffAccessService.class);
+        java.util.function.Function<Instant,AccessSummaryService.Summary> at=instant->
+                new AccessSummaryService(jdbc,json,staff,Clock.fixed(instant,ZoneOffset.UTC)).get(actor,id);
+        assertThat(at.apply(start.minusSeconds(1)).label()).doesNotContain("Regular · ","Promo · ");
+        assertThat(at.apply(start).label()).contains(scenario.membership().contains("promo")?"Promo · ":"Regular · ");
+        assertThat(at.apply(end.minusSeconds(1)).label()).contains(scenario.membership().contains("promo")?"Promo · ":"Regular · ");
+        assertThat(at.apply(end.minusSeconds(1)).grantedCourseIds()).contains("learn:clock-fixture");
+        assertThat(at.apply(end).label()).isEqualTo("Free");
+        assertThat(at.apply(end).grantedCourseIds()).isEmpty();
     }
     @Test void summaryChecksActorAndExcludesExpiredManualGrants() {
         UUID id=UUID.randomUUID(), other=UUID.randomUUID();

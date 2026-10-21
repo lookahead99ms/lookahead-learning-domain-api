@@ -626,3 +626,5 @@ with that cookie, the returned `X-XSRF-TOKEN` token and the same Basic credentia
 Origin and Sec-Fetch-Site requests remain rejected. Use the updated Infra seed client.
 This change is locally tested; shared-stack activation and hosted CodeQL are pending.
 The three expired CSRF exceptions have been removed rather than extended.
+
+Membership access summaries evaluate purchase and grant validity at one application UTC instant per request. Tests inject the same clock used for scenario purchases; start is inclusive and expiry exclusive. This changes no response shape or access policy.
