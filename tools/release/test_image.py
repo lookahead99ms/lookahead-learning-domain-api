@@ -14,8 +14,46 @@ spec.loader.exec_module(image)
 
 
 class ImmutableImageTests(unittest.TestCase):
-    def archive(self, path, architecture='amd64', multiple=False, wrongPath=False, link=False):
-        raw=json.dumps({'os':'linux','architecture':architecture}).encode()
+    def test_cli_exports_and_imports_same_archive_without_building(self):
+        import shutil
+        import sys
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp).resolve();source=root/'source.tar';configId=self.archive(source)
+            directory=root/'release';expected={'revision':'a'*40,'dockerfileSha256':'b'*64,'workflowSha256':'c'*64}
+            def run(args,**kwargs):
+                self.assertEqual(args[:3],['docker','image','save'])
+                shutil.copyfile(source,args[4])
+            with patch.object(image,'inputs',return_value=expected),patch.object(image,'identity',return_value=configId),patch.object(image.subprocess,'run',side_effect=run),patch('builtins.print'):
+                with patch.object(sys,'argv',['image.py','export','--image','scanned','--directory',str(directory)]):image.main()
+                receipt=json.loads((directory/'image.json').read_text());self.assertEqual(receipt['imageId'],configId)
+                with patch.object(sys,'argv',['image.py','export','--image','scanned','--directory',str(directory)]),self.assertRaises(ValueError):image.main()
+                with patch.object(sys,'argv',['image.py','import','--directory',str(directory)]),patch.object(image,'command',return_value='Loaded image: scanned'),patch.object(image,'verifyLoaded',return_value='scanned') as verify:
+                    image.main();verify.assert_called_once_with('scanned',configId)
+                link=root/'link';link.symlink_to(directory,target_is_directory=True)
+                with patch.object(sys,'argv',['image.py','import','--directory',str(link)]),self.assertRaises(ValueError):image.main()
+
+    def test_versioned_archive_rejects_other_build_app_source_and_version(self):
+        from test_release_version import archive as fixture
+        import os
+        app = 'domain'
+        meta = image.versions.metadata(app, 'v2026.10.26.20.00')
+        expected = {**meta, 'revision':'a'*40,'dockerfileSha256':'b'*64,'workflowSha256':'c'*64}
+        labels = {'org.opencontainers.image.version':meta['releaseVersion'], 'org.opencontainers.image.revision':'a'*40,'com.lookahead.app':app}
+        with tempfile.TemporaryDirectory() as temp:
+            archive=Path(temp)/'image.tar'; configId=fixture(archive,labels)
+            receipt={**expected,'schemaVersion':'lookahead-scanned-image/v2','imageId':configId,'archiveSha256':image.digest(archive),'platform':'linux/amd64'}
+            self.assertEqual(image.validate(receipt,archive,expected),configId)
+            for key in meta:
+                with self.assertRaises(ValueError):image.validate({**receipt,key:'wrong'},archive,expected)
+            for key in labels:
+                changed=fixture(archive,{**labels,key:'wrong'})
+                with self.assertRaises(ValueError):image.validate({**receipt,'imageId':changed,'archiveSha256':image.digest(archive)},archive,expected)
+        with patch.dict(os.environ,{'RELEASE_VERSION':meta['releaseVersion']}),patch.object(image,'command',side_effect=['','','a'*40]),patch.object(image,'digest',return_value='b'*64):
+            self.assertEqual(image.inputs(Path('.'))['imageTag'],meta['imageTag'])
+
+    def archive(self, path, architecture='amd64', multiple=False, wrongPath=False, link=False, labels=None):
+        raw=json.dumps({'os':'linux','architecture':architecture, 'config': {'Labels': labels or {}}}).encode()
         digest=hashlib.sha256(raw).hexdigest();name=('f'*64 if wrongPath else digest)+'.json'
         entries=[{'Config':name,'Layers':[]}]
         if multiple:entries.append(dict(entries[0]))
