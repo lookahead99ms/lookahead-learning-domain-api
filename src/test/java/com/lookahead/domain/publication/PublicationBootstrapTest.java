@@ -119,6 +119,107 @@ class PublicationBootstrapTest {
         assertThat(new com.lookahead.learning.content.service.ProtectedContentPolicy(mapper,location).read(
                 new com.lookahead.learning.content.service.ProtectedContentPolicy(mapper,location).find("/content/sample.json").orElseThrow())).containsExactly("{\"synthetic\":true}".getBytes());
     }
+    PublicationSettings liveSettings() throws Exception {
+        return new PublicationSettings(true,"us-east-2","123456789012","synthetic-publication",null,null,null,directory.toRealPath(),1024,4);
+    }
+    /** A source whose listing and bytes are both scripted; keys are served exactly as listed. */
+    PublicationObjectSource liveSource(List<PublicationObjectSource.ListedObject> listing, Map<String,byte[]> objects, List<String> requested) {
+        return new PublicationObjectSource() {
+            @Override public InputStream open(String key) throws IOException {
+                requested.add(key);
+                byte[] bytes = objects.get(key);
+                if (bytes == null) throw new IOException("absent");
+                return new ByteArrayInputStream(bytes);
+            }
+            @Override public List<ListedObject> list(String prefix) { requested.add("list:" + prefix); return listing; }
+        };
+    }
+    @Test void liveModeServesTheNewestCompleteReleaseUnderLiveAndNeverReadsReleases() throws Exception {
+        var older = fixture(null,false,false);
+        var newer = fixture("content/sample.json",false,false); // same bytes, distinct instance
+        var newerPublication = (tools.jackson.databind.node.ObjectNode) mapper.readTree(newer.manifest());
+        assertThat(newerPublication.path("releaseId").asText()).isEqualTo(older.release());
+        // Make the newer release a different release: a second asset changes publication bytes and therefore the ID.
+        var distinct = distinctFixture();
+        var t0 = java.time.Instant.parse("2026-10-26T10:00:00Z"); var t1 = t0.plusSeconds(600);
+        var listing = List.of(
+            new PublicationObjectSource.ListedObject("live/"+older.release()+"/publication.tar.gz", t0),
+            new PublicationObjectSource.ListedObject("live/"+older.release()+"/manifest.json", t0),
+            new PublicationObjectSource.ListedObject("live/"+distinct.release()+"/publication.tar.gz", t1),
+            new PublicationObjectSource.ListedObject("live/"+distinct.release()+"/manifest.json", t1));
+        var objects = Map.of("live/"+older.release()+"/publication.tar.gz", older.archive(), "live/"+older.release()+"/manifest.json", older.manifest(),
+            "live/"+distinct.release()+"/publication.tar.gz", distinct.archive(), "live/"+distinct.release()+"/manifest.json", distinct.manifest());
+        var requested = new ArrayList<String>();
+        var location = new PublicationBootstrap(mapper).load(liveSettings(), liveSource(listing, objects, requested));
+        assertThat(requested).containsExactly("list:live/", "live/"+distinct.release()+"/manifest.json", "live/"+distinct.release()+"/publication.tar.gz");
+        assertThat(Files.readString(Path.of(location.contentRoot()).resolve("second.json"))).contains("second");
+        assertThat(location.cloud()).isTrue();
+        // Ordering of the listing does not matter; the folder with the newest manifest wins even when listed first.
+        var reversed = new ArrayList<>(listing); Collections.reverse(reversed);
+        writableForFixtureCleanup();
+        var again = new ArrayList<String>();
+        new PublicationBootstrap(mapper).load(liveSettings(), liveSource(reversed, objects, again));
+        assertThat(again.get(1)).isEqualTo("live/"+distinct.release()+"/manifest.json");
+    }
+    @Test void liveModeFailsClosedOnEmptyForeignIncompleteOrMismatchedLivePrefix() throws Exception {
+        var f = fixture(null,false,false);
+        var t0 = java.time.Instant.parse("2026-10-26T10:00:00Z");
+        var both = Map.of("live/"+f.release()+"/publication.tar.gz", f.archive(), "live/"+f.release()+"/manifest.json", f.manifest());
+        var manifestOnly = List.of(new PublicationObjectSource.ListedObject("live/"+f.release()+"/manifest.json", t0));
+        var foreign = List.of(new PublicationObjectSource.ListedObject("live/"+f.release()+"/manifest.json", t0),
+            new PublicationObjectSource.ListedObject("live/"+f.release()+"/publication.tar.gz", t0),
+            new PublicationObjectSource.ListedObject("live/notes.txt", t0));
+        var duplicate = List.of(new PublicationObjectSource.ListedObject("live/"+f.release()+"/manifest.json", t0),
+            new PublicationObjectSource.ListedObject("live/"+f.release()+"/manifest.json", t0));
+        var noInstant = List.of(new PublicationObjectSource.ListedObject("live/"+f.release()+"/manifest.json", null));
+        var archiveOnly = List.of(new PublicationObjectSource.ListedObject("live/"+f.release()+"/publication.tar.gz", t0));
+        String otherId = "release-" + "f".repeat(24);
+        var wrongFolder = List.of(new PublicationObjectSource.ListedObject("live/"+otherId+"/manifest.json", t0),
+            new PublicationObjectSource.ListedObject("live/"+otherId+"/publication.tar.gz", t0));
+        var wrongObjects = Map.of("live/"+otherId+"/manifest.json", f.manifest(), "live/"+otherId+"/publication.tar.gz", f.archive());
+        var tooMany = new ArrayList<PublicationObjectSource.ListedObject>();
+        for (int i = 0; i <= PublicationBootstrap.MAX_LIVE_OBJECTS; i++) tooMany.add(new PublicationObjectSource.ListedObject("live/"+f.release()+"/manifest.json", t0));
+        record Case(List<PublicationObjectSource.ListedObject> listing, Map<String,byte[]> objects) {}
+        for (var scenario : List.of(new Case(List.of(), both), new Case(manifestOnly, both), new Case(foreign, both), new Case(duplicate, both),
+                new Case(noInstant, both), new Case(archiveOnly, both), new Case(wrongFolder, wrongObjects), new Case(tooMany, both))) {
+            var requested = new ArrayList<String>();
+            assertThatThrownBy(() -> new PublicationBootstrap(mapper).load(liveSettings(), liveSource(scenario.listing(), scenario.objects(), requested)))
+                .hasMessage("Selected cloud publication failed startup verification");
+            try (var files = Files.list(directory)) { assertThat(files.toList()).isEmpty(); }
+        }
+        // A pinned deployment never lists, and a source without listing support cannot serve live.
+        var pinnedRequests = new ArrayList<String>();
+        new PublicationBootstrap(mapper).load(settings(f), key -> { pinnedRequests.add(key); return source(f).open(key); });
+        assertThat(pinnedRequests).noneMatch(key -> key.startsWith("list:") || key.startsWith("live/"));
+        assertThatThrownBy(() -> new PublicationBootstrap(mapper).load(liveSettings(), source(f))).isInstanceOf(IllegalStateException.class);
+    }
+    Fixture distinctFixture() throws Exception {
+        byte[] body = "{\"synthetic\":true}".getBytes(); byte[] second = "{\"second\":true}".getBytes();
+        byte[] publication = mapper.writeValueAsBytes(Map.of("schemaVersion", "content-publication/v1", "version", "fixture-v2", "assets",
+                List.of(Map.of("path", "/content/sample.json", "sha256", PublicationBootstrap.sha(body), "mediaType", "application/json", "tier", "public", "scopes", List.of(), "contentIds", List.of()),
+                        Map.of("path", "/content/second.json", "sha256", PublicationBootstrap.sha(second), "mediaType", "application/json", "tier", "public", "scopes", List.of(), "contentIds", List.of()))));
+        var files = new TreeMap<String, byte[]>();
+        files.put("publication.json", publication); files.put("content/sample.json", body); files.put("content/second.json", second);
+        files.put("account-catalog.json", mapper.writeValueAsBytes(Map.of("schemaVersion","account-catalog/v1","catalogVersion","sha256:"+"b".repeat(64),
+                "records",List.of(),"algorithmVersions",List.of(),"rankingVersions",List.of())));
+        var bytes = new ByteArrayOutputStream();
+        try (var gzip = new GZIPOutputStream(bytes); var tar = new TarArchiveOutputStream(gzip)) {
+            for (var entry : files.entrySet()) {
+                var member = new TarArchiveEntry(entry.getKey());
+                member.setSize(entry.getValue().length); tar.putArchiveEntry(member); tar.write(entry.getValue()); tar.closeArchiveEntry();
+            }
+        }
+        byte[] archive = bytes.toByteArray();
+        var releaseBytes = new ByteArrayOutputStream(); releaseBytes.write(publication); releaseBytes.write(files.get("account-catalog.json"));
+        String release = "release-" + PublicationBootstrap.sha(releaseBytes.toByteArray()).substring(0,24);
+        var inventory = new ArrayList<Map<String,Object>>();
+        for (var entry : files.entrySet()) inventory.add(Map.of("path", entry.getKey(), "bytes", entry.getValue().length, "sha256", PublicationBootstrap.sha(entry.getValue())));
+        byte[] manifest = mapper.writeValueAsBytes(Map.of("schemaVersion", "lookahead-publication-archive/v1", "releaseId", release,
+                "archiveSha256", PublicationBootstrap.sha(archive), "publicationSha256", PublicationBootstrap.sha(publication),
+                "trustedCatalogSha256", PublicationBootstrap.sha(files.get("account-catalog.json")), "files", inventory,
+                "totalBytes", files.values().stream().mapToLong(value -> value.length).sum()));
+        return new Fixture(archive, manifest, release);
+    }
     @Test void contentOnlyReleaseCannotStartWithoutTrustedCatalog() throws Exception {
         var good = fixture(null, false, false);
         var manifest = (tools.jackson.databind.node.ObjectNode) mapper.readTree(good.manifest());

@@ -39,6 +39,44 @@ class PublicationConfigurationTest {
         context().withPropertyValues("app.deployment-environment="+mode, "app.content.root=/synthetic/local/content")
                 .run(context -> assertThat(context).hasFailed());
     }
+    @Test void s3SourceListsOnlyTheRequestedPrefixWithOwnerCheckAndBoundedPagination() throws Exception {
+        var client = mock(S3Client.class);
+        var settings = new PublicationSettings(true,"us-east-2","123456789012","synthetic-publication",null,null,null,Path.of("/tmp/lookahead-publications"),1024,4);
+        var requests = new java.util.ArrayList<software.amazon.awssdk.services.s3.model.ListObjectsV2Request>();
+        var t0 = java.time.Instant.parse("2026-10-26T10:00:00Z");
+        when(client.listObjectsV2(any(java.util.function.Consumer.class))).thenAnswer(invocation -> {
+            java.util.function.Consumer<software.amazon.awssdk.services.s3.model.ListObjectsV2Request.Builder> consumer = invocation.getArgument(0);
+            var builder = software.amazon.awssdk.services.s3.model.ListObjectsV2Request.builder(); consumer.accept(builder);
+            var request = builder.build(); requests.add(request);
+            boolean first = request.continuationToken() == null;
+            return software.amazon.awssdk.services.s3.model.ListObjectsV2Response.builder()
+                .contents(software.amazon.awssdk.services.s3.model.S3Object.builder().key(first ? "live/a" : "live/b").lastModified(t0).build())
+                .isTruncated(first).nextContinuationToken(first ? "next" : null).build();
+        });
+        when(client.getObject(any(java.util.function.Consumer.class))).thenAnswer(invocation -> {
+            java.util.function.Consumer<software.amazon.awssdk.services.s3.model.GetObjectRequest.Builder> consumer = invocation.getArgument(0);
+            var builder = software.amazon.awssdk.services.s3.model.GetObjectRequest.builder(); consumer.accept(builder);
+            var request = builder.build();
+            assertThat(request.bucket()).isEqualTo("synthetic-publication"); assertThat(request.expectedBucketOwner()).isEqualTo("123456789012");
+            return new software.amazon.awssdk.core.ResponseInputStream<>(software.amazon.awssdk.services.s3.model.GetObjectResponse.builder().build(),
+                software.amazon.awssdk.http.AbortableInputStream.create(new java.io.ByteArrayInputStream(request.key().getBytes())));
+        });
+        var source = new PublicationConfiguration.Cloud().publicationObjects(client, settings);
+        var listed = source.list("live/");
+        assertThat(listed).extracting(PublicationObjectSource.ListedObject::key).containsExactly("live/a", "live/b");
+        assertThat(listed.get(0).lastModified()).isEqualTo(t0);
+        assertThat(requests).hasSize(2).allSatisfy(request -> {
+            assertThat(request.bucket()).isEqualTo("synthetic-publication"); assertThat(request.prefix()).isEqualTo("live/"); assertThat(request.expectedBucketOwner()).isEqualTo("123456789012");
+        });
+        assertThat(requests.get(1).continuationToken()).isEqualTo("next");
+        assertThat(new String(source.open("live/a/manifest.json").readAllBytes())).isEqualTo("live/a/manifest.json");
+        // An endless listing is cut off instead of being read into memory.
+        when(client.listObjectsV2(any(java.util.function.Consumer.class))).thenAnswer(invocation ->
+            software.amazon.awssdk.services.s3.model.ListObjectsV2Response.builder()
+                .contents(java.util.stream.IntStream.range(0, 40).mapToObj(i -> software.amazon.awssdk.services.s3.model.S3Object.builder().key("live/x" + i).lastModified(t0).build()).toList())
+                .isTruncated(true).nextContinuationToken("more").build());
+        assertThatThrownBy(() -> source.list("live/")).isInstanceOf(IllegalStateException.class);
+    }
     @ParameterizedTest @ValueSource(strings={"dev","prod"})
     void cloudBeansInitializeVerifiedPublicationAndReadinessWithControlledObjectSource(String mode) throws Exception {
         var helper = new PublicationBootstrapTest(); helper.directory=directory;

@@ -5,17 +5,30 @@ import java.io.*;
 import java.nio.file.*;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
+import java.time.Instant;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-/** Complete hash-pinned extraction into a fresh private directory before bean publication. */
+/**
+ * Complete hash-pinned extraction into a fresh private directory before bean publication.
+ * A pinned deployment reads releases/&lt;releaseId&gt;/ and checks both externally supplied digests.
+ * A live deployment lists live/, selects the newest complete release folder there and binds the
+ * archive to the digest inside that manifest; the release ID is still recomputed from the content.
+ */
 public final class PublicationBootstrap {
     static final long MAX_BYTES = 1024L * 1024 * 1024;
     static final int MAX_FILE = 32 * 1024 * 1024;
+    static final int MAX_LIVE_OBJECTS = 64;
+    private static final Pattern LIVE_KEY = Pattern.compile(PublicationSettings.LIVE_PREFIX + "(" + PublicationSettings.RELEASE_ID + ")/(manifest\\.json|publication\\.tar\\.gz)");
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PublicationBootstrap.class);
     private record Entry(long bytes, String sha256) {}
+    /** One release to load: its prefix, ID and the digests known before the manifest is read (null when live). */
+    record Selection(String prefix, String releaseId, String manifestSha256, String archiveSha256) {}
     private final ObjectMapper mapper;
     public PublicationBootstrap(ObjectMapper mapper) { this.mapper = mapper; }
 
@@ -27,21 +40,25 @@ public final class PublicationBootstrap {
                 require(!Files.isSymbolicLink(cursor), "Publication directory cannot contain symlinks");
             Files.createDirectories(parent);
             stage = Files.createTempDirectory(parent, "publication-", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
-            String prefix = "releases/" + settings.releaseId() + "/";
+            Selection selected = settings.live() ? discoverLive(source)
+                    : new Selection(PublicationSettings.RELEASES_PREFIX + settings.releaseId() + "/", settings.releaseId(), settings.manifestSha256(), settings.archiveSha256());
+            String prefix = selected.prefix();
             byte[] manifestBytes;
             try (InputStream stream = source.open(prefix + "manifest.json")) { manifestBytes = stream.readNBytes(MAX_FILE + 1); }
-            require(manifestBytes.length <= MAX_FILE && sha(manifestBytes).equals(settings.manifestSha256()), "Transport manifest digest mismatch");
+            require(manifestBytes.length <= MAX_FILE && (selected.manifestSha256() == null || sha(manifestBytes).equals(selected.manifestSha256())), "Transport manifest digest mismatch");
             JsonNode manifest = mapper.readTree(manifestBytes);
+            String archiveSha256 = selected.archiveSha256() == null ? manifest.path("archiveSha256").asText() : selected.archiveSha256();
             require(manifest.path("schemaVersion").asText().equals("lookahead-publication-archive/v1")
-                    && manifest.path("releaseId").asText().equals(settings.releaseId())
-                    && manifest.path("archiveSha256").asText().equals(settings.archiveSha256()), "Transport contract mismatch");
+                    && manifest.path("releaseId").asText().equals(selected.releaseId())
+                    && archiveSha256.matches("[a-f0-9]{64}")
+                    && manifest.path("archiveSha256").asText().equals(archiveSha256), "Transport contract mismatch");
             Map<String, Entry> expected = inventory(manifest);
             require(expected.containsKey("publication.json") && expected.containsKey("account-catalog.json"), "Complete release requires publication and trusted account catalog");
             Path archive = stage.resolve("download.tar.gz");
             try (InputStream stream = source.open(prefix + "publication.tar.gz"); OutputStream output = Files.newOutputStream(archive, StandardOpenOption.CREATE_NEW)) {
                 require(copy(stream, output, MAX_BYTES, null) <= MAX_BYTES, "Compressed archive exceeds bound");
             }
-            require(sha(archive).equals(settings.archiveSha256()), "Archive digest mismatch");
+            require(sha(archive).equals(archiveSha256), "Archive digest mismatch");
             Path extracted = Files.createDirectory(stage.resolve("release"));
             Set<String> seen = new HashSet<>();
             try (var compressed = Files.newInputStream(archive);
@@ -69,7 +86,7 @@ public final class PublicationBootstrap {
             MessageDigest releaseDigest = MessageDigest.getInstance("SHA-256");
             releaseDigest.update(publicationBytes); releaseDigest.update(catalogBytes);
             require(sha(publicationBytes).equals(manifest.path("publicationSha256").asText())
-                    && settings.releaseId().equals("release-" + HexFormat.of().formatHex(releaseDigest.digest()).substring(0, 24)), "Publication identity mismatch");
+                    && selected.releaseId().equals("release-" + HexFormat.of().formatHex(releaseDigest.digest()).substring(0, 24)), "Publication identity mismatch");
             require(expected.get("account-catalog.json").sha256().equals(manifest.path("trustedCatalogSha256").asText()), "Trusted catalog digest missing or mismatched");
             JsonNode publication = mapper.readTree(publicationBytes);
             require(publication.path("schemaVersion").asText().equals("content-publication/v1") && publication.path("assets").isArray(), "Publication contract mismatch");
@@ -95,6 +112,33 @@ public final class PublicationBootstrap {
             if (stage != null) cleanup(stage);
             throw new IllegalStateException("Selected cloud publication failed startup verification");
         }
+    }
+
+    /**
+     * The serving release is the newest manifest under live/. Promotion writes the archive before the
+     * manifest and removes the previous folder afterwards, so a second folder is either a copy in
+     * progress (no manifest yet, ignored) or a predecessor awaiting removal (older, reported).
+     */
+    static Selection discoverLive(PublicationObjectSource source) throws IOException {
+        List<PublicationObjectSource.ListedObject> listing = source.list(PublicationSettings.LIVE_PREFIX);
+        require(listing.size() <= MAX_LIVE_OBJECTS, "Live prefix holds more objects than releases");
+        Map<String, Map<String, Instant>> folders = new TreeMap<>();
+        for (PublicationObjectSource.ListedObject object : listing) {
+            Matcher match = LIVE_KEY.matcher(object.key());
+            require(match.matches() && object.lastModified() != null, "Unexpected object under the live prefix");
+            require(folders.computeIfAbsent(match.group(1), id -> new HashMap<>()).put(match.group(2), object.lastModified()) == null, "Duplicate live object");
+        }
+        String chosen = null; Instant newest = null; List<String> complete = new ArrayList<>();
+        for (Map.Entry<String, Map<String, Instant>> folder : folders.entrySet()) {
+            Instant manifestTime = folder.getValue().get("manifest.json");
+            if (manifestTime == null) continue;
+            complete.add(folder.getKey());
+            if (newest == null || manifestTime.isAfter(newest)) { chosen = folder.getKey(); newest = manifestTime; }
+        }
+        require(chosen != null, "No live release is published");
+        require(folders.get(chosen).containsKey("publication.tar.gz"), "Live release is missing its archive");
+        if (complete.size() > 1) log.warn("Live prefix holds {} releases; serving the newest {}, promotion cleanup pending", complete.size(), chosen);
+        return new Selection(PublicationSettings.LIVE_PREFIX + chosen + "/", chosen, null, null);
     }
 
     private Map<String, Entry> inventory(JsonNode manifest) {

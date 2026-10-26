@@ -16,15 +16,20 @@ execution role, so the application needs no Secrets Manager client.
 | `AWS_REGION` | Owning environment region |
 | `LOOKAHEAD_AWS_ACCOUNT_ID` | Owning twelve-digit account |
 | `LOOKAHEAD_PUBLICATION_BUCKET` | Owning private publication bucket |
-| `LOOKAHEAD_PUBLICATION_RELEASE_ID` | Reviewed `release-` plus24 lowercase hash characters |
-| `LOOKAHEAD_PUBLICATION_MANIFEST_SHA256` | Reviewed transport-manifest SHA256 |
-| `LOOKAHEAD_PUBLICATION_ARCHIVE_SHA256` | Reviewed compressed-archive SHA256 |
+| `LOOKAHEAD_PUBLICATION_RELEASE_ID` | Pinned mode: reviewed `release-` plus 24 lowercase hash characters. Live mode: unset |
+| `LOOKAHEAD_PUBLICATION_MANIFEST_SHA256` | Pinned mode: reviewed transport-manifest SHA256. Live mode: unset |
+| `LOOKAHEAD_PUBLICATION_ARCHIVE_SHA256` | Pinned mode: reviewed compressed-archive SHA256. Live mode: unset |
 | `LOOKAHEAD_PUBLICATION_DIRECTORY` | Private temporary parent beneath `/tmp`; default `/tmp/lookahead-publications` |
 | `LOOKAHEAD_CONTENT_CACHE_BYTES` | Default33554432; allowed0–67108864 |
 | `LOOKAHEAD_CONTENT_CACHE_ENTRIES` | Default256; allowed1–1024 |
 | `LOOKAHEAD_DOMAIN_DB_PASSWORD` | Injected secret value, never its ARN |
 | `LOOKAHEAD_DOMAIN_JDBC_URL` | Regional RDS host, `sslmode=verify-full`, absolute `sslrootcert` referencing a valid CA bundle |
 
+The three release variables are set together or left unset together; a partial pin
+fails startup. **Pinned mode** reads `releases/<releaseId>/` and checks both externally
+supplied digests; it is the candidate-validation path. **Live mode** (all three unset,
+added 2026-10-26) lists the `live/` prefix and serves the newest release that a separate,
+owner-approved promotion placed there after the deployment that validated it succeeded.
 Infra selects values in its environment YAML and binds the service manifest to
 maintained CloudFormation parameters. Static AWS credentials and custom AWS endpoint
 overrides are rejected. Runtime SQL roles and migrations remain separately owned;
@@ -32,10 +37,22 @@ injecting a password does not provision a database role.
 
 ## Startup and serving
 
-1. Fetch only `releases/<releaseId>/manifest.json`, verify its externally pinned hash.
+Live mode first discovers the release: list `live/` (bounded to 64 objects, owner-checked
+pagination), accept only `live/release-<id>/manifest.json` and `.../publication.tar.gz`
+keys, take the folder whose manifest is newest, and require its archive to be present.
+Promotion writes the archive before the manifest and removes the previous folder
+afterwards, so a folder without a manifest is a copy in progress and is ignored, and a
+second complete folder is a predecessor awaiting removal: the newer one is served and a
+warning names both. An empty prefix, a foreign key, a folder whose manifest names another
+release, or a missing archive fails startup. The manifest's own digest is not pinned in
+live mode; the archive digest comes from that manifest and the release ID is still
+recomputed from the publication and catalog bytes.
+
+1. Fetch only `<prefix>/manifest.json` (`releases/<releaseId>/` when pinned, the discovered
+   `live/<releaseId>/` otherwise); verify the externally pinned hash when pinned.
 2. Validate its schema, selected release/archive hashes and bounded file inventory.
-3. Stream `releases/<releaseId>/publication.tar.gz` to private temporary disk and
-   verify the externally pinned archive hash before extraction.
+3. Stream `<prefix>/publication.tar.gz` to private temporary disk and verify the archive
+   hash (externally pinned, or the manifest's `archiveSha256` in live mode) before extraction.
 4. Extract regular files to a fresh directory. Reject traversal, links, sparse
    entries, duplicates, unlisted/missing files, size/digest mismatches and inventory
    disagreement. Limits:1GiB compressed and expanded payload,32MiB per file/manifest
@@ -54,8 +71,11 @@ injecting a password does not provision a database role.
    including cache hits. Metadata, request copies and parsing require additional heap.
 
 No automatic refresh, Redis, extra EBS, public S3 URLs or private content in images.
-Roll out a new pinned release to replace a task. Rollback selects the previous
-reviewed image/release/hash combination; healthy tasks keep their selected bytes.
+Pinned mode rolls out a new release by replacing the task with new pins. Live mode picks
+up a newly promoted release when its tasks restart; a running task keeps the bytes it
+verified at startup. Rollback in live mode is a separate approved promotion of the
+previous release (it still exists under `releases/`), followed by a task restart; in
+pinned mode it selects the previous reviewed image/release/hash combination.
 
 ## Validation and operational limits
 
