@@ -1,5 +1,30 @@
 # Look Ahead Learning Domain API
 
+## Audit retention and Local fixture provisioning
+
+The local source candidate adds forward migration V15; V1–V14 remain immutable.
+Runtime UPDATE, DELETE and TRUNCATE are revoked on purchase, author-review, staff
+and account-maintenance audit tables, including PUBLIC grants. Unexpected effective
+inherited or column-level audit mutation rights fail the migration. Cloud connection
+initialization also rejects audit mutation privileges and executable public-schema
+SECURITY DEFINER functions; the existing runtime role/ownership checks remain.
+
+Managed-account data erasure can retain purchase audit without attempting audit
+DELETE, and preserves subject/lifetime-creation records. Local synthetic purge
+requires an explicit migrator job setting `LOOKAHEAD_LOCAL_AUDIT_PURGE=true` with
+`LOOKAHEAD_ENVIRONMENT=local`, the `lookahead_platform` database, and an allowed
+loopback or `domain-api-db` host. Infra's generated Local migration job supplies
+this setting; cloud templates do not. The provisioner restores only membership
+audit DELETE, still limited by the existing synthetic-account trigger. A Local
+job without that opt-in retains audit and account cleanup still succeeds.
+
+DEV managed identities and owner deletion remain disabled pending the reviewed
+Cognito operator/permissions and cross-system recovery work. This SQL preparation
+does not activate them, implement PROD self-deletion, or change HTTP payloads.
+Run the documented database-backed coverage gate below; new audit tests exercise
+V14→V15, unchanged checksums, denied audit mutation, retained audit during cleanup,
+retry, purchase dependencies and inherited/function privilege bypasses.
+
 This independently packaged Java/Spring Boot application owns learning business
 rules: content access, current course grants, plans, progress, support receipts
 and local author capability.

@@ -36,6 +36,8 @@ public class AccountDatabaseConfiguration {
               WHERE pg_catalog.has_schema_privilege(current_user,oid,'CREATE'))
             OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c
               JOIN pg_catalog.pg_roles r ON r.oid=c.relowner WHERE r.rolname=current_user)
+            OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc p
+              JOIN pg_catalog.pg_roles r ON r.oid=p.proowner WHERE r.rolname=current_user)
           THEN
             RAISE EXCEPTION USING ERRCODE='42501', MESSAGE='Runtime database role violates application isolation';
           END IF;
@@ -44,13 +46,35 @@ public class AccountDatabaseConfiguration {
         $lookahead_runtime_guard$;
         """.formatted(LegacyStorageNames.RUNTIME_ROLE, LegacyStorageNames.RUNTIME_ROLE);
 
+    static final String CLOUD_AUDIT_GUARD_SQL = """
+        DO $lookahead_audit_guard$
+        DECLARE auditTable regclass;
+        BEGIN
+          FOREACH auditTable IN ARRAY ARRAY['public.membership_audit'::regclass,
+              'public.author_review_events'::regclass, 'public.staff_access_events'::regclass,
+              'public.real_account_maintenance'::regclass]
+          LOOP
+            IF pg_catalog.has_table_privilege(current_user,auditTable,'UPDATE,DELETE,TRUNCATE')
+                OR pg_catalog.has_any_column_privilege(current_user,auditTable,'UPDATE') THEN
+              RAISE EXCEPTION USING ERRCODE='42501', MESSAGE='Cloud runtime must retain audit records';
+            END IF;
+          END LOOP;
+          IF EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+              WHERE n.nspname='public' AND p.prosecdef AND pg_catalog.has_function_privilege(current_user,p.oid,'EXECUTE')) THEN
+            RAISE EXCEPTION USING ERRCODE='42501', MESSAGE='Cloud runtime cannot execute unreviewed privileged functions';
+          END IF;
+        END;
+        $lookahead_audit_guard$;
+        """;
+
     @Bean
     HikariDataSource accountDataSource(@Value("${spring.datasource.url}") String url,
             @Value("${spring.datasource.username:#{T(com.lookahead.domain.compatibility.LegacyStorageNames).RUNTIME_ROLE}}") String username,
             @Value("${spring.datasource.password}") String password,
             @Value("${spring.datasource.hikari.maximum-pool-size:6}") int maximumPoolSize,
             @Value("${spring.datasource.hikari.connection-timeout:3000}") long connectionTimeout,
-            @Value("${spring.datasource.hikari.validation-timeout:2000}") long validationTimeout) {
+            @Value("${spring.datasource.hikari.validation-timeout:2000}") long validationTimeout,
+            @Value("${app.deployment-environment:local}") String environment) {
         if (!LegacyStorageNames.RUNTIME_ROLE.equals(username) || password == null || password.isBlank())
             throw new IllegalStateException("Accounts require the dedicated runtime database role");
         validateJdbcUrl(url);
@@ -58,7 +82,9 @@ public class AccountDatabaseConfiguration {
         source.setJdbcUrl(url);
         source.setUsername(username);
         source.setPassword(password);
-        source.setConnectionInitSql(CONNECTION_GUARD_SQL);
+        if (!Set.of("local", "dev", "prod").contains(environment))
+            throw new IllegalStateException("Explicit database environment required");
+        source.setConnectionInitSql(CONNECTION_GUARD_SQL + ("local".equals(environment) ? "" : CLOUD_AUDIT_GUARD_SQL));
         // Pool acquisition does not bound an already borrowed connection's socket read.
         source.setDataSourceProperties(com.lookahead.domain.database.DomainDatabaseConnections.timeoutProperties());
         source.setMaximumPoolSize(maximumPoolSize);

@@ -17,10 +17,24 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class RuntimeDatabaseConfigurationTest {
+    @Test void cloudConnectionsRequireAuditRetentionAndRejectUnknownEnvironment() {
+        for (String environment : List.of("dev", "prod")) {
+            try (var source = new AccountDatabaseConfiguration().accountDataSource(BASE, LegacyStorageNames.RUNTIME_ROLE,
+                    "synthetic-password", 2, 1000, 500, environment)) {
+                assertThat(source.getConnectionInitSql()).contains("Cloud runtime must retain audit records",
+                        "has_any_column_privilege", "prosecdef", "staff_access_events", "real_account_maintenance");
+            }
+        }
+        assertThatThrownBy(() -> new AccountDatabaseConfiguration().accountDataSource(BASE, LegacyStorageNames.RUNTIME_ROLE,
+                "synthetic-password", 2, 1000, 500, "unknown")).isInstanceOf(IllegalStateException.class);
+        try (var source = configured(BASE)) {
+            assertThat(source.getConnectionInitSql()).doesNotContain("lookahead_audit_guard");
+        }
+    }
     private static final String BASE = "jdbc:postgresql://localhost:5432/domain_test";
     private HikariDataSource configured(String url) {
         return new AccountDatabaseConfiguration().accountDataSource(url, LegacyStorageNames.RUNTIME_ROLE,
-                "synthetic-password", 2, 1000, 500);
+                "synthetic-password", 2, 1000, 500, "local");
     }
 
     @Test void unspecifiedRuntimeUsernameUsesOnlyThePreservedStorageRole() {
@@ -37,7 +51,7 @@ class RuntimeDatabaseConfigurationTest {
     @Test void aServiceRenameDoesNotPermitNewOrPrivilegedDatabaseRoles() {
         for (String username : List.of("", "postgres", "lookahead_domain_app", "lookahead_identity_app", LegacyStorageNames.MIGRATOR_ROLE)) {
             assertThatIllegalStateException().isThrownBy(() -> new AccountDatabaseConfiguration()
-                    .accountDataSource(BASE, username, "synthetic-password", 2, 1000, 500));
+                    .accountDataSource(BASE, username, "synthetic-password", 2, 1000, 500, "local"));
         }
     }
 
