@@ -21,8 +21,12 @@ public final class DomainApiMigration {
         String password = injected != null ? injected : Files.readString(Path.of(file != null ? file : "/run/secrets/spring.flyway.password")).stripTrailing();
         if (password.isBlank()) throw new IllegalStateException("Migration password is required");
         verifyMigrationRole(url, user, password);
-        configure(Flyway.configure().dataSource(com.lookahead.domain.database.DomainDatabaseConnections.boundedDataSource(url, user, password)))
-                .load().migrate();
+        var source = com.lookahead.domain.database.DomainDatabaseConnections.boundedDataSource(url, user, password);
+        boolean initialMigration = com.lookahead.domain.database.InitialMigrationGuard.requested(
+                System.getenv("LOOKAHEAD_INITIAL_MIGRATION"), environment);
+        try (var guard = com.lookahead.domain.database.InitialMigrationGuard.acquire(source, initialMigration)) {
+            configure(Flyway.configure().dataSource(source)).load().migrate();
+        }
         if (localAuditPurge) com.lookahead.domain.database.LocalAuditProvisioning.provision(
                 com.lookahead.domain.database.DomainDatabaseConnections.boundedDataSource(url, user, password));
     }

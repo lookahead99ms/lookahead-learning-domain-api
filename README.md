@@ -665,3 +665,7 @@ to their exact revision, not claimed as a delta since the previous deployment.
 The central Content/Infra approval flows retain this snapshot with the approval
 receipt and disclose lookup failures or bounded/truncated results. Runtime APIs,
 workflow triggers, AWS grants and existing approval commands are unchanged.
+
+### Initial DEV migration guard
+
+The Infra database-job workflow opts the separate migration entry point into `LOOKAHEAD_INITIAL_MIGRATION=true`. Only DEV accepts this flag. The guard requires an empty `public` schema (tables, functions and types all count) and keeps a PostgreSQL session advisory lock for the duration of Flyway. A populated schema or concurrent initial migration is rejected; no clean, repair or automatic retry occurs. Without explicit opt-in, existing migration behavior is unchanged. This is initial setup, not a routine upgrade procedure; no historical SQL migration was edited. Unit tests and `InitialMigrationDatabaseTest` cover the boundary using the existing disposable database fixture. Actual AWS job execution remains separate from local verification.
