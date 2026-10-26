@@ -32,6 +32,9 @@ class TestAccountsDatabaseTest {
   jdbc.execute("CREATE TABLE flyway_schema_history(installed_rank integer)");
   for(String file:List.of("V1__platform.sql","V2__author_review_events.sql","V3__plan_names.sql","V4__cloud_identity_and_sign_ins.sql","V6__staff_access.sql","V8__memberships.sql","V9__plan_lifecycle.sql","V10__test_account_registry.sql","V11__free_plan_allowances.sql","V12__created_test_accounts.sql","V13__real_account_maintenance.sql","V14__managed_test_purchase_purge_grants.sql"))
    jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain",file)));
+  jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V15__retain_runtime_audit.sql")));
+  // Explicit Local fixture provisioning preserves the existing purge contract.
+  jdbc.execute("GRANT DELETE ON membership_audit TO lookahead_platform_app");
   jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",admin.accountId());
  }
  @BeforeEach void service(){

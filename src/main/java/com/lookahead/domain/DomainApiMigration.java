@@ -11,7 +11,10 @@ public final class DomainApiMigration {
     public static void main(String[] args) throws Exception {
         String user = required("SPRING_FLYWAY_USER");
         String url = required("SPRING_FLYWAY_URL");
-        validateMigrationTarget(user, url, System.getenv().getOrDefault("LOOKAHEAD_ENVIRONMENT", "local"), System.getenv("AWS_REGION"));
+        String environment = System.getenv().getOrDefault("LOOKAHEAD_ENVIRONMENT", "local");
+        validateMigrationTarget(user, url, environment, System.getenv("AWS_REGION"));
+        boolean localAuditPurge = com.lookahead.domain.database.LocalAuditProvisioning.requested(
+                System.getenv("LOOKAHEAD_LOCAL_AUDIT_PURGE"), environment, url);
         String file = System.getenv("LOOKAHEAD_MIGRATION_PASSWORD_FILE");
         String injected = System.getenv("SPRING_FLYWAY_PASSWORD");
         if (file != null && injected != null) throw new IllegalStateException("Choose one migration password source");
@@ -20,6 +23,8 @@ public final class DomainApiMigration {
         verifyMigrationRole(url, user, password);
         configure(Flyway.configure().dataSource(com.lookahead.domain.database.DomainDatabaseConnections.boundedDataSource(url, user, password)))
                 .load().migrate();
+        if (localAuditPurge) com.lookahead.domain.database.LocalAuditProvisioning.provision(
+                com.lookahead.domain.database.DomainDatabaseConnections.boundedDataSource(url, user, password));
     }
 
     /** SQL migrations live in db/domain; Java migrations are listed here so they are never found twice. */

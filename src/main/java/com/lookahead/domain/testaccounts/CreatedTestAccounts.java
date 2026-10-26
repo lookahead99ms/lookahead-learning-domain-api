@@ -134,21 +134,7 @@ public class CreatedTestAccounts {
         var target=authorizedTarget(actor,id);
         if ("deleted".equals(target.state())) return;
         jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor.accountId().toString());
-        if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT to_regclass('free_plan_creations') IS NOT NULL",Boolean.class))) {
-            jdbc.update("DELETE FROM free_plan_creations WHERE account_id=?",id);
-            jdbc.update("DELETE FROM free_plan_deletions WHERE account_id=?",id);
-        }
-        jdbc.update("DELETE FROM mutation_receipts WHERE account_id=?",id);
-        jdbc.update("DELETE FROM plans WHERE account_id=?",id);
-        jdbc.update("DELETE FROM account_grants WHERE account_id=?",id);
-        jdbc.update("DELETE FROM support_receipts WHERE account_id=?",id);
-        jdbc.update("UPDATE staff_access SET roles='[]',topic_grants='[]',full_curriculum=false,revision=revision+1,updated_at=clock_timestamp() WHERE account_id=?",id);
-        jdbc.query("SELECT set_config('lookahead.test_account_purge',?,true)",rs->{},id.toString());
-        jdbc.update("DELETE FROM membership_audit WHERE subject_id IN (SELECT id::text FROM membership_purchases WHERE account_id=?)",id);
-        jdbc.update("DELETE FROM membership_mock_payments WHERE idempotency_key IN (SELECT idempotency_key FROM membership_purchases WHERE account_id=?)",id);
-        jdbc.update("DELETE FROM membership_payment_attempts WHERE purchase_id IN (SELECT id FROM membership_purchases WHERE account_id=?)",id);
-        jdbc.update("DELETE FROM membership_provider_events WHERE purchase_id IN (SELECT id FROM membership_purchases WHERE account_id=?)",id);
-        jdbc.update("DELETE FROM membership_purchases WHERE account_id=?",id);
+        new AccountDataErasure(jdbc).erase(id, policy.enabled());
         jdbc.update("UPDATE test_account_creations SET state='deleted' WHERE account_id=?",id);
         jdbc.update("UPDATE test_account_registry SET creation_state='deleted',revision=revision+1,last_changed_by=?,last_changed_at=clock_timestamp() WHERE account_id=?",
                 actor.accountId().toString(),id);
