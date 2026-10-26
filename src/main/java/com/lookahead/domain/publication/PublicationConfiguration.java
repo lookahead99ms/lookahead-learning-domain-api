@@ -1,6 +1,9 @@
 package com.lookahead.domain.publication;
 
+import java.io.InputStream;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.HealthIndicator;
@@ -10,6 +13,8 @@ import software.amazon.awssdk.auth.credentials.ContainerCredentialsProvider;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
+import software.amazon.awssdk.services.s3.model.S3Object;
 import tools.jackson.databind.ObjectMapper;
 
 @Configuration
@@ -33,9 +38,33 @@ public class PublicationConfiguration {
                     .build();
         }
         @Bean PublicationObjectSource publicationObjects(S3Client client, PublicationSettings settings) {
-            return key -> client.getObject(request -> request.bucket(settings.bucket()).key(key).expectedBucketOwner(settings.accountId()));
+            return new S3PublicationObjects(client, settings);
         }
     }
+
+    /** Owner-checked reads of the selected bucket; listing is bounded to the live prefix a deployment discovers. */
+    static final class S3PublicationObjects implements PublicationObjectSource {
+        private final S3Client client;
+        private final PublicationSettings settings;
+        S3PublicationObjects(S3Client client, PublicationSettings settings) { this.client = client; this.settings = settings; }
+        @Override public InputStream open(String key) {
+            return client.getObject(request -> request.bucket(settings.bucket()).key(key).expectedBucketOwner(settings.accountId()));
+        }
+        @Override public List<ListedObject> list(String prefix) {
+            List<ListedObject> result = new ArrayList<>();
+            String token = null;
+            do {
+                String continuation = token;
+                ListObjectsV2Response page = client.listObjectsV2(request -> request.bucket(settings.bucket()).prefix(prefix)
+                        .expectedBucketOwner(settings.accountId()).continuationToken(continuation));
+                for (S3Object object : page.contents()) result.add(new ListedObject(object.key(), object.lastModified()));
+                if (result.size() > PublicationBootstrap.MAX_LIVE_OBJECTS) throw new IllegalStateException("Live prefix holds more objects than releases");
+                token = Boolean.TRUE.equals(page.isTruncated()) ? page.nextContinuationToken() : null;
+            } while (token != null);
+            return result;
+        }
+    }
+
     @Bean PublicationLocation publicationLocation(PublicationSettings settings, Environment environment,
             org.springframework.beans.factory.ObjectProvider<PublicationObjectSource> source, ObjectMapper mapper) {
         if (settings.cloud()) return new PublicationBootstrap(mapper).load(settings, source.getObject());
