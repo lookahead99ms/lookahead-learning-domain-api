@@ -1,0 +1,63 @@
+"""Portable presentation contract and unsafe payload fixtures; no provider calls."""
+from copy import deepcopy
+import hashlib
+from pathlib import Path
+import re
+import unittest
+import issue_template as template
+
+
+class TemplateTests(unittest.TestCase):
+    def fixture(self):
+        return dict(overview='## Decision summary: Test operation\n\n| Question | Gist |\n| --- | --- |\n'
+                    '| What you authorize | One reviewed upload. |\n| Risk and recovery | Preserve partial receipts. |\n'
+                    '| Validation evidence | Tests passed; provider execution unverified. |',
+                    scope=template.records([{'name': 'synthetic', 'action': 'Create'}]),
+                    evidence=template.details('Source evidence', '## Commits\n\nReviewed source.'),
+                    risks='No automatic rollback.', repository='example/infra', runId='123', owner='example',
+                    expires='2026-10-26T23:00:00Z', permissionDeadline='2027-10-26T13:00:00Z',
+                    command='APPROVE APPLY ' + 'a'*64, payload={'source': 'b'*40},
+                    created='2026-10-26T22:20:00Z', planDeadline='2026-10-26T23:00:00Z')
+
+    def test_seven_sections_one_exact_command_and_separated_authority_deadlines(self):
+        options = self.fixture(); original = deepcopy(options)
+        body = template.render(**options)
+        self.assertEqual(re.findall(r'^## (.+)$', body, re.M), list(template.SECTIONS))
+        self.assertEqual(body.count('\n---\n'), 6)
+        self.assertEqual(re.findall(r'```text\n(.*?)\n```', body, re.S), [options['command']])
+        self.assertIn('**Responsible owner:** @example', body)
+        self.assertIn('**Approval deadline (UTC):** 2026-10-26T23:00:00Z', body)
+        self.assertIn('**Permission deadline (separate):** 2027-10-26T13:00:00Z', body)
+        self.assertIn('**PLAN deadline:**', body)
+        self.assertIn('#### Commits', body)
+        self.assertIn('Preserve partial receipts.', body.split('## Risks and recovery')[1])
+        self.assertNotIn('Preserve partial receipts.', body.split('## What changes')[0])
+        self.assertNotIn('| Question |', body)
+        self.assertEqual(options, original)
+        block = 'APPROVE APPLY s3 CREATE synthetic-bucket\nAPPROVE POST APPLY SMOKE ' + 'b'*64
+        self.assertIn(template.code(block), template.render(**dict(options, command=block)))
+
+    def test_untrusted_labels_and_fence_payload_cannot_inject_sections(self):
+        self.assertEqual(template.text('<x>|`\r\n'), '&lt;x&gt;&#124;&#96;  ')
+        self.assertIn('&lt;/summary&gt;', template.details('</summary>', 'body'))
+        payload = 'safe\n```\n## Spoofed action'
+        self.assertEqual(template.code(payload), '````text\n' + payload + '\n````')
+        self.assertIn('No resource rows supplied', template.records([]))
+        self.assertIn('1. Resource', template.records([{'action': 'No change'}]))
+        self.assertEqual(template.summary('Plain summary.'), 'Plain summary.')
+
+    def test_only_exact_owner_run_link_and_command_are_rendered(self):
+        options = self.fixture()
+        for field, value in [('repository', 'bad/url/extra'), ('owner', 'user\n## fake'), ('runId', '1?x=2'),
+                             ('command', 'APPROVE APPLY '+'a'*64+'\nREJECT'), ('command', 'APPROVE APPLY wrong')]:
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                template.render(**dict(options, **{field: value}))
+
+    def test_portable_renderer_matches_reviewed_version(self):
+        # An accidental edit in one repository must fail until all reviewed copies are synchronized.
+        expected = '4c90eeb9b2e191baf9fe514c5be5699fcc8505ad87048eeb463aa38db3675b20'
+        self.assertEqual(hashlib.sha256(Path(template.__file__).read_bytes()).hexdigest(), expected)
+
+
+if __name__ == '__main__':
+    unittest.main()

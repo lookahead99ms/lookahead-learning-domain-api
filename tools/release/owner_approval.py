@@ -3,6 +3,7 @@
 This is workflow-code enforcement, not an independent reviewer. Never calls AWS.
 """
 import release_version as versions
+import issue_template as issueTemplate
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -105,19 +106,20 @@ def sourceChanges(repository, sha, get=api):
 
 
 def body(plan, receipt):
-    return ('Approve DEV image publication · run ' + plan['runId'] + '\n\n'
-            'Authorize one upload of the tested image shown below. Publishing enables later selection; '
-            'it does not deploy services, run SQL, install IAM or create repositories. Without approval, no upload occurs.\n\n'
-            'Risk/recovery: an upload timeout may leave an image in ECR. Preserve intent and reconcile the exact tag/configuration; '
-            'do not automatically retry, overwrite, delete or rebuild.\n\n'
-            'Source: https://github.com/' + plan['repository'] + '/commit/' + plan['sourceSha'] + '\n'
-            'Run: https://github.com/' + plan['repository'] + '/actions/runs/' + plan['runId'] + '\n'
-            'Review the same-run CI/verification logs and saved image-review artifacts before approving.\n'
-            'Approval expires: ' + receipt['expiresAt'] + '\n'
-            'Permission deadline: this approval does not extend IAM permissions; the write session is at most 15 minutes.\n\n'
-            '```json\n' + json.dumps(plan, sort_keys=True, indent=2) + '\n```\n\n'
-            'Only @' + OWNER + ' may comment exactly `APPROVE IMAGE ' + digest(plan) + '` or `REJECT`. '
-            'Edited comments/previews are invalid. This is owner approval enforced by workflow code, not independent review.\n')
+    return issueTemplate.render(
+        overview='**Publish the verified DEV image**\n\nAuthorize one upload of the tested image shown below. '
+            'Publishing enables later selection; it does not deploy services, run SQL, install IAM or create repositories. '
+            'Without approval, no upload occurs.',
+        scope=issueTemplate.records([{key: value for key, value in plan.items() if key in
+            ('target', 'releaseVersion', 'imageTag', 'account', 'region', 'imageId', 'role', 'repository', 'sourceSha')}]),
+        evidence='Source: https://github.com/' + plan['repository'] + '/commit/' + plan['sourceSha']
+            + '\n\nReview the same-run CI/verification logs and saved image-review artifacts before approving.',
+        risks='An upload timeout may leave an image in ECR. Preserve intent and reconcile the exact tag/configuration; '
+            'do not automatically retry, overwrite, delete or rebuild. This is owner approval enforced by workflow code, not independent review.',
+        repository=plan['repository'], runId=plan['runId'], owner=OWNER, expires=receipt['expiresAt'],
+        created=receipt.get('createdAt'),
+        permissionDeadline='This approval does not extend IAM permissions; the write session is at most 15 minutes.',
+        command='APPROVE IMAGE ' + digest(plan), payload=plan)
 
 
 def timestamp(value):
@@ -136,8 +138,9 @@ def decision(plan, receipt, env, get=api, now=None):
     issue = get(plan['repository'], 'issues/' + str(receipt['issue']))
     require(issue.get('state') == 'open' and not issue.get('pull_request')
             and issue.get('user', {}).get('login') == 'github-actions[bot]'
-            and issue.get('body') == body(plan, receipt)
-            and created <= timestamp(issue['created_at']) < expires, 'Approval issue changed')
+            and issue.get('body') == body(plan, receipt), 'Approval issue changed')
+    require(created <= timestamp(issue['created_at']) < expires,
+            'Approval issue creation time outside review window')
     comments = get(plan['repository'], 'issues/' + str(receipt['issue']) + '/comments?per_page=100')
     require(isinstance(comments, list) and len(comments) < 100, 'Incomplete approval comment inventory')
     selected = None
@@ -157,7 +160,9 @@ def decision(plan, receipt, env, get=api, now=None):
 
 def approve(plan, env, get=api, now=lambda: datetime.now(timezone.utc), sleep=time.sleep):
     validatePlan(plan, env, get)
-    start = now()
+    # GitHub issue/comment timestamps have whole-second precision. Align the
+    # receipt before rendering so same-second creation is valid without extending expiry.
+    start = now().replace(microsecond=0)
     receipt = {'schema': 'image-owner-decision/v1', 'runId': plan['runId'], 'planDigest': digest(plan),
                'createdAt': start.isoformat(), 'expiresAt': (start + timedelta(minutes=40)).isoformat()}
     preview = body(plan, receipt)
