@@ -385,10 +385,13 @@ The dormant `release-image.yml` manual workflow reuses the full CI job, then
 exports its exact scanned image as a one-day archive. Publication loads that
 archive without rebuilding, validates source/Dockerfile/workflow/archive/config
 digests, and uses a separately reviewed DEV OIDC role. It requires an exact main
-SHA, immutable DEV ECR repository and a protected `dev` environment with independent
-review and protected-branch restriction. Unsupported private-repository approval
-features block this workflow; a manual trigger alone is insufficient. Registry
-receipt verifies remote manifest/config identity. No workflow was dispatched or
+SHA, immutable DEV ECR repository and an exact main-only `dev` environment. The
+owner must approve a source/run/image/target/role-bound issue within 40 minutes;
+a manual trigger alone is insufficient. Approval is rechecked before the 15-minute
+upload credentials and again before pushing. This is workflow-enforced owner approval,
+not independent review. Registry receipt verifies remote manifest/config identity.
+Existing tags and uncertain registry state block retries; failed uploads retain intent.
+See [image publication and recovery](tools/release/README.md). No workflow was dispatched or
 image published locally. Configure approved settings and action allowlists before
 activation; private content and AWS credentials are never bundled in the image.
 
@@ -669,3 +672,16 @@ workflow triggers, AWS grants and existing approval commands are unchanged.
 ### Initial DEV migration guard
 
 The Infra database-job workflow opts the separate migration entry point into `LOOKAHEAD_INITIAL_MIGRATION=true`. Only DEV accepts this flag. The guard requires an empty `public` schema (tables, functions and types all count) and keeps a PostgreSQL session advisory lock for the duration of Flyway. A populated schema or concurrent initial migration is rejected; no clean, repair or automatic retry occurs. Without explicit opt-in, existing migration behavior is unchanged. This is initial setup, not a routine upgrade procedure; no historical SQL migration was edited. Unit tests and `InitialMigrationDatabaseTest` cover the boundary using the existing disposable database fixture. Actual AWS job execution remains separate from local verification.
+
+### Calendar image releases
+
+DEV image releases use one shared `lookahead-dev-ecr` repository and `domain-vyyyy.mm.dd.hh.<00-nn>` tags. The source Git tag omits `domain-`. UTC counters start at `00` each hour independently per app. Run `python3 tools/release/release_version.py next --app domain` to suggest the next version from remote Git tags; this does not create or reserve a tag. Publish the exact source tag through the user-owned Git cycle, then supply it as `release-version` to the manual release workflow on main. CI verifies the tag/source before building and retains app/version/source/config/archive/manifest provenance. Deployment still selects an immutable digest. Prefixes organize images; IAM upload scope covers the shared repository.
+Maven builds accept `-Drevision=yyyy.mm.dd.hh.NN`; local builds retain the snapshot default.
+
+
+DEV image publication uses the existing shared deployment role with an
+`image-publish-*` session name required by its trust policy. The role explicitly
+restricts these sessions to ECR publication operations; the workflow retains its
+additional repository-scoped session policy, existing approval and scan gates.
+Infra owns the reviewed policy update and registry provisioning. These local
+workflow changes do not install IAM policies or publish an image.

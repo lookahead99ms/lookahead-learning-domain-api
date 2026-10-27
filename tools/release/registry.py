@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate operator release inputs and bind ECR manifest to a scanned config digest."""
+import release_version as versions
 import argparse
 import hashlib
 import json
@@ -27,6 +28,11 @@ def bind(image, response, repository, revision):
     # imageId is the archive config digest, not Docker containerd's manifest/index Id.
     if image.get('platform') != 'linux/amd64' or not re.fullmatch(r'sha256:[a-f0-9]{64}', image.get('imageId', '')):
         raise ValueError('Require scanned linux/amd64 config identity')
+    versioned = image.get('schemaVersion') == 'lookahead-scanned-image/v2'
+    release = versions.validate(image) if versioned else {}
+    if repository == versions.REPOSITORY and not versioned:
+        raise ValueError('Shared repository requires app/version provenance')
+    tag = release.get('imageTag', revision)
     entries = response.get('images', [])
     if response.get('failures') or len(entries) != 1:
         raise ValueError('Require exactly one complete ECR manifest')
@@ -36,9 +42,9 @@ def bind(image, response, repository, revision):
     remoteDigest = entry['imageId']['imageDigest']
     if remoteDigest != 'sha256:' + hashlib.sha256(raw.encode()).hexdigest() or manifest.get('schemaVersion') != 2:
         raise ValueError('Registry manifest identity changed')
-    if manifest.get('config', {}).get('digest') != image['imageId'] or image['revision'] != revision or entry['imageId'].get('imageTag') != revision:
+    if manifest.get('config', {}).get('digest') != image['imageId'] or image['revision'] != revision or entry['imageId'].get('imageTag') != tag:
         raise ValueError('Registry image differs from the scanned release')
-    return {'schemaVersion': 'lookahead-registry-image/v1', 'revision': revision,
+    return {**release, 'schemaVersion': 'lookahead-registry-image/v2' if versioned else 'lookahead-registry-image/v1', 'revision': revision,
             'image': repository + '@' + remoteDigest, 'imageId': image['imageId'],
             'platform': image['platform'], 'scannedArchiveSha256': image['archiveSha256'],
             'buildWorkflowSha256': image['workflowSha256'], 'dockerfileSha256': image['dockerfileSha256']}

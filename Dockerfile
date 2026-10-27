@@ -1,4 +1,6 @@
 FROM eclipse-temurin:21-jdk-noble@sha256:b468c3fc688b14450571494f588bd939378e7fd542ed5a73f8efc13f17872a87 AS build
+ARG RELEASE_VERSION=dev
+ARG BUILD_VERSION=0.0.1-SNAPSHOT
 WORKDIR /workspace
 # Keep the wrapper on the checksum-pinned ZIP distribution (its tar fallback
 # has different bytes). This package is needed only in the build stage.
@@ -15,11 +17,16 @@ WORKDIR /workspace/tools/container/trust
 RUN sha256sum --check rds-global-bundle.sha256
 WORKDIR /workspace
 RUN java tools/container/VerifyRdsTrust.java tools/container/trust/rds-global-bundle.pem
-RUN ./mvnw --batch-mode --no-transfer-progress verify \
+RUN ./mvnw --batch-mode --no-transfer-progress "-Drevision=$BUILD_VERSION" verify \
     && mkdir /workspace/health \
     && javac --release 21 -d /workspace/health src/main/java/com/lookahead/domain/health/ContainerHealthcheck.java
 
 FROM eclipse-temurin:21-jre-noble@sha256:35501d3f93173b420ac9001658eb68157e813316b865087e345c187fca422c4c AS runtime
+ARG RELEASE_VERSION=dev
+ARG SOURCE_REVISION=local
+LABEL org.opencontainers.image.version="$RELEASE_VERSION" \
+      org.opencontainers.image.revision="$SOURCE_REVISION" \
+      com.lookahead.app="domain"
 WORKDIR /opt/lookahead
 RUN groupadd --gid 10001 lookahead && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin lookahead \
     # DLV-928: a new named volume mounted here copies this owner, so Domain can write platform reviews.

@@ -17,7 +17,13 @@
         "ecr-repository": {
           "description": "Exact DEV ECR registry/repository",
           "required": true,
-          "type": "string"
+          "type": "string",
+          "default": "509614632283.dkr.ecr.us-east-2.amazonaws.com/lookahead-dev-ecr"
+        },
+        "release-version": {
+          "description": "Existing Git tag vyyyy.mm.dd.hh.<00-nn> (UTC), bound to reviewed main",
+          "type": "string",
+          "required": true
         }
       }
     }
@@ -33,18 +39,21 @@
     "verify": {
       "uses": "./.github/workflows/ci.yml",
       "with": {
-        "export-image": true
+        "export-image": true,
+        "release-version": "${{ inputs.release-version }}"
       }
     },
     "publish": {
       "needs": "verify",
       "runs-on": "ubuntu-24.04",
-      "timeout-minutes": 20,
+      "timeout-minutes": 70,
       "environment": "dev",
       "permissions": {
         "contents": "read",
         "actions": "read",
-        "id-token": "write"
+        "id-token": "write",
+        "issues": "write",
+        "pull-requests": "read"
       },
       "steps": [
         {
@@ -56,14 +65,15 @@
           }
         },
         {
-          "name": "Require exact source and protected DEV environment",
+          "name": "Verify Git release tag and shared repository",
           "env": {
-            "GH_TOKEN": "${{ github.token }}",
-            "APPROVED_SHA": "${{ inputs.approved-source-sha }}",
-            "DEPLOY_ROLE": "${{ inputs.role-arn }}",
             "ECR_REPOSITORY": "${{ inputs.ecr-repository }}"
           },
-          "run": "test \"$GITHUB_REF\" = refs/heads/main\ngh api \"repos/$GITHUB_REPOSITORY/environments/dev\" > \"$RUNNER_TEMP/dev-environment.json\"\npython3 tools/release/registry.py approval --input \"$RUNNER_TEMP/dev-environment.json\" --revision \"$GITHUB_SHA\" --expected-revision \"$APPROVED_SHA\" --role \"$DEPLOY_ROLE\" --repository \"$ECR_REPOSITORY\""
+          "run": "python3 tools/release/release_version.py check --app domain"
+        },
+        {
+          "name": "Require exact source and main-only DEV environment",
+          "run": "python3 tools/release/owner_release.py gate --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\""
         },
         {
           "name": "Download the same-run scanned artifact",
@@ -78,6 +88,14 @@
           "run": "python3 tools/release/image.py import --directory \"$RUNNER_TEMP/release-image\" > \"$RUNNER_TEMP/release-image-id\""
         },
         {
+          "name": "Request source and tested-image bound owner approval",
+          "run": "python3 tools/release/owner_release.py approve --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\""
+        },
+        {
+          "name": "Recheck live owner approval before upload credentials",
+          "run": "python3 tools/release/owner_release.py check --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\""
+        },
+        {
           "name": "Use short-lived DEV OIDC credentials",
           "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
           "with": {
@@ -86,15 +104,16 @@
             "allowed-account-ids": "509614632283",
             "role-duration-seconds": 900,
             "unset-current-credentials": true,
-            "output-credentials": false
+            "output-credentials": false,
+            "disable-retry": true,
+            "inline-session-policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"ecr:GetAuthorizationToken\"],\"Resource\":\"*\",\"Condition\":{\"StringEquals\":{\"aws:RequestedRegion\":\"us-east-2\"}}},{\"Effect\":\"Allow\",\"Action\":[\"ecr:DescribeRepositories\",\"ecr:BatchGetImage\",\"ecr:BatchCheckLayerAvailability\",\"ecr:InitiateLayerUpload\",\"ecr:UploadLayerPart\",\"ecr:CompleteLayerUpload\",\"ecr:PutImage\"],\"Resource\":\"arn:aws:ecr:us-east-2:509614632283:repository/lookahead-dev-ecr\",\"Condition\":{\"StringEquals\":{\"aws:RequestedRegion\":\"us-east-2\"}}}]}",
+            "role-session-name": "image-publish-${{ github.run_id }}-1"
           }
         },
         {
           "name": "Publish exact scanned image into immutable DEV repository",
-          "env": {
-            "ECR_REPOSITORY": "${{ inputs.ecr-repository }}"
-          },
-          "run": "repository_name=\"${ECR_REPOSITORY#*/}\"\nmutability=\"$(aws ecr describe-repositories --repository-names \"$repository_name\" --query 'repositories[0].imageTagMutability' --output text)\"\ntest \"$mutability\" = IMMUTABLE\naws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin \"${ECR_REPOSITORY%%/*}\"\ndocker tag \"$(cat \"$RUNNER_TEMP/release-image-id\")\" \"$ECR_REPOSITORY:$GITHUB_SHA\"\ndocker push --platform linux/amd64 \"$ECR_REPOSITORY:$GITHUB_SHA\"\naws ecr batch-get-image --repository-name \"$repository_name\" --image-ids \"imageTag=$GITHUB_SHA\" --output json > \"$RUNNER_TEMP/ecr-image.json\"\npython3 tools/release/registry.py bind --input \"$RUNNER_TEMP/ecr-image.json\" --revision \"$GITHUB_SHA\" --repository \"$ECR_REPOSITORY\" --image-receipt \"$RUNNER_TEMP/release-image/image.json\" --output \"$RUNNER_TEMP/registry-image.json\""
+          "id": "publish",
+          "run": "aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin \"${ECR_REPOSITORY%%/*}\"\npython3 tools/release/owner_release.py publish --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --loaded \"$(cat \"$RUNNER_TEMP/release-image-id\")\""
         },
         {
           "name": "Retain immutable registry release receipt",
@@ -107,6 +126,17 @@
           }
         },
         {
+          "name": "Preserve owner approval and publication outcome",
+          "if": "always() && (steps.publish.outcome == 'success' || steps.publish.outcome == 'failure')",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "image-publication-outcome",
+            "path": "${{ runner.temp }}/owner-plan.json\n${{ runner.temp }}/owner-approval.json\n${{ runner.temp }}/publication-outcome.json",
+            "retention-days": 21,
+            "if-no-files-found": "error"
+          }
+        },
+        {
           "name": "Clear registry login",
           "if": "always()",
           "env": {
@@ -114,7 +144,17 @@
           },
           "run": "docker logout \"${ECR_REPOSITORY%%/*}\""
         }
-      ]
+      ],
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "APPROVED_SHA": "${{ inputs.approved-source-sha }}",
+        "DEPLOY_ROLE": "${{ inputs.role-arn }}",
+        "ECR_REPOSITORY": "${{ inputs.ecr-repository }}",
+        "AWS_MAX_ATTEMPTS": "1",
+        "AWS_RETRY_MODE": "standard",
+        "AWS_EC2_METADATA_DISABLED": "true",
+        "RELEASE_VERSION": "${{ inputs.release-version }}"
+      }
     }
   }
 }

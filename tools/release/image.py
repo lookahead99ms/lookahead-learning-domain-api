@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Bind a scanned local image archive to the exact source; never rebuild on import."""
+import os
+import release_version as versions
 import argparse
 import hashlib
 import json
@@ -115,13 +117,18 @@ def inputs(root):
     revision = command('git', 'rev-parse', 'HEAD')
     if not re.fullmatch(r'[a-f0-9]{40}', revision):
         raise ValueError('Require exact Git revision')
-    return {'revision': revision, 'dockerfileSha256': digest(root / 'Dockerfile'),
+    release = versions.metadata('domain', os.environ['RELEASE_VERSION']) if os.environ.get('RELEASE_VERSION') else {}
+    return {**release, 'revision': revision, 'dockerfileSha256': digest(root / 'Dockerfile'),
             'workflowSha256': digest(root / '.github/workflows/ci.yml')}
 
 
 def validate(receipt, archive, expected):
     required = {'schemaVersion', 'revision', 'dockerfileSha256', 'workflowSha256', 'imageId', 'archiveSha256', 'platform'}
-    if not isinstance(receipt, dict) or set(receipt) != required or receipt['schemaVersion'] != 'lookahead-scanned-image/v1' or receipt['platform'] != 'linux/amd64':
+    versioned = bool(expected.get('releaseVersion'))
+    if versioned:
+        required |= versions.FIELDS
+        versions.validate(receipt, 'domain')
+    if not isinstance(receipt, dict) or set(receipt) != required or receipt['schemaVersion'] != ('lookahead-scanned-image/v2' if versioned else 'lookahead-scanned-image/v1') or receipt['platform'] != 'linux/amd64':
         raise ValueError('Invalid scanned image receipt')
     if not re.fullmatch(r'sha256:[a-f0-9]{64}', receipt['imageId']):
         raise ValueError('Invalid image identity')
@@ -129,6 +136,7 @@ def validate(receipt, archive, expected):
         raise ValueError('Image source or archive binding changed')
     if archiveIdentity(archive) != receipt['imageId']:
         raise ValueError('Archive config differs from scanned identity')
+    if versioned: versions.archiveLabels(archive, receipt)
     return receipt['imageId']
 
 
@@ -153,8 +161,9 @@ def main():
         configId = archiveIdentity(archive)
         if identity(args.image) != imageId:
             raise ValueError('Export image reference changed')
-        receipt = {'schemaVersion': 'lookahead-scanned-image/v1', **expected, 'imageId': configId,
+        receipt = {'schemaVersion': 'lookahead-scanned-image/v2' if expected.get('releaseVersion') else 'lookahead-scanned-image/v1', **expected, 'imageId': configId,
                    'archiveSha256': digest(archive), 'platform': 'linux/amd64'}
+        validate(receipt, archive, expected)
         receiptPath.write_text(json.dumps(receipt, sort_keys=True) + '\n')
         print(imageId)
     else:

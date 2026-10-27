@@ -9,9 +9,10 @@
     </parent>
     <groupId>com.lookahead.learning</groupId>
     <artifactId>domain-api-app</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
+    <version>${revision}</version>
     <name>Look Ahead Learning Domain API</name>
     <properties>
+    <revision>0.0.1-SNAPSHOT</revision>
         <java.version>21</java.version>
         <!-- DLV-916: temporary override until a stable Boot 4.1 patch manages the fix. -->
         <tomcat.version>11.0.25</tomcat.version>

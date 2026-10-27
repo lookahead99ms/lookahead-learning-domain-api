@@ -1,0 +1,4 @@
+# CI fixture dependency: CPython 3.14, Linux x86_64 (ubuntu-24.04).
+# Publisher: https://pypi.org/pypi/coverage/7.16.1/json
+coverage==7.16.1 \
+    --hash=sha256:bc5354a124799f1f87b7637bbe6f18cd4bc66a1f37f6aa2b5db40f9adad531dc
