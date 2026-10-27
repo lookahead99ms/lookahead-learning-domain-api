@@ -1,23 +1,40 @@
 """Owner approval trust boundaries with a fake GitHub provider; no network calls."""
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
 import owner_approval as m
 
 
+RECORDS = tempfile.TemporaryDirectory()
+
+
+def record(repository, source, workflow, path=None):
+    """Frozen resolution as release_version.py resolve writes it; tests may corrupt a copy."""
+    path = path or Path(RECORDS.name) / (hashlib.sha256((repository + source + workflow).encode()).hexdigest() + '.json')
+    path.write_text(json.dumps({'schema': 'release-source/v1', 'selector': 'v2026.10.26.20.00', 'releaseVersion': 'v2026.10.26.20.00',
+                                'sourceSha': source, 'tagObjectSha': None, 'mainSha': workflow, 'workflowSha': workflow,
+                                'repository': repository, 'runId': '12', **m.versions.metadata(m.PUBLISHERS[repository][1], 'v2026.10.26.20.00')}))
+    return str(path)
+
+
 class Github:
-    def __init__(self, repository='lookahead99ms/lookahead-learning-infra'):
+    def __init__(self, repository='lookahead99ms/lookahead-learning-infra', source='a'*40):
         workflow, target = m.PUBLISHERS[repository]
         self.now = datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
         self.env = {'GITHUB_REPOSITORY': repository, 'GITHUB_ACTOR': m.OWNER, 'GITHUB_TRIGGERING_ACTOR': m.OWNER,
                     'GITHUB_REF': 'refs/heads/main', 'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_RUN_ATTEMPT': '1',
                     'GITHUB_WORKFLOW_REF': repository + '/' + workflow + '@refs/heads/main', 'GITHUB_SHA': 'a'*40,
-                    'RELEASE_VERSION': 'v2026.10.26.20.00', 'GITHUB_RUN_ID': '12', 'GITHUB_REPOSITORY_ID': '10', 'GITHUB_REPOSITORY_OWNER_ID': '20'}
+                    'RELEASE_VERSION': 'v2026.10.26.20.00', 'GITHUB_RUN_ID': '12', 'GITHUB_REPOSITORY_ID': '10', 'GITHUB_REPOSITORY_OWNER_ID': '20',
+                    'RELEASE_SOURCE_RECORD': record(repository, source, 'a'*40)}
         self.data = {'': {'full_name': repository, 'id': 10, 'owner': {'id': 20, 'login': m.OWNER}, 'private': True},
-                     'git/ref/tags/v2026.10.26.20.00': {'object': {'type': 'commit', 'sha': 'a'*40}}, 'commits/main': {'sha': 'a'*40}, 'commits/'+'a'*40+'/pulls?per_page=100': [],
+                     'git/ref/tags/v2026.10.26.20.00': {'object': {'type': 'commit', 'sha': source}}, 'commits/main': {'sha': 'a'*40}, 'commits/'+'a'*40+'/pulls?per_page=100': [],
+                     'compare/'+source+'...'+'a'*40: {'status': 'identical' if source == 'a'*40 else 'ahead', 'merge_base_commit': {'sha': source}},
                      'actions/runs/12': {'id': 12, 'path': workflow, 'head_sha': 'a'*40, 'head_branch': 'main',
                                         'event': 'workflow_dispatch', 'run_attempt': 1, 'status': 'in_progress',
                                         'repository': {'full_name': repository}, 'head_repository': {'full_name': repository},
@@ -35,7 +52,7 @@ class Github:
         if repository != self.env['GITHUB_REPOSITORY']:
             raise AssertionError('Cross-repository approval request')
         if path == 'issues':
-            self.data['issues/3'] = {'state': 'open', 'user': {'login': 'github-actions[bot]'}, 'body': payload['body'],
+            self.data['issues/3'] = {'state': 'open', 'user': {'login': 'github-actions[bot]'}, 'body': payload['body'], 'title': payload.get('title'),
                                      'created_at': self.now.replace(microsecond=0).isoformat()}
             if self.autoApprove:
                 self.comments = [self.comment()]
@@ -175,6 +192,62 @@ class ApprovalTests(unittest.TestCase):
                        Mock(returncode=0,stdout='{"same":1,"same":2}')]:
             with patch.object(m.subprocess,'run',return_value=result),self.assertRaises(ValueError) as error:m.api('owner/repo','')
             self.assertNotIn('sensitive',str(error.exception))
+
+
+    def test_rollback_tag_at_older_main_ancestor_records_image_and_workflow_sources_separately(self):
+        for repo in m.PUBLISHERS:
+            fake = Github(repo, source='9'*40)
+            self.assertEqual(fake.plan['sourceSha'], '9'*40)
+            self.assertEqual(fake.plan['workflowSha'], 'a'*40)
+            receipt = fake.approved()
+            m.verify(fake.plan, receipt, fake.env, fake.get, fake.now)
+            body = fake.data['issues/3']['body']
+            self.assertIn('/commit/' + '9'*40, body); self.assertIn('/commit/' + 'a'*40, body); self.assertIn('derived from the tag', body)
+
+    def test_off_main_moved_or_foreign_release_record_fails_before_credentials(self):
+        fake = Github(source='9'*40); fake.data['compare/'+'9'*40+'...'+'a'*40] = {'status': 'diverged', 'merge_base_commit': {'sha': '8'*40}}
+        with self.assertRaisesRegex(ValueError, 'must be on main'): m.provenance(fake.env, fake.get)
+        fake = Github(); fake.data['git/ref/tags/v2026.10.26.20.00']['object']['sha'] = 'e'*40
+        fake.data['compare/'+'e'*40+'...'+'a'*40] = {'status': 'ahead', 'merge_base_commit': {'sha': 'e'*40}}
+        with self.assertRaisesRegex(ValueError, 'changed after resolution'): m.provenance(fake.env, fake.get)
+        for edit in [lambda r: r.update(workflowSha='f'*40), lambda r: r.update(repository='other/repo'), lambda r: r.update(runId='13'),
+                     lambda r: r.update(schema='other'), lambda r: r.update(sourceSha='main'), lambda r: r.update(releaseVersion='v2026.10.26.20.01')]:
+            fake = Github(); row = json.loads(Path(fake.env['RELEASE_SOURCE_RECORD']).read_text()); edit(row)
+            path = Path(RECORDS.name) / 'edited.json'; path.write_text(json.dumps(row)); fake.env['RELEASE_SOURCE_RECORD'] = str(path)
+            with self.subTest(edit=edit), self.assertRaises(ValueError): m.provenance(fake.env, fake.get)
+        fake = Github(); fake.env['RELEASE_SOURCE_RECORD'] = str(Path(RECORDS.name) / 'missing.json')
+        with self.assertRaises(ValueError): m.provenance(fake.env, fake.get)
+        fake = Github(); fake.env['RELEASE_VERSION'] = 'v2026.10.26.20.01'
+        with self.assertRaises(ValueError): m.provenance(fake.env, fake.get)
+        fake = Github(); fake.plan['workflowSha'] = '9'*40
+        with self.assertRaises(ValueError): m.validatePlan(fake.plan, fake.env, fake.get)
+
+
+    def test_issue_title_and_body_state_the_change_and_absence_of_aws_resources(self):
+        for repo in m.PUBLISHERS:
+            fake = Github(repo); tag = fake.plan['imageTag']
+            fake.plan['sourceChanges'] = {'meaning': 'synthetic', 'pullRequests': [
+                {'number': 2, 'title': 'Older change', 'url': 'https://github.com/' + repo + '/pull/2'},
+                {'number': 5, 'title': 'Newest <change>', 'url': 'https://github.com/' + repo + '/pull/5'}]}
+            receipt = fake.approved(); body = fake.data['issues/3']['body']
+            headline = m.headline(fake.plan)
+            self.assertEqual(headline, {'env': 'DEV', 'action': 'Publish image', 'subject': tag, 'change': 'Newest <change>'})
+            self.assertEqual(m.issueTemplate.title(headline, '12'), 'DEV: Publish image ' + tag + ' — Newest &lt;change&gt; · run 12')
+            self.assertRegex(m.issueTemplate.title(headline, '12'), r'^DEV: Publish image \S+ — .+ · run 12$')
+            self.assertTrue(body.startswith('> [!IMPORTANT]\n> **DEV · Publish image ' + tag + '** — Newest &lt;change&gt;'))
+            self.assertIn('| **Affected AWS resources** | **None** created, updated or replaced. |', body)
+            self.assertIn('| **imageTag** | `' + tag + '` |', body)
+            self.assertIn('| [#5](https://github.com/' + repo + '/pull/5) | Newest &lt;change&gt; | into main |', body)
+            self.assertIn('| Release tag v2026.10.26.20.00 | resolved to source commit [aaaaaaaaaaaa](', body)
+            self.assertIn('| Source selection | commit derived from the tag, not typed |', body)
+            self.assertEqual(body, m.body(fake.plan, receipt))
+            m.verify(fake.plan, receipt, fake.env, fake.get, fake.now)
+        fake = Github(); self.assertNotIn('sourceChanges', fake.plan)
+        self.assertEqual(m.headline(fake.plan)['change'], 'no merged PR associated with this source')
+        fake.approved(); self.assertIn('Merged PR context was not captured', fake.data['issues/3']['body'])
+        fake = Github(); fake.plan['sourceChanges'] = {'meaning': 'synthetic', 'pullRequests': []}
+        self.assertEqual(m.headline(fake.plan)['change'], 'no merged PR associated with this source')
+        fake.approved(); self.assertIn('No merged pull request is associated', fake.data['issues/3']['body'])
 
 
 if __name__=='__main__':unittest.main()

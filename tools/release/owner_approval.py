@@ -7,6 +7,7 @@ import issue_template as issueTemplate
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 import re
 import subprocess
 import time
@@ -78,9 +79,27 @@ def provenance(env, get=api):
     rows = branches.get('branch_policies', [])
     require(branches.get('total_count') == len(rows) == 1 and rows[0].get('name') == 'main'
             and rows[0].get('type') == 'branch', 'DEV must allow exactly the main branch, no tags')
-    release = versions.gitTag(env.get('RELEASE_VERSION'), sha, app, lambda path: get(repository, path))
-    return {**release, 'repository': repository, 'sourceSha': sha, 'runId': runId, 'account': ACCOUNT, 'region': REGION,
+    # The workflow and its approval code run from main (workflowSha). The image is built from the
+    # commit the release tag resolves to (sourceSha), frozen once per run and re-checked here.
+    record = releaseRecord(env)
+    require(record.get('workflowSha') == sha and record.get('repository') == repository and str(record.get('runId')) == runId,
+            'Release-source record belongs to another workflow run')
+    release = versions.recheck(record, lambda path: get(repository, path), sha, app)
+    require(env.get('RELEASE_VERSION') == release['releaseVersion'], 'Dispatched release tag differs from resolved record')
+    return {**{k: release[k] for k in versions.FIELDS}, 'repository': repository, 'sourceSha': release['sourceSha'],
+            'workflowSha': sha, 'runId': runId, 'account': ACCOUNT, 'region': REGION,
             'target': versions.REPOSITORY + ':' + release['imageTag']}
+
+
+def releaseRecord(env):
+    """Frozen tag resolution written by `release_version.py resolve` at run start; never an operator SHA."""
+    path = env.get('RELEASE_SOURCE_RECORD', '')
+    require(bool(path) and os.path.isfile(path) and os.path.getsize(path) <= 64 * 1024, 'Frozen release-source record required')
+    with open(path) as stream:
+        record = json.load(stream, object_pairs_hook=unique)
+    require(record.get('schema') == 'release-source/v1' and re.fullmatch('[a-f0-9]{40}', str(record.get('sourceSha', ''))),
+            'Frozen release-source record required')
+    return record
 
 
 def validatePlan(plan, env, get=api):
@@ -105,15 +124,45 @@ def sourceChanges(repository, sha, get=api):
                              for row in rows if row.get('merged_at') and row.get('base', {}).get('ref') == 'main']}
 
 
+def headline(plan):
+    """Title and alert: which image goes in and what source change it carries."""
+    rows = (plan.get('sourceChanges') or {}).get('pullRequests') or []
+    newest = max(rows, key=lambda row: int(row.get('number', 0))) if rows else None
+    return {'env': 'DEV', 'action': 'Publish image', 'subject': plan['imageTag'],
+            'change': newest['title'] if newest and newest.get('title') else 'no merged PR associated with this source'}
+
+
+def commitLink(plan, sha):
+    return '[' + sha[:12] + '](https://github.com/' + plan['repository'] + '/commit/' + sha + ')'
+
+
+def pullRequestTable(plan):
+    """Merged PRs associated with the exact source commit; absence is stated, never implied."""
+    changes = plan.get('sourceChanges')
+    if changes is None:
+        return 'Merged PR context was not captured for this run; review the source commit directly.'
+    rows = changes.get('pullRequests') or []
+    if not rows:
+        return 'No merged pull request is associated with this source commit.'
+    return issueTemplate.table(('PR', 'Title', 'Merged'),
+                               [('[#' + str(r['number']) + '](' + r['url'] + ')', issueTemplate.text(r['title']), 'into main') for r in rows])
+
+
 def body(plan, receipt):
+    fields = ('target', 'releaseVersion', 'imageTag', 'sourceSha', 'workflowSha', 'imageId', 'role', 'repository', 'account', 'region')
+    shown = [('**' + key + '**', commitLink(plan, plan[key]) if key in ('sourceSha', 'workflowSha') else '`' + issueTemplate.text(plan[key]) + '`')
+             for key in fields if key in plan]
     return issueTemplate.render(
+        headline=headline(plan), resources=[],
         overview='**Publish the verified DEV image**\n\nAuthorize one upload of the tested image shown below. '
             'Publishing enables later selection; it does not deploy services, run SQL, install IAM or create repositories. '
             'Without approval, no upload occurs.',
-        scope=issueTemplate.records([{key: value for key, value in plan.items() if key in
-            ('target', 'releaseVersion', 'imageTag', 'account', 'region', 'imageId', 'role', 'repository', 'sourceSha')}]),
-        evidence='Source: https://github.com/' + plan['repository'] + '/commit/' + plan['sourceSha']
-            + '\n\nReview the same-run CI/verification logs and saved image-review artifacts before approving.',
+        scope='### Image\n\n' + issueTemplate.table(('Field', 'Value'), shown) + '\n### Merged pull requests for this source\n\n' + pullRequestTable(plan),
+        validation=[('Release tag ' + issueTemplate.text(plan['releaseVersion']), 'resolved to source commit ' + commitLink(plan, plan['sourceSha'])),
+                    ('Workflow commit (main)', commitLink(plan, plan['workflowSha'])),
+                    ('Image configuration digest', '`' + issueTemplate.text(plan['imageId']) + '`'),
+                    ('Source selection', 'commit derived from the tag, not typed')],
+        evidence='Review the same-run CI/verification logs and saved image-review artifacts before approving.',
         risks='An upload timeout may leave an image in ECR. Preserve intent and reconcile the exact tag/configuration; '
             'do not automatically retry, overwrite, delete or rebuild. This is owner approval enforced by workflow code, not independent review.',
         repository=plan['repository'], runId=plan['runId'], owner=OWNER, expires=receipt['expiresAt'],
@@ -167,7 +216,7 @@ def approve(plan, env, get=api, now=lambda: datetime.now(timezone.utc), sleep=ti
                'createdAt': start.isoformat(), 'expiresAt': (start + timedelta(minutes=40)).isoformat()}
     preview = body(plan, receipt)
     require(len(preview) < 60000, 'Approval preview too large')
-    issue = get(plan['repository'], 'issues', {'title': 'Approve DEV image publication · run ' + plan['runId'], 'body': preview})
+    issue = get(plan['repository'], 'issues', {'title': issueTemplate.title(headline(plan), plan['runId']), 'body': preview})
     receipt['issue'] = issue['number']
     # A nonsecret review URL is useful while the job waits; no approval is posted by this tool.
     print('https://github.com/' + plan['repository'] + '/issues/' + str(receipt['issue']), flush=True)

@@ -82,3 +82,68 @@ class VersionTests(unittest.TestCase):
             m.main(['check','--app','web'])
             for key,value in [('GITHUB_REF','refs/tags/'+VERSION),('GITHUB_EVENT_NAME','push'),('ECR_REPOSITORY','other')]:
                 with patch.dict(os.environ,{key:value}),self.assertRaises(ValueError):m.main(['check','--app','web'])
+
+    def test_resolve_freezes_commit_tag_object_and_main_and_recheck_detects_movement(self):
+        main = 'c'*40
+        data = {'git/ref/tags/'+VERSION: {'object': {'type': 'tag', 'sha': 'b'*40}}, 'git/tags/'+'b'*40: {'object': {'type': 'commit', 'sha': 'a'*40}},
+                'compare/'+'a'*40+'...'+main: {'status': 'ahead', 'merge_base_commit': {'sha': 'a'*40}}}
+        def get(p):
+            if p not in data: raise ValueError('gh api failed: ' + p)
+            return data[p]
+        record = m.resolve(VERSION, get, main, 'web')
+        self.assertEqual(record, {**m.metadata('web', VERSION), 'schema': 'release-source/v1', 'selector': VERSION, 'sourceSha': 'a'*40,
+                                  'tagObjectSha': 'b'*40, 'mainSha': main})
+        self.assertEqual(m.resolve(VERSION, get, main)['sourceSha'], 'a'*40)
+        self.assertEqual(m.recheck(record, get, main, 'web')['sourceSha'], 'a'*40)
+        data['compare/'+'a'*40+'...'+main] = {'status': 'identical', 'merge_base_commit': {'sha': 'a'*40}}
+        self.assertEqual(m.recheck(record, get, main, 'web')['sourceSha'], 'a'*40)
+        for compare in [{'status': 'diverged', 'merge_base_commit': {'sha': 'd'*40}}, {'status': 'behind', 'merge_base_commit': {'sha': main}},
+                        {'status': 'ahead', 'merge_base_commit': {'sha': 'd'*40}}, {}]:
+            data['compare/'+'a'*40+'...'+main] = compare
+            with self.subTest(compare=compare), self.assertRaisesRegex(ValueError, 'on main'): m.resolve(VERSION, get, main, 'web')
+        data['compare/'+'a'*40+'...'+main] = {'status': 'ahead', 'merge_base_commit': {'sha': 'a'*40}}
+        with self.assertRaises(ValueError): m.resolve(VERSION, get, 'main', 'web')
+        with self.assertRaises(ValueError): m.resolve('latest', get, main, 'web')
+        # Moved lightweight tag, re-pointed annotated tag and a record from another tag all fail recheck.
+        data['git/tags/'+'b'*40] = {'object': {'type': 'commit', 'sha': 'e'*40}}; data['compare/'+'e'*40+'...'+main] = {'status': 'ahead', 'merge_base_commit': {'sha': 'e'*40}}
+        with self.assertRaisesRegex(ValueError, 'changed after resolution'): m.recheck(record, get, main, 'web')
+        data['git/ref/tags/'+VERSION] = {'object': {'type': 'commit', 'sha': 'a'*40}}
+        with self.assertRaisesRegex(ValueError, 'changed after resolution'): m.recheck(record, get, main, 'web')
+        for bad in [{}, {**record, 'schema': 'other'}, {**record, 'selector': 'v2026.10.26.20.01'}]:
+            with self.assertRaises(ValueError): m.recheck(bad, get, main, 'web')
+        for obj in [{'type': 'tag', 'sha': 'b'*40}, {'type': 'tree', 'sha': 'a'*40}, {'type': 'commit', 'sha': 'short'}]:
+            data['git/ref/tags/'+VERSION] = {'object': obj}; data['git/tags/'+'b'*40] = {'object': obj}
+            with self.assertRaises(ValueError): m.peel(VERSION, get)
+
+    def test_cli_resolve_writes_frozen_record_and_recheck_requires_same_workflow_run(self):
+        main = 'a'*40
+        env = {'RELEASE_VERSION': VERSION, 'GITHUB_SHA': main, 'GITHUB_REPOSITORY': 'owner/repo', 'GITHUB_REF': 'refs/heads/main',
+               'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_RUN_ID': '5'}
+        data = {'git/ref/tags/'+VERSION: {'object': {'type': 'commit', 'sha': 'b'*40}}, 'commits/main': {'sha': main},
+                'compare/'+'b'*40+'...'+main: {'status': 'ahead', 'merge_base_commit': {'sha': 'b'*40}}}
+        def api(args, text, timeout): return json.dumps(data[args[2].split('/', 3)[3]])
+        with tempfile.TemporaryDirectory() as temp:
+            record = Path(temp)/'release-source.json'; output = Path(temp)/'outputs'
+            with patch.dict(os.environ, {**env, 'GITHUB_OUTPUT': str(output)}, clear=True), patch.object(m.subprocess, 'check_output', side_effect=api), patch('builtins.print'):
+                m.main(['resolve', '--app', 'web', '--record', str(record)])
+                saved = json.loads(record.read_text())
+                self.assertEqual((saved['sourceSha'], saved['workflowSha'], saved['mainSha'], saved['runId']), ('b'*40, main, main, '5'))
+                self.assertIn('source_sha='+'b'*40, output.read_text())
+                with self.assertRaises(ValueError): m.main(['resolve', '--app', 'web', '--record', str(record)])
+                m.main(['recheck', '--app', 'web', '--record', str(record)])
+                with self.assertRaises(ValueError): m.main(['resolve', '--app', 'web'])
+                data['git/ref/tags/'+VERSION]['object']['sha'] = 'c'*40; data['compare/'+'c'*40+'...'+main] = {'status': 'ahead', 'merge_base_commit': {'sha': 'c'*40}}
+                with self.assertRaisesRegex(ValueError, 'changed after resolution'): m.main(['recheck', '--app', 'web', '--record', str(record)])
+                data['commits/main'] = {'sha': 'f'*40}
+                with self.assertRaisesRegex(ValueError, 'Main moved'): m.main(['recheck', '--app', 'web', '--record', str(record)])
+            with patch.dict(os.environ, {**env, 'GITHUB_SHA': 'f'*40}, clear=True), patch.object(m.subprocess, 'check_output', side_effect=api):
+                with self.assertRaisesRegex(ValueError, 'another workflow run'): m.main(['recheck', '--app', 'web', '--record', str(record)])
+            data['git/ref/tags/'+VERSION]['object']['sha'] = 'b'*40; data['commits/main'] = {'sha': main}
+            with patch.dict(os.environ, {**env, 'SOURCE_SHA': 'b'*40}, clear=True), patch.object(m.subprocess, 'check_output', side_effect=api), patch('builtins.print'):
+                m.main(['check', '--app', 'web'])
+            with patch.dict(os.environ, env, clear=True), patch.object(m.subprocess, 'check_output', side_effect=api):
+                with self.assertRaises(ValueError): m.main(['check', '--app', 'web'])
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,14 +1,9 @@
 {
   "name": "Build once and publish approved DEV image",
-  "run-name": "${{ github.workflow }} | ${{ github.head_ref || github.ref_name }} | ${{ github.event_name }} | #${{ github.run_number }}",
+  "run-name": "${{ github.workflow }} | ${{ inputs.release-version }} | ${{ github.ref_name }} | #${{ github.run_number }}",
   "on": {
     "workflow_dispatch": {
       "inputs": {
-        "approved-source-sha": {
-          "description": "Exact reviewed main source SHA",
-          "required": true,
-          "type": "string"
-        },
         "role-arn": {
           "description": "Reviewed scoped DEV OIDC publisher role ARN",
           "required": true,
@@ -21,7 +16,7 @@
           "default": "509614632283.dkr.ecr.us-east-2.amazonaws.com/lookahead-dev-ecr"
         },
         "release-version": {
-          "description": "Existing Git tag vyyyy.mm.dd.hh.<00-nn> (UTC), bound to reviewed main",
+          "description": "Existing Git tag vyyyy.mm.dd.hh.<00-nn> (UTC) at a main commit; the run resolves it to that commit",
           "type": "string",
           "required": true
         }
@@ -36,15 +31,61 @@
     "cancel-in-progress": false
   },
   "jobs": {
+    "resolve": {
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "permissions": {
+        "contents": "read"
+      },
+      "outputs": {
+        "source-sha": "${{ steps.source.outputs.source_sha }}",
+        "release-version": "${{ steps.source.outputs.release_version }}"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Resolve the release tag once and freeze its main commit",
+          "id": "source",
+          "run": "python3 tools/release/release_version.py resolve --app domain --record \"$RUNNER_TEMP/release-source.json\""
+        },
+        {
+          "name": "Retain the frozen release-source record",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "release-source",
+            "path": "${{ runner.temp }}/release-source.json",
+            "if-no-files-found": "error",
+            "retention-days": 21
+          }
+        }
+      ],
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "RELEASE_VERSION": "${{ inputs.release-version }}",
+        "ECR_REPOSITORY": "${{ inputs.ecr-repository }}"
+      }
+    },
     "verify": {
+      "needs": "resolve",
       "uses": "./.github/workflows/ci.yml",
       "with": {
         "export-image": true,
-        "release-version": "${{ inputs.release-version }}"
+        "release-version": "${{ inputs.release-version }}",
+        "source-sha": "${{ needs.resolve.outputs.source-sha }}"
       }
     },
     "publish": {
-      "needs": "verify",
+      "needs": [
+        "resolve",
+        "verify"
+      ],
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 70,
       "environment": "dev",
@@ -57,10 +98,27 @@
       },
       "steps": [
         {
-          "name": "Checkout exact release source",
+          "name": "Checkout trusted release tooling from main",
           "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
           "with": {
             "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Restore the frozen release-source record",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "release-source",
+            "path": "${{ runner.temp }}"
+          }
+        },
+        {
+          "name": "Checkout the tag-resolved application source for verification only",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ needs.resolve.outputs.source-sha }}",
+            "path": "release-source",
             "persist-credentials": false
           }
         },
@@ -72,28 +130,32 @@
           "run": "python3 tools/release/release_version.py check --app domain"
         },
         {
-          "name": "Require exact source and main-only DEV environment",
+          "name": "Require main-only DEV environment and the frozen release source",
           "run": "python3 tools/release/owner_release.py gate --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\""
         },
         {
           "name": "Download the same-run scanned artifact",
           "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
           "with": {
-            "name": "release-image-${{ github.sha }}",
+            "name": "release-image-${{ needs.resolve.outputs.source-sha }}",
             "path": "${{ runner.temp }}/release-image"
           }
         },
         {
           "name": "Load and verify scanned image without rebuilding",
-          "run": "python3 tools/release/image.py import --directory \"$RUNNER_TEMP/release-image\" > \"$RUNNER_TEMP/release-image-id\""
+          "run": "python3 tools/release/image.py import --directory \"$RUNNER_TEMP/release-image\" --source-root release-source > \"$RUNNER_TEMP/release-image-id\""
         },
         {
           "name": "Request source and tested-image bound owner approval",
-          "run": "python3 tools/release/owner_release.py approve --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\""
+          "run": "python3 tools/release/owner_release.py approve --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --source-root release-source"
         },
         {
           "name": "Recheck live owner approval before upload credentials",
-          "run": "python3 tools/release/owner_release.py check --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\""
+          "run": "python3 tools/release/owner_release.py check --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --source-root release-source"
+        },
+        {
+          "name": "Recheck release tag before upload credentials",
+          "run": "python3 tools/release/release_version.py recheck --app domain --record \"$RUNNER_TEMP/release-source.json\""
         },
         {
           "name": "Use short-lived DEV OIDC credentials",
@@ -113,13 +175,13 @@
         {
           "name": "Publish exact scanned image into immutable DEV repository",
           "id": "publish",
-          "run": "aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin \"${ECR_REPOSITORY%%/*}\"\npython3 tools/release/owner_release.py publish --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --loaded \"$(cat \"$RUNNER_TEMP/release-image-id\")\""
+          "run": "aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin \"${ECR_REPOSITORY%%/*}\"\npython3 tools/release/owner_release.py publish --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --source-root release-source --loaded \"$(cat \"$RUNNER_TEMP/release-image-id\")\""
         },
         {
           "name": "Retain immutable registry release receipt",
           "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
           "with": {
-            "name": "registry-image-${{ github.sha }}",
+            "name": "registry-image-${{ needs.resolve.outputs.source-sha }}",
             "path": "${{ runner.temp }}/registry-image.json",
             "if-no-files-found": "error",
             "retention-days": 21
@@ -131,7 +193,7 @@
           "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
           "with": {
             "name": "image-publication-outcome",
-            "path": "${{ runner.temp }}/owner-plan.json\n${{ runner.temp }}/owner-approval.json\n${{ runner.temp }}/publication-outcome.json",
+            "path": "${{ runner.temp }}/release-source.json\n${{ runner.temp }}/owner-plan.json\n${{ runner.temp }}/owner-approval.json\n${{ runner.temp }}/publication-outcome.json",
             "retention-days": 21,
             "if-no-files-found": "error"
           }
@@ -147,13 +209,14 @@
       ],
       "env": {
         "GH_TOKEN": "${{ github.token }}",
-        "APPROVED_SHA": "${{ inputs.approved-source-sha }}",
         "DEPLOY_ROLE": "${{ inputs.role-arn }}",
         "ECR_REPOSITORY": "${{ inputs.ecr-repository }}",
         "AWS_MAX_ATTEMPTS": "1",
         "AWS_RETRY_MODE": "standard",
         "AWS_EC2_METADATA_DISABLED": "true",
-        "RELEASE_VERSION": "${{ inputs.release-version }}"
+        "RELEASE_VERSION": "${{ inputs.release-version }}",
+        "SOURCE_SHA": "${{ needs.resolve.outputs.source-sha }}",
+        "RELEASE_SOURCE_RECORD": "${{ runner.temp }}/release-source.json"
       }
     }
   }
