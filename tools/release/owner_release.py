@@ -15,19 +15,20 @@ REPOSITORY = '509614632283.dkr.ecr.us-east-2.amazonaws.com/lookahead-dev-ecr'
 def gate(env, get=approval.api):
     identity = approval.provenance(env, get)
     approval.require(identity['repository'] == 'lookahead99ms/lookahead-learning-domain-api'
-                     and env.get('APPROVED_SHA') == identity['sourceSha']
-                     and env.get('ECR_REPOSITORY') == REPOSITORY, 'Exact Domain source and ECR target required')
+                     and env.get('ECR_REPOSITORY') == REPOSITORY, 'Exact Domain publisher and ECR target required')
     return identity
 
 
-def plan(directory, env, get=approval.api):
+def plan(directory, env, get=approval.api, sourceRoot=None):
     identity = gate(env, get)
     directory = Path(directory)
     archive, receiptPath = directory / 'image.tar', directory / 'image.json'
     approval.require(not any(p.is_symlink() for p in [directory, *directory.parents, archive, receiptPath]),
                      'Image artifact symlinks rejected')
-    expected = image.inputs(Path.cwd())
-    approval.require(expected['revision'] == identity['sourceSha'], 'Checkout differs from reviewed source')
+    # The tooling runs from main (workflowSha); the image was built from the tag-resolved source (sourceSha).
+    expected = image.inputs(Path.cwd(), sourceRoot, identity['workflowSha'])
+    approval.require(expected['revision'] == identity['sourceSha'], 'Checkout differs from the tag-resolved source')
+    approval.require(expected['workflowSha'] == identity['workflowSha'], 'Build workflow differs from the executed main workflow')
     receipt = json.loads(receiptPath.read_text(), object_pairs_hook=approval.unique)
     approval.versions.validate(receipt, identity['app'])
     approval.require(receipt.get('releaseVersion') == identity['releaseVersion'], 'Built release differs from approved tag')
@@ -53,9 +54,9 @@ def write(path, value, *, new=False):
         stream.write('\n')
 
 
-def publish(directory, receiptPath, env, loaded, get=approval.api, provider=aws):
+def publish(directory, receiptPath, env, loaded, get=approval.api, provider=aws, sourceRoot=None):
     directory, receiptPath = Path(directory), Path(receiptPath)
-    selected = plan(directory, env, get)
+    selected = plan(directory, env, get, sourceRoot)
     decision = json.loads(receiptPath.read_text(), object_pairs_hook=approval.unique)
     approval.verify(selected, decision, env, get)
     approval.require(provider('sts', 'get-caller-identity').get('Account') == approval.ACCOUNT, 'Wrong AWS account')
@@ -71,7 +72,8 @@ def publish(directory, receiptPath, env, loaded, get=approval.api, provider=aws)
     image.verifyLoaded(loaded, selected['imageId'])
     subprocess.run(['docker', 'tag', loaded, selected['target']], check=True, timeout=30)
     approval.verify(selected, decision, env, get)
-    outcome = {'sourceSha': selected['sourceSha'], 'runId': selected['runId'], 'target': selected['target'],
+    outcome = {'sourceSha': selected['sourceSha'], 'workflowSha': selected['workflowSha'], 'releaseVersion': selected['releaseVersion'],
+               'runId': selected['runId'], 'target': selected['target'],
                'imageId': selected['imageId'], 'approvalDigest': approval.digest(selected),
                'pushAttempted': True, 'pushReturned': False, 'readbackVerified': False}
     outcomePath = receiptPath.parent / 'publication-outcome.json'
@@ -92,11 +94,12 @@ def main(argv=None):
     parser.add_argument('--directory', required=True)
     parser.add_argument('--receipt', required=True)
     parser.add_argument('--loaded')
+    parser.add_argument('--source-root', help='Tag-resolved source checkout; the tooling itself runs from main')
     args = parser.parse_args(argv)
     if args.mode == 'gate':
         gate(os.environ)
         return
-    selected = plan(args.directory, os.environ)
+    selected = plan(args.directory, os.environ, sourceRoot=args.source_root)
     receiptPath = Path(args.receipt)
     if args.mode == 'approve':
         write(receiptPath.parent / 'owner-plan.json', selected, new=True)
@@ -105,7 +108,7 @@ def main(argv=None):
         approval.verify(selected, json.loads(receiptPath.read_text(), object_pairs_hook=approval.unique), os.environ)
     else:
         approval.require(bool(args.loaded), 'Exact verified loaded image required')
-        publish(args.directory, receiptPath, os.environ, args.loaded)
+        publish(args.directory, receiptPath, os.environ, args.loaded, sourceRoot=args.source_root)
 
 
 if __name__ == '__main__':

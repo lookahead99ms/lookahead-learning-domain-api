@@ -111,27 +111,50 @@ def verifyLoaded(reference, expectedConfig):
     return reference
 
 
-def inputs(root):
-    if command('git', 'diff', '--name-only', 'HEAD') or command('git', 'ls-files', '--others', '--exclude-standard'):
+def workflowFile(root, workflowSha):
+    """Bytes of ci.yml at the executed workflow commit (GITHUB_SHA), read from the trusted checkout."""
+    return subprocess.check_output(['git', '-C', str(root), 'show', workflowSha + ':.github/workflows/ci.yml'])
+
+
+def inputs(root, sourceRoot=None, workflowSha=None):
+    """Bind the build to two commits: the tag-resolved application source (revision, S) and the
+    executed workflow commit (workflowSha, M). Locally, without GITHUB_SHA, both are the checkout."""
+    root, source = Path(root), Path(sourceRoot or root)
+    git = ('git', '-C', str(source))
+    if command(*git, 'diff', '--name-only', 'HEAD') or command(*git, 'ls-files', '--others', '--exclude-standard'):
         raise ValueError('Release source must be committed and clean')
-    revision = command('git', 'rev-parse', 'HEAD')
+    revision = command(*git, 'rev-parse', 'HEAD')
     if not re.fullmatch(r'[a-f0-9]{40}', revision):
         raise ValueError('Require exact Git revision')
+    if os.environ.get('SOURCE_SHA') and os.environ['SOURCE_SHA'] != revision:
+        raise ValueError('Checkout differs from the resolved release source')
+    workflowSha = workflowSha or os.environ.get('GITHUB_SHA')
+    if workflowSha:
+        if not re.fullmatch(r'[a-f0-9]{40}', workflowSha):
+            raise ValueError('Require exact executed workflow commit')
+        workflowSha256 = hashlib.sha256(workflowFile(root, workflowSha)).hexdigest()
+    else:
+        workflowSha, workflowSha256 = revision, digest(root / '.github/workflows/ci.yml')
     release = versions.metadata('domain', os.environ['RELEASE_VERSION']) if os.environ.get('RELEASE_VERSION') else {}
-    return {**release, 'revision': revision, 'dockerfileSha256': digest(root / 'Dockerfile'),
-            'workflowSha256': digest(root / '.github/workflows/ci.yml')}
+    return {**release, 'revision': revision, 'workflowSha': workflowSha, 'dockerfileSha256': digest(source / 'Dockerfile'),
+            'workflowSha256': workflowSha256}
 
 
 def validate(receipt, archive, expected):
     required = {'schemaVersion', 'revision', 'dockerfileSha256', 'workflowSha256', 'imageId', 'archiveSha256', 'platform'}
     versioned = bool(expected.get('releaseVersion'))
     if versioned:
-        required |= versions.FIELDS
+        # v3 records the executed workflow commit (M) beside the built source commit (S).
+        required |= versions.FIELDS | {'workflowSha'}
         versions.validate(receipt, 'domain')
-    if not isinstance(receipt, dict) or set(receipt) != required or receipt['schemaVersion'] != ('lookahead-scanned-image/v2' if versioned else 'lookahead-scanned-image/v1') or receipt['platform'] != 'linux/amd64':
+    else:
+        expected = {key: value for key, value in expected.items() if key != 'workflowSha'}
+    if not isinstance(receipt, dict) or set(receipt) != required or receipt['schemaVersion'] != ('lookahead-scanned-image/v3' if versioned else 'lookahead-scanned-image/v1') or receipt['platform'] != 'linux/amd64':
         raise ValueError('Invalid scanned image receipt')
     if not re.fullmatch(r'sha256:[a-f0-9]{64}', receipt['imageId']):
         raise ValueError('Invalid image identity')
+    if versioned and not re.fullmatch(r'[a-f0-9]{40}', str(receipt['workflowSha'])):
+        raise ValueError('Invalid executed workflow commit')
     if any(receipt.get(key) != value for key, value in expected.items()) or receipt['archiveSha256'] != digest(archive):
         raise ValueError('Image source or archive binding changed')
     if archiveIdentity(archive) != receipt['imageId']:
@@ -145,13 +168,17 @@ def main():
     parser.add_argument('action', choices=['export', 'import'])
     parser.add_argument('--image')
     parser.add_argument('--directory', required=True)
+    parser.add_argument('--source-root', help='Tag-resolved source checkout when the tooling runs from main')
     args = parser.parse_args()
     root = Path.cwd()
     directory = Path(args.directory)
     archive, receiptPath = directory / 'image.tar', directory / 'image.json'
     if any(p.is_symlink() for p in [directory, *directory.parents, archive, receiptPath]):
         raise ValueError('Image artifact symlinks rejected')
-    expected = inputs(root)
+    sourceRoot = Path(args.source_root) if args.source_root else None
+    if sourceRoot is not None and (sourceRoot.is_symlink() or not sourceRoot.is_dir()):
+        raise ValueError('Release source root must be a real directory')
+    expected = inputs(root, sourceRoot)
     if args.action == 'export':
         if not args.image or archive.exists() or receiptPath.exists():
             raise ValueError('Export requires image and new artifact paths')
@@ -161,7 +188,9 @@ def main():
         configId = archiveIdentity(archive)
         if identity(args.image) != imageId:
             raise ValueError('Export image reference changed')
-        receipt = {'schemaVersion': 'lookahead-scanned-image/v2' if expected.get('releaseVersion') else 'lookahead-scanned-image/v1', **expected, 'imageId': configId,
+        versioned = bool(expected.get('releaseVersion'))
+        receipt = {'schemaVersion': 'lookahead-scanned-image/v3' if versioned else 'lookahead-scanned-image/v1',
+                   **{key: value for key, value in expected.items() if versioned or key != 'workflowSha'}, 'imageId': configId,
                    'archiveSha256': digest(archive), 'platform': 'linux/amd64'}
         validate(receipt, archive, expected)
         receiptPath.write_text(json.dumps(receipt, sort_keys=True) + '\n')

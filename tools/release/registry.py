@@ -4,9 +4,20 @@ import release_version as versions
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sys
+
+
+def recordSource(path, env):
+    """Tag-resolved source from the frozen release-source record; the record must belong to this workflow commit."""
+    record = json.loads(Path(path).read_text())
+    if not isinstance(record, dict) or record.get('schema') != 'release-source/v1':
+        raise ValueError('Frozen release-source record required')
+    if not re.fullmatch(r'[a-f0-9]{40}', str(record.get('sourceSha', ''))) or record.get('workflowSha') != env.get('GITHUB_SHA'):
+        raise ValueError('Release-source record belongs to another workflow run')
+    return record['sourceSha']
 
 
 def validateApproval(document, revision, expectedRevision, role, repository):
@@ -28,8 +39,10 @@ def bind(image, response, repository, revision):
     # imageId is the archive config digest, not Docker containerd's manifest/index Id.
     if image.get('platform') != 'linux/amd64' or not re.fullmatch(r'sha256:[a-f0-9]{64}', image.get('imageId', '')):
         raise ValueError('Require scanned linux/amd64 config identity')
-    versioned = image.get('schemaVersion') == 'lookahead-scanned-image/v2'
+    versioned = image.get('schemaVersion') in ('lookahead-scanned-image/v2', 'lookahead-scanned-image/v3')
     release = versions.validate(image) if versioned else {}
+    if image.get('schemaVersion') == 'lookahead-scanned-image/v3' and not re.fullmatch(r'[a-f0-9]{40}', str(image.get('workflowSha', ''))):
+        raise ValueError('Require exact executed workflow commit')
     if repository == versions.REPOSITORY and not versioned:
         raise ValueError('Shared repository requires app/version provenance')
     tag = release.get('imageTag', revision)
@@ -44,7 +57,9 @@ def bind(image, response, repository, revision):
         raise ValueError('Registry manifest identity changed')
     if manifest.get('config', {}).get('digest') != image['imageId'] or image['revision'] != revision or entry['imageId'].get('imageTag') != tag:
         raise ValueError('Registry image differs from the scanned release')
-    return {**release, 'schemaVersion': 'lookahead-registry-image/v2' if versioned else 'lookahead-registry-image/v1', 'revision': revision,
+    # v3 carries the executed workflow commit (M) beside the built source commit (S) when the scan recorded it.
+    provenance = {'workflowSha': image['workflowSha']} if 'workflowSha' in image else {}
+    return {**release, **provenance, 'schemaVersion': 'lookahead-registry-image/v3' if versioned else 'lookahead-registry-image/v1', 'revision': revision,
             'image': repository + '@' + remoteDigest, 'imageId': image['imageId'],
             'platform': image['platform'], 'scannedArchiveSha256': image['archiveSha256'],
             'buildWorkflowSha256': image['workflowSha256'], 'dockerfileSha256': image['dockerfileSha256']}
@@ -57,13 +72,20 @@ def main():
     parser.add_argument('--revision', required=True)
     parser.add_argument('--repository', required=True)
     parser.add_argument('--expected-revision')
+    parser.add_argument('--record', help='Frozen release-source record; its sourceSha is the expected revision')
     parser.add_argument('--role')
     parser.add_argument('--image-receipt')
     parser.add_argument('--output')
     args = parser.parse_args()
     data = json.loads(Path(args.input).read_text())
     if args.action == 'approval':
-        validateApproval(data, args.revision, args.expected_revision, args.role, args.repository)
+        expected = args.expected_revision
+        if args.record:
+            resolved = recordSource(args.record, os.environ)
+            if expected not in (None, resolved):
+                raise ValueError('Expected revision differs from the frozen release-source record')
+            expected = resolved
+        validateApproval(data, args.revision, expected, args.role, args.repository)
     else:
         image = json.loads(Path(args.image_receipt).read_text())
         receipt = bind(image, data, args.repository, args.revision)
