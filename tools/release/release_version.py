@@ -14,14 +14,16 @@ import re
 import subprocess
 import tarfile
 
-APPS = ('domain', 'web', 'gateway-bff', 'initializer')
+# Content has its own calendar sequence: its tag is the content release ID (releases/<tag>/); no image.
+APPS = ('domain', 'web', 'gateway-bff', 'initializer', 'content')
+PATTERN = r'v\d{4}\.\d{2}\.\d{2}\.\d{2}\.(?:\d{2}|[1-9]\d{2,})'
 FIELDS = {'app', 'releaseVersion', 'buildVersion', 'imageTag'}
 REPOSITORY = '509614632283.dkr.ecr.us-east-2.amazonaws.com/lookahead-dev-ecr'
 
 
 def calendar(version):
     """Validate the shared UTC calendar tag format; no app binding."""
-    if not isinstance(version, str) or not re.fullmatch(r'v\d{4}\.\d{2}\.\d{2}\.\d{2}\.(?:\d{2}|[1-9]\d{2,})', version, re.ASCII):
+    if not isinstance(version, str) or not re.fullmatch(PATTERN, version, re.ASCII):
         raise ValueError('Require vyyyy.mm.dd.hh.<00-nn> release tag')
     datetime.strptime(version[1:14], '%Y.%m.%d.%H')
     return version
