@@ -5,7 +5,6 @@ import java.io.*;
 import java.nio.file.*;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
-import java.time.Instant;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -16,15 +15,29 @@ import tools.jackson.databind.ObjectMapper;
 
 /**
  * Complete hash-pinned extraction into a fresh private directory before bean publication.
- * A pinned deployment reads releases/&lt;releaseId&gt;/ and checks both externally supplied digests.
- * A live deployment lists live/, selects the newest complete release folder there and binds the
- * archive to the digest inside that manifest; the release ID is still recomputed from the content.
+ * A release is identified by its Content calendar release tag. A pinned deployment reads
+ * releases/&lt;tag&gt;/ and checks both externally supplied digests. A live deployment lists live/,
+ * selects the complete release folder with the highest tag and binds the archive to the digest
+ * inside that manifest. Content identity is bound through the manifest's per-file digests and,
+ * when the publisher recorded it, {@code contentSha256} over the publication and catalog bytes.
  */
 public final class PublicationBootstrap {
     static final long MAX_BYTES = 1024L * 1024 * 1024;
     static final int MAX_FILE = 32 * 1024 * 1024;
     static final int MAX_LIVE_OBJECTS = 64;
-    private static final Pattern LIVE_KEY = Pattern.compile(PublicationSettings.LIVE_PREFIX + "(" + PublicationSettings.RELEASE_ID + ")/(manifest\\.json|publication\\.tar\\.gz)");
+    private static final Pattern LIVE_KEY = Pattern.compile(PublicationSettings.LIVE_PREFIX + "(" + PublicationSettings.RELEASE_TAG + ")/(manifest\\.json|publication\\.tar\\.gz)");
+    /**
+     * Chronological order of calendar tags. The UTC hour prefix is fixed width, so it compares as a
+     * string; the counter has no leading zeros past 99, so a longer counter is a later one. This equals
+     * plain string order for two-digit counters and stays correct at the 99 to 100 boundary.
+     */
+    static final Comparator<String> TAG_ORDER = (left, right) -> {
+        int cutLeft = left.lastIndexOf('.'), cutRight = right.lastIndexOf('.');
+        int byHour = left.substring(0, cutLeft).compareTo(right.substring(0, cutRight));
+        if (byHour != 0) return byHour;
+        String counterLeft = left.substring(cutLeft + 1), counterRight = right.substring(cutRight + 1);
+        return counterLeft.length() != counterRight.length() ? Integer.compare(counterLeft.length(), counterRight.length()) : counterLeft.compareTo(counterRight);
+    };
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PublicationBootstrap.class);
     private record Entry(long bytes, String sha256) {}
     /** One release to load: its prefix, ID and the digests known before the manifest is read (null when live). */
@@ -83,10 +96,11 @@ public final class PublicationBootstrap {
             require(seen.equals(expected.keySet()), "Incomplete archive");
             byte[] publicationBytes = Files.readAllBytes(extracted.resolve("publication.json"));
             byte[] catalogBytes = Files.readAllBytes(extracted.resolve("account-catalog.json"));
-            MessageDigest releaseDigest = MessageDigest.getInstance("SHA-256");
-            releaseDigest.update(publicationBytes); releaseDigest.update(catalogBytes);
+            MessageDigest contentDigest = MessageDigest.getInstance("SHA-256");
+            contentDigest.update(publicationBytes); contentDigest.update(catalogBytes);
+            String recordedContent = manifest.path("contentSha256").asText();
             require(sha(publicationBytes).equals(manifest.path("publicationSha256").asText())
-                    && selected.releaseId().equals("release-" + HexFormat.of().formatHex(releaseDigest.digest()).substring(0, 24)), "Publication identity mismatch");
+                    && (recordedContent.isEmpty() || recordedContent.equals(HexFormat.of().formatHex(contentDigest.digest()))), "Publication identity mismatch");
             require(expected.get("account-catalog.json").sha256().equals(manifest.path("trustedCatalogSha256").asText()), "Trusted catalog digest missing or mismatched");
             JsonNode publication = mapper.readTree(publicationBytes);
             require(publication.path("schemaVersion").asText().equals("content-publication/v1") && publication.path("assets").isArray(), "Publication contract mismatch");
@@ -115,29 +129,28 @@ public final class PublicationBootstrap {
     }
 
     /**
-     * The serving release is the newest manifest under live/. Promotion writes the archive before the
-     * manifest and removes the previous folder afterwards, so a second folder is either a copy in
-     * progress (no manifest yet, ignored) or a predecessor awaiting removal (older, reported).
+     * The serving release is the complete folder under live/ with the highest calendar tag. Promotion
+     * writes the archive before the manifest and removes the previous folder afterwards, so a folder
+     * without a manifest is a copy in progress (ignored) and a second complete folder is a predecessor
+     * awaiting removal (lower tag, reported). Object timestamps never decide the order; a listing must
+     * still carry them so that a malformed source is rejected.
      */
     static Selection discoverLive(PublicationObjectSource source) throws IOException {
         List<PublicationObjectSource.ListedObject> listing = source.list(PublicationSettings.LIVE_PREFIX);
         require(listing.size() <= MAX_LIVE_OBJECTS, "Live prefix holds more objects than releases");
-        Map<String, Map<String, Instant>> folders = new TreeMap<>();
+        Map<String, Set<String>> folders = new TreeMap<>(TAG_ORDER);
         for (PublicationObjectSource.ListedObject object : listing) {
             Matcher match = LIVE_KEY.matcher(object.key());
             require(match.matches() && object.lastModified() != null, "Unexpected object under the live prefix");
-            require(folders.computeIfAbsent(match.group(1), id -> new HashMap<>()).put(match.group(2), object.lastModified()) == null, "Duplicate live object");
+            require(folders.computeIfAbsent(match.group(1), tag -> new HashSet<>()).add(match.group(2)), "Duplicate live object");
         }
-        String chosen = null; Instant newest = null; List<String> complete = new ArrayList<>();
-        for (Map.Entry<String, Map<String, Instant>> folder : folders.entrySet()) {
-            Instant manifestTime = folder.getValue().get("manifest.json");
-            if (manifestTime == null) continue;
-            complete.add(folder.getKey());
-            if (newest == null || manifestTime.isAfter(newest)) { chosen = folder.getKey(); newest = manifestTime; }
-        }
-        require(chosen != null, "No live release is published");
-        require(folders.get(chosen).containsKey("publication.tar.gz"), "Live release is missing its archive");
-        if (complete.size() > 1) log.warn("Live prefix holds {} releases; serving the newest {}, promotion cleanup pending", complete.size(), chosen);
+        List<String> complete = new ArrayList<>();
+        for (Map.Entry<String, Set<String>> folder : folders.entrySet())
+            if (folder.getValue().contains("manifest.json")) complete.add(folder.getKey());
+        require(!complete.isEmpty(), "No live release is published");
+        String chosen = complete.getLast();
+        require(folders.get(chosen).contains("publication.tar.gz"), "Live release is missing its archive");
+        if (complete.size() > 1) log.warn("Live prefix holds {} releases; serving the highest tag {}, promotion cleanup pending", complete.size(), chosen);
         return new Selection(PublicationSettings.LIVE_PREFIX + chosen + "/", chosen, null, null);
     }
 
