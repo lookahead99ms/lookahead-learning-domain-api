@@ -36,7 +36,7 @@ class Github:
             raise AssertionError('Cross-repository approval request')
         if path == 'issues':
             self.data['issues/3'] = {'state': 'open', 'user': {'login': 'github-actions[bot]'}, 'body': payload['body'],
-                                     'created_at': self.now.isoformat()}
+                                     'created_at': self.now.replace(microsecond=0).isoformat()}
             if self.autoApprove:
                 self.comments = [self.comment()]
             return {'number': 3}
@@ -46,7 +46,7 @@ class Github:
 
     def comment(self):
         return {'id': 7, 'user': {'login': m.OWNER}, 'body': 'APPROVE IMAGE '+m.digest(self.plan),
-                'created_at': self.now.isoformat(), 'updated_at': self.now.isoformat()}
+                'created_at': self.now.replace(microsecond=0).isoformat(), 'updated_at': self.now.replace(microsecond=0).isoformat()}
 
     def approved(self):
         return m.approve(self.plan, self.env, self.get, lambda: self.now, lambda _: None)
@@ -62,6 +62,32 @@ class ApprovalTests(unittest.TestCase):
             self.assertIn(fake.plan['imageId'], fake.data['issues/3']['body'])
             self.assertIn('does not deploy services', fake.data['issues/3']['body'])
             self.assertIn('Permission deadline', fake.data['issues/3']['body'])
+
+    def test_github_second_precision_accepts_fractional_runner_clock_for_both_publishers(self):
+        for repository in m.PUBLISHERS:
+            for fraction in (1, 56527, 999999):
+                with self.subTest(repository=repository, microsecond=fraction):
+                    fake = Github(repository)
+                    fake.now = fake.now.replace(microsecond=fraction)
+                    receipt = fake.approved()
+                    start = fake.now.replace(microsecond=0)
+                    self.assertEqual(receipt['createdAt'], start.isoformat())
+                    self.assertEqual(receipt['expiresAt'], (start + timedelta(minutes=40)).isoformat())
+                    self.assertLessEqual(m.timestamp(receipt['expiresAt']) - fake.now, timedelta(minutes=40))
+                    m.verify(fake.plan, receipt, fake.env, fake.get, fake.now)
+                    self.assertEqual(fake.data['issues/3']['body'], m.body(fake.plan, receipt))
+                    # A prior-second issue and an issue at expiry still fail closed.
+                    original = fake.data['issues/3']['created_at']
+                    for stamp in (start - timedelta(seconds=1), start + timedelta(minutes=40)):
+                        fake.data['issues/3']['created_at'] = stamp.isoformat()
+                        with self.assertRaises(ValueError):
+                            m.verify(fake.plan, receipt, fake.env, fake.get, fake.now)
+                    fake.data['issues/3']['created_at'] = original
+                    with self.assertRaises(ValueError):
+                        m.verify(fake.plan, receipt, fake.env, fake.get, start + timedelta(minutes=40))
+                    fake.data['issues/3']['body'] += 'edited'
+                    with self.assertRaisesRegex(ValueError, 'Approval issue changed'):
+                        m.verify(fake.plan, receipt, fake.env, fake.get, fake.now)
 
     def test_context_rejects_other_owner_source_run_repository_and_environment(self):
         for field in Github().env:
