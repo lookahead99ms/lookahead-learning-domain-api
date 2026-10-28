@@ -3,6 +3,18 @@ from pathlib import Path
 import unittest
 
 
+def assertCallInputsMirrorDispatch(test, workflow):
+    """workflow_call takes the same inputs as workflow_dispatch, minus any default on a required input: GitHub rejects
+    a required workflow_call input that also carries a default, which made the whole publisher file invalid (DLV-914,
+    every pipeline run failed at startup on 2026-10-28)."""
+    dispatch, call = workflow['on']['workflow_dispatch']['inputs'], workflow['on']['workflow_call']['inputs']
+    test.assertEqual(list(dispatch), list(call))
+    for name, spec in dispatch.items():
+        expected = {key: value for key, value in spec.items() if not (key == 'default' and spec.get('required'))}
+        test.assertEqual(expected, call[name], name)
+        test.assertFalse(call[name].get('required') and 'default' in call[name], name + ' is required and has a default')
+
+
 class ReleaseWorkflowTests(unittest.TestCase):
     def test_publication_requires_verified_same_run_image_and_explicit_dev_approval(self):
         root = Path(__file__).resolve().parents[2]
@@ -57,7 +69,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         inputs = workflow['on']['workflow_dispatch']['inputs']
         self.assertEqual({'role-arn', 'ecr-repository', 'release-version'}, set(inputs))
         # The merge-driven pipeline calls this same workflow with the tag it cut; dispatch by tag stays for reruns.
-        self.assertEqual(inputs, workflow['on']['workflow_call']['inputs'])
+        assertCallInputsMirrorDispatch(self, workflow)
         self.assertEqual(('string', True), (inputs['release-version']['type'], inputs['release-version']['required']))
         self.assertEqual('${{ github.workflow }} | ${{ inputs.release-version }} | ${{ github.ref_name }} | #${{ github.run_number }}', workflow['run-name'])
         resolve, verify, publish = workflow['jobs']['resolve'], workflow['jobs']['verify'], workflow['jobs']['publish']
@@ -135,7 +147,7 @@ class PipelineWorkflowTests(unittest.TestCase):
         self.assertEqual("${{ vars.DEV_PUBLISH_ROLE_ARN || 'arn:aws:iam::509614632283:role/lookahead-dev-deploy' }}", publish['with']['role-arn'])
         self.assertEqual('write', publish['permissions']['id-token'])
         self.assertEqual({'workflow_dispatch', 'workflow_call'}, set(publisher['on']))
-        self.assertEqual(publisher['on']['workflow_dispatch']['inputs'], publisher['on']['workflow_call']['inputs'])
+        assertCallInputsMirrorDispatch(self, publisher)
         for job, settings in publisher['jobs'].items():
             for key, value in settings.get('permissions', {}).items():
                 self.assertEqual(publish['permissions'].get(key), value, job + ' ' + key)

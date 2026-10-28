@@ -32,8 +32,7 @@
         "ecr-repository": {
           "description": "Exact DEV ECR registry/repository",
           "required": true,
-          "type": "string",
-          "default": "509614632283.dkr.ecr.us-east-2.amazonaws.com/lookahead-dev-ecr"
+          "type": "string"
         },
         "release-version": {
           "description": "Existing Git tag vyyyy.mm.dd.hh.<00-nn> (UTC) at a main commit; the run resolves it to that commit",
