@@ -52,7 +52,7 @@
         {
           "name": "Fetch the executed workflow commit for image binding",
           "if": "inputs.export-image == true",
-          "run": "git fetch --depth 1 origin \"$GITHUB_SHA\""
+          "run": "git fetch origin \"$GITHUB_SHA\""
         },
         {
           "name": "Verify release tag before building",
