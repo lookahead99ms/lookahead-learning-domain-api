@@ -80,8 +80,10 @@ class VersionTests(unittest.TestCase):
             m.main(['next','--app','web']);self.assertEqual(call.call_args.args[0],['git','ls-remote','--tags','origin'])
         with patch.dict(os.environ,env,clear=True),patch.object(m.subprocess,'check_output',return_value=json.dumps({'object':{'type':'commit','sha':'a'*40}})),patch('builtins.print'):
             m.main(['check','--app','web'])
-            for key,value in [('GITHUB_REF','refs/tags/'+VERSION),('GITHUB_EVENT_NAME','push'),('ECR_REPOSITORY','other')]:
+            for key,value in [('GITHUB_REF','refs/tags/'+VERSION),('GITHUB_EVENT_NAME','pull_request'),('ECR_REPOSITORY','other')]:
                 with patch.dict(os.environ,{key:value}),self.assertRaises(ValueError):m.main(['check','--app','web'])
+            # A merge push on main is an accepted run (merge-driven pipeline); the check itself is unchanged.
+            with patch.dict(os.environ,{'GITHUB_EVENT_NAME':'push'}):m.main(['check','--app','web'])
 
     def test_resolve_freezes_commit_tag_object_and_main_and_recheck_detects_movement(self):
         main = 'c'*40
@@ -114,6 +116,39 @@ class VersionTests(unittest.TestCase):
         for obj in [{'type': 'tag', 'sha': 'b'*40}, {'type': 'tree', 'sha': 'a'*40}, {'type': 'commit', 'sha': 'short'}]:
             data['git/ref/tags/'+VERSION] = {'object': obj}; data['git/tags/'+'b'*40] = {'object': obj}
             with self.assertRaises(ValueError): m.peel(VERSION, get)
+
+    def test_main_binding_is_exact_head_for_dispatch_and_ancestor_for_merge_push(self):
+        main, merge = 'c'*40, 'a'*40
+        data = {'compare/'+merge+'...'+main: {'status': 'ahead', 'merge_base_commit': {'sha': merge}},
+                'compare/'+main+'...'+main: {'status': 'identical', 'merge_base_commit': {'sha': main}}}
+        self.assertEqual(m.mainBinding('workflow_dispatch', main, main, data.__getitem__), main)
+        with self.assertRaisesRegex(ValueError, 'Main moved'): m.mainBinding('workflow_dispatch', merge, main, data.__getitem__)
+        self.assertEqual(m.mainBinding('push', merge, main, data.__getitem__), main)
+        self.assertEqual(m.mainBinding('push', main, main, data.__getitem__), main)
+        data['compare/'+merge+'...'+main] = {'status': 'diverged', 'merge_base_commit': {'sha': 'd'*40}}
+        with self.assertRaisesRegex(ValueError, 'on main'): m.mainBinding('push', merge, main, data.__getitem__)
+        for event, sha in [('pull_request', main), ('schedule', main), ('push', 'main'), (None, main)]:
+            with self.subTest(event=event), self.assertRaises(ValueError): m.mainBinding(event, sha, main, data.__getitem__)
+        self.assertEqual(m.EVENTS, ('push', 'workflow_dispatch'))
+
+    def test_cli_push_run_accepts_a_later_merge_on_main_but_dispatch_does_not(self):
+        merge, head = 'a'*40, 'f'*40
+        env = {'RELEASE_VERSION': VERSION, 'GITHUB_SHA': merge, 'GITHUB_REPOSITORY': 'owner/repo', 'GITHUB_REF': 'refs/heads/main',
+               'GITHUB_EVENT_NAME': 'push', 'GITHUB_RUN_ID': '5'}
+        data = {'git/ref/tags/'+VERSION: {'object': {'type': 'commit', 'sha': merge}}, 'commits/main': {'sha': head},
+                'compare/'+merge+'...'+head: {'status': 'ahead', 'merge_base_commit': {'sha': merge}}}
+        def api(args, text, timeout): return json.dumps(data[args[2].split('/', 3)[3]])
+        with tempfile.TemporaryDirectory() as temp:
+            record = Path(temp)/'release-source.json'
+            with patch.dict(os.environ, env, clear=True), patch.object(m.subprocess, 'check_output', side_effect=api), patch('builtins.print'):
+                m.main(['resolve', '--app', 'web', '--record', str(record)])
+                saved = json.loads(record.read_text())
+                self.assertEqual((saved['sourceSha'], saved['workflowSha'], saved['mainSha']), (merge, merge, head))
+                m.main(['recheck', '--app', 'web', '--record', str(record)])
+                data['compare/'+merge+'...'+head] = {'status': 'diverged', 'merge_base_commit': {'sha': 'd'*40}}
+                with self.assertRaisesRegex(ValueError, 'on main'): m.main(['recheck', '--app', 'web', '--record', str(record)])
+            with patch.dict(os.environ, {**env, 'GITHUB_EVENT_NAME': 'workflow_dispatch'}, clear=True), patch.object(m.subprocess, 'check_output', side_effect=api):
+                with self.assertRaisesRegex(ValueError, 'Main moved'): m.main(['resolve', '--app', 'web', '--record', str(Path(temp)/'other.json')])
 
     def test_cli_resolve_writes_frozen_record_and_recheck_requires_same_workflow_run(self):
         main = 'a'*40

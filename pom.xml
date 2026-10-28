@@ -13,6 +13,9 @@
     <name>Look Ahead Learning Domain API</name>
     <properties>
     <revision>0.0.1-SNAPSHOT</revision>
+        <!-- DLV-914: calendar release tag (vyyyy.mm.dd.hh.nn) and Git commit reported by /actuator/info; the image build passes both. -->
+        <release.tag>dev</release.tag>
+        <source.revision>local</source.revision>
         <java.version>21</java.version>
         <!-- DLV-916: temporary override until a stable Boot 4.1 patch manages the fix. -->
         <tomcat.version>11.0.25</tomcat.version>
@@ -117,7 +120,8 @@
         </dependency>
     </dependencies>
     <build>
-        <finalName>lookahead-domain-api</finalName>
+        <!-- DLV-914: the jar carries the release version; the Dockerfile copies the exact versioned name. -->
+        <finalName>lookahead-domain-api-${revision}</finalName>
         <plugins>
             <plugin>
                 <groupId>org.jacoco</groupId>
@@ -151,6 +155,18 @@
                 <configuration>
                     <mainClass>com.lookahead.domain.DomainApiApplication</mainClass>
                 </configuration>
+                <executions>
+                    <execution>
+                        <id>build-info</id>
+                        <goals><goal>build-info</goal></goals>
+                        <configuration>
+                            <additionalProperties>
+                                <releaseTag>${release.tag}</releaseTag>
+                                <sourceRevision>${source.revision}</sourceRevision>
+                            </additionalProperties>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
             <!-- DLV-918: patched transitives for the ordinary clean/verify lifecycle. -->
             <plugin>

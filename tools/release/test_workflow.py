@@ -7,7 +7,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def test_publication_requires_verified_same_run_image_and_explicit_dev_approval(self):
         root = Path(__file__).resolve().parents[2]
         workflow = json.loads((root / '.github/workflows/release-image.yml').read_text())
-        self.assertEqual({'workflow_dispatch'}, set(workflow['on']))
+        self.assertEqual({'workflow_dispatch', 'workflow_call'}, set(workflow['on']))
         resolve, verify, publish = workflow['jobs']['resolve'], workflow['jobs']['verify'], workflow['jobs']['publish']
         self.assertEqual(['resolve', 'verify', 'publish'], list(workflow['jobs']))
         self.assertEqual('./.github/workflows/ci.yml', verify['uses'])
@@ -56,6 +56,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         source = '${{ needs.resolve.outputs.source-sha }}'
         inputs = workflow['on']['workflow_dispatch']['inputs']
         self.assertEqual({'role-arn', 'ecr-repository', 'release-version'}, set(inputs))
+        # The merge-driven pipeline calls this same workflow with the tag it cut; dispatch by tag stays for reruns.
+        self.assertEqual(inputs, workflow['on']['workflow_call']['inputs'])
         self.assertEqual(('string', True), (inputs['release-version']['type'], inputs['release-version']['required']))
         self.assertEqual('${{ github.workflow }} | ${{ inputs.release-version }} | ${{ github.ref_name }} | #${{ github.run_number }}', workflow['run-name'])
         resolve, verify, publish = workflow['jobs']['resolve'], workflow['jobs']['verify'], workflow['jobs']['publish']
@@ -94,6 +96,69 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn('SOURCE_REVISION=$GITHUB_SHA', ci)
         self.assertIn('git fetch --depth 1 origin \\"$GITHUB_SHA\\"' if ci.startswith('{') else 'git fetch --depth 1 origin "$GITHUB_SHA"', ci)
         self.assertLess(ci.index('git fetch --depth 1 origin'), ci.index('docker build'))
+
+
+class PipelineWorkflowTests(unittest.TestCase):
+    """Merge-driven pipeline (user decision 2026-10-27): merge -> tag -> build/scan/publish -> held DEV deploy -> PROD dummy."""
+    ROOT = Path(__file__).resolve().parents[2]
+    APP = 'web' if 'web-public' in ROOT.name else 'gateway-bff' if 'gateway-bff' in ROOT.name else 'domain'
+
+    def test_two_triggers_one_pipeline_tag_first_and_the_publisher_shared_through_workflow_call(self):
+        workflow = json.loads((self.ROOT / '.github/workflows/pipeline.yml').read_text())
+        publisher = json.loads((self.ROOT / '.github/workflows/release-image.yml').read_text())
+        self.assertEqual({'push': {'branches': ['main']}, 'workflow_dispatch': {}}, workflow['on'])
+        self.assertEqual({'contents': 'read'}, workflow['permissions'])
+        self.assertEqual({'group': 'dev-pipeline-${{ github.repository }}', 'cancel-in-progress': False}, workflow['concurrency'])
+        self.assertEqual(['tag', 'build-scan-publish', 'deploy-dev', 'deploy-prod'], list(workflow['jobs']))
+        tag, publish, dev, prod = (workflow['jobs'][k] for k in ('tag', 'build-scan-publish', 'deploy-dev', 'deploy-prod'))
+        # Tag job: the only contents:write; cuts the tag at the run commit; refuses off-main before anything else.
+        self.assertEqual({'contents': 'write'}, tag['permissions'])
+        self.assertEqual([('${{ github.sha }}', False)], [(s['with']['ref'], s['with']['persist-credentials']) for s in tag['steps'] if 'uses' in s and s['uses'].startswith('actions/checkout@')])
+        runs = [s['run'] for s in tag['steps'] if 'run' in s]
+        self.assertEqual('test "$GITHUB_REF" = refs/heads/main', runs[0])
+        self.assertEqual('python3 tools/release/pipeline_tag.py cut --app ' + self.APP + ' --record "$RUNNER_TEMP/release-tag.json"', runs[1])
+        self.assertEqual('cut', next(s['id'] for s in tag['steps'] if s.get('run') == runs[1]))
+        self.assertEqual({'release-version': '${{ steps.cut.outputs.release_version }}', 'source-sha': '${{ steps.cut.outputs.source_sha }}'}, tag['outputs'])
+        self.assertEqual(('release-tag', 21), next((s['with']['name'], s['with']['retention-days']) for s in tag['steps'] if str(s.get('uses', '')).startswith('actions/upload-artifact@')))
+        # Publisher: one implementation for merge runs and manual reruns by tag.
+        self.assertEqual('./.github/workflows/release-image.yml', publish['uses'])
+        self.assertEqual('tag', publish['needs'])
+        self.assertEqual('${{ needs.tag.outputs.release-version }}', publish['with']['release-version'])
+        self.assertEqual('509614632283.dkr.ecr.us-east-2.amazonaws.com/lookahead-dev-ecr', publish['with']['ecr-repository'])
+        self.assertEqual("${{ vars.DEV_PUBLISH_ROLE_ARN || 'arn:aws:iam::509614632283:role/lookahead-dev-deploy' }}", publish['with']['role-arn'])
+        self.assertEqual('write', publish['permissions']['id-token'])
+        self.assertEqual({'workflow_dispatch', 'workflow_call'}, set(publisher['on']))
+        self.assertEqual(publisher['on']['workflow_dispatch']['inputs'], publisher['on']['workflow_call']['inputs'])
+        for job, settings in publisher['jobs'].items():
+            for key, value in settings.get('permissions', {}).items():
+                self.assertEqual(publish['permissions'].get(key), value, job + ' ' + key)
+        for name, job in workflow['jobs'].items():
+            if name != 'build-scan-publish':
+                self.assertNotIn('id-token', job.get('permissions', {}), name)
+            if name != 'tag':
+                self.assertNotEqual('write', job.get('permissions', {}).get('contents'), name)
+        # No commit is ever an input: no dispatch inputs, no SHA anywhere but the trusted checkout ref.
+        text = json.dumps(workflow)
+        self.assertNotIn('inputs.', text)
+        self.assertNotIn('$GITHUB_SHA', text)
+        self.assertEqual(text.count('github.sha'), text.count('"ref": "${{ github.sha }}"'))
+        # DEV deploy: present, held behind the repository variable, dispatching Infra with app + release tag only.
+        self.assertEqual(['tag', 'build-scan-publish'], dev['needs'])
+        self.assertEqual({'RELEASE_VERSION': '${{ needs.tag.outputs.release-version }}', 'DEV_DEPLOY_ENABLED': '${{ vars.DEV_DEPLOY_ENABLED }}',
+                          'INFRA_DISPATCH_TOKEN': '${{ secrets.INFRA_DISPATCH_TOKEN }}'}, dev['env'])
+        self.assertEqual(['python3 tools/release/pipeline_tag.py deploy-request --app ' + self.APP], [s['run'] for s in dev['steps'] if 'run' in s])
+        helper = (self.ROOT / 'tools/release/pipeline_tag.py').read_text()
+        self.assertIn("HOLD = 'DEV deploy held until the first hosted ECR publication is proven (set DEV_DEPLOY_ENABLED=true)'", helper)
+        self.assertIn("'-f', 'app=' + app, '-f', 'release_version=' + release['releaseVersion']", helper)
+        self.assertIn("'--repo', INFRA", helper)
+        # PROD: dummy stage after DEV.
+        self.assertEqual('deploy-dev', prod['needs'])
+        self.assertEqual({}, prod['permissions'])
+        self.assertIn('no PROD environment yet; runs once PROD is configured', prod['steps'][-1]['run'])
+        self.assertNotIn('uses', prod['steps'][-1])
+        # Third-party actions stay the pinned ones the publisher already uses.
+        pinned = {s['uses'] for job in publisher['jobs'].values() for s in job.get('steps', []) if 'uses' in s}
+        self.assertTrue({s['uses'] for job in workflow['jobs'].values() for s in job.get('steps', []) if 'uses' in s} <= pinned)
 
 
 if __name__ == '__main__':
