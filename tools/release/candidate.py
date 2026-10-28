@@ -100,6 +100,15 @@ def readJson(path, limit=MAX_BODY):
     return json.loads(path.read_text(), object_pairs_hook=approval.unique)
 
 
+def publishedDigest(bound):
+    """The manifest digest ECR returned at publish: `registry.bind` records it as `image` = `<repository>@sha256:<hex>`."""
+    image = bound.get('image')
+    if isinstance(image, dict):  # older shape: {'imageDigest': ...}
+        image = image.get('imageDigest', '')
+    digest = str(image or '').rsplit('@', 1)[-1]
+    return digest if re.fullmatch('sha256:[a-f0-9]{64}', digest) else ''
+
+
 def fetch(url, timeout=20):
     """Bounded GET without redirects: status and the first bytes of the body."""
     class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -116,8 +125,8 @@ def verify(env, resultDir, registryPath, url=None, get=None, now=None):
     release = releaseRecord(env)
     tag = release['releaseVersion']
     bound = readJson(registryPath)
-    digest = str(bound.get('image', {}).get('imageDigest', ''))
-    require(re.fullmatch('sha256:[a-f0-9]{64}', digest) and bound.get('revision') == release['sourceSha'],
+    digest = publishedDigest(bound)
+    require(bool(digest) and bound.get('revision') == release['sourceSha'],
             'Publication receipt does not bind this release source to an image digest')
     resultDir = Path(resultDir)
     files = sorted(p for p in resultDir.glob('*.json') if p.is_file() and not p.is_symlink())
@@ -246,7 +255,7 @@ def record(env, paths, now=None):
                 'Receipt ' + name + ' belongs to another release or run')
         result['receipts'][name] = data
     bound = result['receipts'].get('registryImage') or {}
-    result['imageDigest'] = (bound.get('image') or {}).get('imageDigest')
+    result['imageDigest'] = publishedDigest(bound) or None
     decided = result['receipts'].get('decision') or {}
     result['devDecision'] = decided.get('decision')
     return result

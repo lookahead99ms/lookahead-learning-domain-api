@@ -8,10 +8,10 @@ tool derives from the repository or the build file and nobody types.
 
 | Entry | File | What it runs |
 | --- | --- | --- |
-| `01 · Full` | `release.yml` | on every merge to `main`, and by hand: Security gate → Release tag → Build → Approve ECR publish → Publish to ECR → Plan DEV deploy → Approve DEV deploy → Deploy to DEV → Verify DEV app → Keep DEV or roll back → (Keep DEV: cut over, or Roll back DEV) → Deploy to PROD (shown, skipped until PROD is set up) → Record release |
-| `02 · Build` | `build.yml` | `release.yml` with `action: build`: cut the next tag at the main head (or use the given tag) and build; no approval, no credentials |
-| `03 · Publish` | `publish.yml` | `release.yml` with `action: publish` for an existing tag: build, scan, owner approval, publish without rebuilding in between |
-| `04 · Deploy DEV` | `deploy-dev.yml` | `release.yml` with `action: deploy-dev` for an existing published tag: plan, owner approval, deploy of the inactive DEV slot, verification, keep or roll back |
+| `01 · Full` | `release.yml` | on every merge to `main`, and by hand with no inputs (the same as a merge, from the main head): Security gate → Release tag → Build → Approve ECR publish → Publish to ECR → Plan DEV deploy → Approve DEV deploy → Deploy to DEV → Verify DEV app → Keep DEV or roll back → (Keep DEV: cut over, or Roll back DEV) → Deploy to PROD (shown, skipped until PROD is set up) → Record release |
+| `02 · Build` | `build.yml` | `release.yml` with `action: build`: cut the next tag at the main head and build; no approval, no credentials |
+| `03 · Publish` | `publish.yml` | `release.yml` with `action: publish`: cut the next tag at the main head, build, scan, owner approval, publish to ECR; stops before DEV |
+| `04 · Deploy DEV` | `deploy-dev.yml` | `release.yml` with `action: deploy-dev` for a tag already in ECR (the only entry that takes a version): plan, owner approval, deploy of the inactive DEV slot, verification, keep or roll back |
 
 `release.yml` is also what the three entries call through `workflow_call` (`secrets: inherit`), so
 the run keeps the caller's path; `owner_approval.PUBLISHERS` registers `release.yml` and
@@ -22,12 +22,12 @@ the application is built from the commit the release tag resolves to (`sourceSha
 ## Stages of `01 · Full`
 
 1. **Security gate** (`validate`): the release tooling's own tests with at least 85 percent coverage.
-2. **Release tag** (`release`): on `full`, and on `build` without a tag, `pipeline_tag.py cut` creates
+2. **Release tag** (`release`): on `full`, `build` and `publish`, `pipeline_tag.py cut` creates
    the next UTC calendar tag `vYYYY.MM.DD.HH.NN` at the run commit through the GitHub API
    (`contents: write` in this job only; an existing tag naming the commit is reused, a name another
    run claimed fails, nothing is ever moved). Every path then runs `release_version.py resolve`
    once and freezes `{selector, sourceSha, tagObjectSha, mainSha, workflowSha, repository, runId}`
-   as `release-source.json` (artifact `release-source`). `publish` and `deploy-dev` require a tag.
+   as `release-source.json` (artifact `release-source`). Only `deploy-dev` takes a tag, and it must already be published.
 3. **Build** (`build`): `ci.yml` through `workflow_call` with `source-sha` = S and image export:
    every CI gate unchanged, the image built with `SOURCE_REVISION=S`, and the scanned archive
    retained as `release-image-<S>` with a `lookahead-scanned-image/v3` receipt that records S and M.

@@ -15,7 +15,7 @@ APP = 'web' if (ROOT / 'package.json').exists() else 'gateway-bff' if (ROOT / 'b
 A = "(inputs.action || 'full')"
 STAGES = ['validate', 'release', 'build', 'approve', 'publish', 'plan-dev', 'approve-deploy', 'deploy-dev', 'verify-dev', 'decide-dev', 'keep-dev', 'rollback-dev', 'deploy-prod', 'record']
 NAMES = {'validate': 'Security gate', 'release': 'Release tag', 'build': 'Build', 'approve': 'Approve ECR publish', 'publish': 'Publish to ECR', 'plan-dev': 'Plan DEV deploy', 'approve-deploy': 'Approve DEV deploy', 'deploy-dev': 'Deploy to DEV', 'verify-dev': 'Verify DEV app', 'decide-dev': 'Keep DEV or roll back', 'keep-dev': 'Keep DEV: cut over', 'rollback-dev': 'Roll back DEV', 'deploy-prod': 'Deploy to PROD (not set up)', 'record': 'Record release'}
-ENTRIES = {'build.yml': ('02 · Build', 'build', False), 'publish.yml': ('03 · Publish', 'publish', True), 'deploy-dev.yml': ('04 · Deploy DEV', 'deploy-dev', True)}
+ENTRIES = {'build.yml': ('02 · Build', 'build', None), 'publish.yml': ('03 · Publish', 'publish', None), 'deploy-dev.yml': ('04 · Deploy DEV', 'deploy-dev', True)}
 PINNED = {'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
           'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333', 'actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97',
           'aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd'}
@@ -44,12 +44,13 @@ class StandardShapeTests(unittest.TestCase):
         self.assertEqual('${{ github.workflow }} | ${{ inputs.release_version || github.ref_name }} | ${{ github.event_name }} | #${{ github.run_number }}', full['run-name'])
         self.assertEqual({'push', 'workflow_dispatch', 'workflow_call'}, set(full['on']))
         self.assertEqual({'branches': ['main']}, full['on']['push'])
-        dispatch, call = full['on']['workflow_dispatch']['inputs'], full['on']['workflow_call']['inputs']
-        self.assertEqual(['action', 'release_version'], list(dispatch)); self.assertEqual(['action', 'release_version'], list(call))
-        self.assertEqual(('choice', ['full', 'build', 'publish', 'deploy-dev'], 'full'), (dispatch['action']['type'], dispatch['action']['options'], dispatch['action']['default']))
-        self.assertEqual(('string', True), (call['action']['type'], call['action']['required']))  # choice is dispatch-only on GitHub
-        for spec in (dispatch['release_version'], call['release_version']):
-            self.assertEqual(('string', False, ''), (spec['type'], spec['required'], spec['default']))
+        # A manual Full takes no inputs: it does what a merge does, from the main head (user decision 2026-10-28). The
+        # numbered entries pass `action` through workflow_call; only deploy-dev carries a version.
+        self.assertEqual({}, full['on']['workflow_dispatch'])
+        call = full['on']['workflow_call']['inputs']
+        self.assertEqual(['action', 'release_version'], list(call))
+        self.assertEqual(('string', True), (call['action']['type'], call['action']['required']))
+        self.assertEqual(('string', False, ''), (call['release_version']['type'], call['release_version']['required'], call['release_version']['default']))
         for name, spec in call.items():  # a required workflow_call input with a default makes the whole file invalid
             self.assertFalse(spec.get('required') and 'default' in spec, name)
         self.assertEqual({'contents': 'read'}, full['permissions'])
@@ -60,16 +61,19 @@ class StandardShapeTests(unittest.TestCase):
             entry = load(file)
             self.assertEqual(title, entry['name'])
             self.assertEqual(['workflow_dispatch'], list(entry['on']))
-            spec = entry['on']['workflow_dispatch']['inputs']['release_version']
-            self.assertEqual(required, spec['required']); self.assertEqual('string', spec['type'])
             job = entry['jobs']['release']
             self.assertEqual(['release'], list(entry['jobs']))
             self.assertEqual('./.github/workflows/release.yml', job['uses'])
-            self.assertEqual({'action': action, 'release_version': '${{ inputs.release_version }}'}, job['with'])
+            if required is None:  # Build and Publish cut the next tag at the main head; no version to type
+                self.assertEqual({}, entry['on']['workflow_dispatch'])
+                self.assertEqual({'action': action}, job['with'])
+            else:
+                spec = entry['on']['workflow_dispatch']['inputs']['release_version']
+                self.assertEqual((True, 'string'), (spec['required'], spec['type']))
+                self.assertEqual({'action': action, 'release_version': '${{ inputs.release_version }}'}, job['with'])
             self.assertEqual('inherit', job['secrets'])
             for key, value in {'contents': 'write', 'actions': 'read', 'issues': 'write', 'pull-requests': 'read', 'id-token': 'write'}.items():
                 self.assertEqual(value, entry['permissions'][key], file + ' ' + key)
-            self.assertIn('${{ inputs.release_version', entry['run-name'])
         self.assertFalse((ROOT / '.github/workflows/pipeline.yml').exists())
         self.assertFalse((ROOT / '.github/workflows/release-image.yml').exists())
 
@@ -108,10 +112,10 @@ class StageContractTests(unittest.TestCase):
         self.assertEqual({'release-version': '${{ steps.source.outputs.release_version }}', 'source-sha': '${{ steps.source.outputs.source_sha }}'}, release['outputs'])
         steps = {s['name']: s for s in release['steps'] if 'name' in s}
         self.assertEqual('test "$GITHUB_REF" = refs/heads/main', steps['Refuse any run that is not on main']['run'])
-        need = steps['Require an existing release tag for publish and deploy-dev']
-        self.assertEqual(A + " == 'publish' || " + A + " == 'deploy-dev'", need['if']); self.assertEqual('test -n "$RELEASE_VERSION"', need['run'])
+        need = steps['Require an existing published release tag for deploy-dev']
+        self.assertEqual(A + " == 'deploy-dev'", need['if']); self.assertEqual('test -n "$RELEASE_VERSION"', need['run'])
         cut = steps['Cut the next release tag at the run commit, or reuse the one that already names it']
-        self.assertEqual(('cut', A + " == 'full' || (" + A + " == 'build' && inputs.release_version == '')"), (cut['id'], cut['if']))
+        self.assertEqual(('cut', A + " != 'deploy-dev'"), (cut['id'], cut['if']))
         self.assertEqual('python3 tools/release/pipeline_tag.py cut --app ' + APP + ' --record "$RUNNER_TEMP/release-tag.json"', cut['run'])
         source = steps['Resolve the release tag once and freeze its main commit']
         self.assertEqual('source', source['id'])

@@ -1,16 +1,8 @@
 {
   "name": "03 · Publish",
-  "run-name": "${{ github.workflow }} | ${{ inputs.release_version }} | ${{ github.event_name }} | #${{ github.run_number }}",
+  "run-name": "${{ github.workflow }} | ${{ github.ref_name }} | ${{ github.event_name }} | #${{ github.run_number }}",
   "on": {
-    "workflow_dispatch": {
-      "inputs": {
-        "release_version": {
-          "description": "Existing release tag vyyyy.mm.dd.hh.nn at a main commit: built, scanned, owner-approved and published without rebuilding between approval and upload",
-          "type": "string",
-          "required": true
-        }
-      }
-    }
+    "workflow_dispatch": {}
   },
   "permissions": {
     "contents": "write",
@@ -23,8 +15,7 @@
     "release": {
       "uses": "./.github/workflows/release.yml",
       "with": {
-        "action": "publish",
-        "release_version": "${{ inputs.release_version }}"
+        "action": "publish"
       },
       "secrets": "inherit"
     }

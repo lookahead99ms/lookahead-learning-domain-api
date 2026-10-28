@@ -22,7 +22,8 @@ class Fixture:
         self.github = Github(REPO)
         self.env = dict(self.github.env)
         self.registry = self.temp / 'registry-image.json'
-        self.registry.write_text(json.dumps({'revision': 'a' * 40, 'image': {'imageDigest': DIGEST, 'imageTag': APP + '-v2026.10.26.20.00'}}))
+        # The real receipt (`registry.bind`, run #2 of 2026-10-28): `image` is the string `<repository>@<digest>`, not an object.
+        self.registry.write_text(json.dumps({'revision': 'a' * 40, 'image': '509614632283.dkr.ecr.us-east-2.amazonaws.com/lookahead-dev-ecr@' + DIGEST, 'imageId': 'sha256:' + '2' * 64, 'imageTag': APP + '-v2026.10.26.20.00'}))
         self.result = self.temp / 'app-result'; self.result.mkdir()
         (self.result / 'candidate.json').write_text(json.dumps({'releaseVersion': 'v2026.10.26.20.00', 'running': {'imageDigest': DIGEST}, 'healthy': True}))
 
@@ -59,7 +60,7 @@ class CandidateTests(unittest.TestCase):
                 if mode == 'tag': (g.result / 'candidate.json').write_text(json.dumps({'releaseVersion': 'v2026.10.26.21.00', 'imageDigest': DIGEST}))
                 if mode == 'digest': (g.result / 'candidate.json').write_text(json.dumps({'releaseVersion': 'v2026.10.26.20.00'}))
                 if mode == 'empty': (g.result / 'candidate.json').unlink()
-                if mode == 'bind': g.registry.write_text(json.dumps({'revision': '9' * 40, 'image': {'imageDigest': DIGEST}}))
+                if mode == 'bind': g.registry.write_text(json.dumps({'revision': '9' * 40, 'image': 'r@' + DIGEST}))
                 if mode == 'http': url = 'http://dev.example.test/release'
                 if mode == 'status': url, get = 'https://dev.example.test/x', lambda u: (503, 'down')
                 if mode == 'body': url, get = 'https://dev.example.test/x', lambda u: (200, 'v2026.10.26.21.00')
@@ -98,6 +99,12 @@ class CandidateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'expired'): m.decision('dev', plan, verification, receipt, f.env, f.github.get, f.github.now + timedelta(minutes=41))
             f.github.data['issues/3']['body'] += ' edited'
             with self.assertRaisesRegex(ValueError, 'issue changed'): m.decision('dev', plan, verification, receipt, f.env, f.github.get, f.github.now)
+
+    def test_published_digest_reads_the_registry_receipt_shape(self):
+        self.assertEqual(DIGEST, m.publishedDigest({'image': 'repo@' + DIGEST}))
+        self.assertEqual(DIGEST, m.publishedDigest({'image': {'imageDigest': DIGEST}}))
+        for bad in ({}, {'image': 'repo'}, {'image': 'repo@sha256:short'}, {'image': None}):
+            self.assertEqual('', m.publishedDigest(bad))
 
     def test_record_collects_receipts_of_this_run_and_marks_absent_ones(self):
         with tempfile.TemporaryDirectory() as temp:
