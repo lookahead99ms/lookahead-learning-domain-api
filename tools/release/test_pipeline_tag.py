@@ -1,4 +1,4 @@
-"""Merge-driven tag cutting and the held DEV deploy request, with a fake `gh`; no network."""
+"""`01 · Full` tag cutting with a fake `gh`; no network."""
 from datetime import datetime, timezone
 import json
 import os
@@ -31,7 +31,7 @@ class FakeGithub:
             ref = next(a for a in args if a.startswith('ref=')).split('=', 1)[1][len('refs/tags/'):]
             sha = next(a for a in args if a.startswith('sha=')).split('=', 1)[1]
             if ref in self.tags or self.refuseCreate:
-                raise ValueError('GitHub request failed; no tag or deploy request was recorded')
+                raise ValueError('GitHub request failed; no tag was recorded')
             self.tags[ref] = ('commit', sha)
             return '{}'
         if '/git/ref/tags/' in path:
@@ -115,28 +115,6 @@ class CutTests(unittest.TestCase):
 
 
 class DeployRequestTests(unittest.TestCase):
-    def test_held_until_enabled_then_dispatches_infra_deploy_with_app_and_tag_only(self):
-        env = {'RELEASE_VERSION': 'v2026.10.27.14.01', 'DEV_DEPLOY_ENABLED': 'false', 'INFRA_DISPATCH_TOKEN': 'synthetic'}
-        run = Mock()
-        with patch('builtins.print') as shown:
-            self.assertFalse(m.deployRequest('web', env, run)['requested'])
-        shown.assert_called_once_with(m.HOLD, flush=True)
-        self.assertIn('DEV_DEPLOY_ENABLED=true', m.HOLD)
-        run.assert_not_called()
-        with self.assertRaisesRegex(ValueError, 'INFRA_DISPATCH_TOKEN'):
-            m.deployRequest('web', {**env, 'DEV_DEPLOY_ENABLED': 'true', 'INFRA_DISPATCH_TOKEN': ''}, run)
-        run.assert_not_called()
-        with patch('builtins.print'):
-            self.assertTrue(m.deployRequest('web', {**env, 'DEV_DEPLOY_ENABLED': 'true'}, run)['requested'])
-        args, kwargs = run.call_args
-        self.assertEqual(args[0], ['workflow', 'run', 'application-deploy.yml', '--repo', m.INFRA, '--ref', 'main',
-                                   '-f', 'app=web', '-f', 'release_version=v2026.10.27.14.01'])
-        self.assertEqual(kwargs['env']['GH_TOKEN'], 'synthetic')
-        with self.assertRaises(ValueError):
-            m.deployRequest('web', {**env, 'RELEASE_VERSION': SHA}, run)
-        with patch.object(m, 'gh', run), patch('builtins.print'):
-            self.assertTrue(m.main(['deploy-request', '--app', 'web'], {**env, 'DEV_DEPLOY_ENABLED': 'true'})['requested'])
-
     def test_gh_transport_is_bounded_and_fails_closed(self):
         with patch.object(m.subprocess, 'run', return_value=Mock(returncode=0, stdout='ok')) as call:
             self.assertEqual(m.gh(['api', 'x']), 'ok')

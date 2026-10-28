@@ -1,0 +1,32 @@
+{
+  "name": "04 · Deploy DEV",
+  "run-name": "${{ github.workflow }} | ${{ inputs.release_version }} | ${{ github.event_name }} | #${{ github.run_number }}",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "release_version": {
+          "description": "Existing published release tag vyyyy.mm.dd.hh.nn: plan, owner approval, deploy of the inactive DEV slot, verification, then keep or roll back",
+          "type": "string",
+          "required": true
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "write",
+    "actions": "read",
+    "issues": "write",
+    "pull-requests": "read",
+    "id-token": "write"
+  },
+  "jobs": {
+    "release": {
+      "uses": "./.github/workflows/release.yml",
+      "with": {
+        "action": "deploy-dev",
+        "release_version": "${{ inputs.release_version }}"
+      },
+      "secrets": "inherit"
+    }
+  }
+}

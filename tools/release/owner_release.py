@@ -1,4 +1,4 @@
-"""Domain owner approval and single-attempt publication of the same-run tested archive."""
+"""Owner approval and single-attempt publication of the same-run tested image; identical in Domain, Web and Gateway/BFF."""
 import argparse
 import json
 import os
@@ -14,8 +14,7 @@ REPOSITORY = '509614632283.dkr.ecr.us-east-2.amazonaws.com/lookahead-dev-ecr'
 
 def gate(env, get=approval.api):
     identity = approval.provenance(env, get)
-    approval.require(identity['repository'] == 'lookahead99ms/lookahead-learning-domain-api'
-                     and env.get('ECR_REPOSITORY') == REPOSITORY, 'Exact Domain publisher and ECR target required')
+    approval.require(env.get('ECR_REPOSITORY') == REPOSITORY, 'Exact shared DEV ECR target required')
     return identity
 
 
@@ -62,7 +61,7 @@ def publish(directory, receiptPath, env, loaded, get=approval.api, provider=aws,
     approval.require(provider('sts', 'get-caller-identity').get('Account') == approval.ACCOUNT, 'Wrong AWS account')
     repos = provider('ecr', 'describe-repositories', '--repository-names', 'lookahead-dev-ecr').get('repositories', [])
     approval.require(len(repos) == 1 and repos[0].get('repositoryUri') == REPOSITORY
-                     and repos[0].get('imageTagMutability') == 'IMMUTABLE', 'Exact immutable Domain repository required')
+                     and repos[0].get('imageTagMutability') == 'IMMUTABLE', 'Exact immutable shared repository required')
     readArgs = ('ecr', 'batch-get-image', '--repository-name', 'lookahead-dev-ecr',
                 '--image-ids', 'imageTag=' + selected['imageTag'])
     existing = provider(*readArgs)

@@ -1,126 +1,90 @@
-# Domain image publication
+# Release pipeline of this application
 
-## Merge-driven pipeline (user decision 2026-10-27)
+This directory and the workflows under `.github/workflows/` are identical in the Domain, Web and
+Gateway/BFF repositories apart from the app name (`domain`, `web`, `gateway-bff`), which every
+tool derives from the repository or the build file and nobody types.
 
-`pipeline.yml` runs on every merge to `main` and can also be dispatched by hand from `main`
-(any other ref is refused). Its `tag` job cuts the next calendar tag of this repository's
-sequence at the run commit with `pipeline_tag.py cut` (GitHub API, `contents: write` in that
-job only; an existing tag that already names the commit is reused, a name claimed by another
-run fails, nothing is ever moved). The `build-scan-publish` job then calls `release-image.yml`
-through `workflow_call` with that tag, so merge runs and manual reruns by tag share one
-implementation, the same scans and the same owner approval issue. `deploy-dev` is held
-(`DEV_DEPLOY_ENABLED` repository variable) until the first hosted ECR publication is proven;
-once enabled it dispatches Infra `application-deploy.yml` with `app` and `release_version`
-using the `INFRA_DISPATCH_TOKEN` secret, and Infra's own approval decides the deploy.
-`deploy-prod` is a dummy stage. `owner_approval.provenance` accepts a merge `push` or a
-`workflow_dispatch` by the owner from `main`; a dispatched run must be the exact main head,
-a merge run's commit must still be on `main` when re-checked (later merges queue, they do
-not void an approval in progress). The caller path `.github/workflows/pipeline.yml` is a
-registered publisher workflow for this repository.
+## Numbered entries (platform standard, as in Content and Infra)
 
-## Manual publisher by tag
+| Entry | File | What it runs |
+| --- | --- | --- |
+| `01 · Full` | `release.yml` | on every merge to `main`, and by hand: Security gate → Release tag → Build → Approve publication → Publish → Deploy DEV → Verify DEV → Keep or roll back DEV → (Keep DEV or Roll back DEV) → `05 · Deploy PROD` (shown, skipped until PROD exists) → Record the release |
+| `02 · Build` | `build.yml` | `release.yml` with `action: build`: cut the next tag at the main head (or use the given tag) and build; no approval, no credentials |
+| `03 · Publish` | `publish.yml` | `release.yml` with `action: publish` for an existing tag: build, scan, owner approval, publish without rebuilding in between |
+| `04 · Deploy DEV` | `deploy-dev.yml` | `release.yml` with `action: deploy-dev` for an existing published tag: plan, owner approval, deploy of the inactive DEV slot, verification, keep or roll back |
 
-The manual `release-image.yml` workflow takes one source selector: an existing UTC
-calendar release tag `vYYYY.MM.DD.HH.NN`. Nobody types a commit. The workflow file
-and the trusted tooling under `tools/release/` always run from `main` (the executed
-workflow commit, `workflowSha`, M). The application is built from the commit the tag
-resolves to (`sourceSha`, S). The run has three jobs:
+`release.yml` is also what the three entries call through `workflow_call` (`secrets: inherit`), so
+the run keeps the caller's path; `owner_approval.PUBLISHERS` registers `release.yml` and
+`publish.yml` as this repository's publisher paths. Every run refuses any ref but `main`, runs
+first-attempt only, and the tooling always executes from the main commit (`workflowSha`, M) while
+the application is built from the commit the release tag resolves to (`sourceSha`, S).
 
-1. `resolve` runs `release_version.py resolve` once: it peels the tag to exactly one
-   commit, requires that commit to be an ancestor of (or equal to) the observed `main`
-   head, and freezes `{selector, sourceSha, tagObjectSha, mainSha, workflowSha, repository,
-   runId}` as `release-source.json` (artifact `release-source`, 21 days). A missing,
-   malformed, off-main or ambiguous tag fails here, before any build.
-2. `verify` reuses `ci.yml` with `source-sha` = S: CI checks out S, runs every gate
-   unchanged, builds with `SOURCE_REVISION=S` (OCI `org.opencontainers.image.revision`),
-   and exports the scanned archive as `release-image-<S>` with a
-   `lookahead-scanned-image/v3` receipt that records both `revision` (S) and
-   `workflowSha` (M, the `ci.yml` actually executed, hashed from M).
-3. `publish` checks out the tooling at M, restores the frozen record, checks out S into
-   `release-source/` for verification only, and runs `owner_release.py` with
-   `--source-root release-source`. `owner_approval.provenance` re-resolves the tag from
-   the frozen record (same commit, same tag object, still on `main`); the plan requires
-   the archive's `revision` == S and `workflowSha` == M. `release_version.py recheck`
-   runs again immediately before the upload credentials. The image is imported without
-   rebuilding and verified against the clean S checkout, its Dockerfile and M's `ci.yml`.
+## Stages of `01 · Full`
 
-The approval issue, `owner-plan.json`, `publication-outcome.json` and
-`registry-image.json` (`lookahead-registry-image/v3`) all carry both commits.
-The exact target is `lookahead-dev-ecr` with a `domain-<release-version>` tag in account `509614632283`, us-east-2.
-Its repository must already exist with immutable tags; the workflow creates none.
+1. **Security gate** (`validate`): the release tooling's own tests with at least 85 percent coverage.
+2. **Release tag** (`release`): on `full`, and on `build` without a tag, `pipeline_tag.py cut` creates
+   the next UTC calendar tag `vYYYY.MM.DD.HH.NN` at the run commit through the GitHub API
+   (`contents: write` in this job only; an existing tag naming the commit is reused, a name another
+   run claimed fails, nothing is ever moved). Every path then runs `release_version.py resolve`
+   once and freezes `{selector, sourceSha, tagObjectSha, mainSha, workflowSha, repository, runId}`
+   as `release-source.json` (artifact `release-source`). `publish` and `deploy-dev` require a tag.
+3. **Build** (`build`): `ci.yml` through `workflow_call` with `source-sha` = S and image export:
+   every CI gate unchanged, the image built with `SOURCE_REVISION=S`, and the scanned archive
+   retained as `release-image-<S>` with a `lookahead-scanned-image/v3` receipt that records S and M.
+4. **Approve publication** (`approve`): no credentials, no environment. `owner_release.py gate`
+   re-resolves the tag from the frozen record and `owner_release.py approve` opens the owner issue
+   (gist first, then tables) bound to the exact image: `APPROVE IMAGE <digest>` within 40 minutes,
+   `REJECT` stops; edited comments, a moved tag or main, or a changed issue fail closed.
+5. **Publish** (`publish`, environment `dev`): rechecks the live approval and the tag before OIDC,
+   imports the scanned image without rebuilding, assumes the publisher role for one 15-minute
+   ECR-only session, pushes once to the immutable `lookahead-dev-ecr` tag `<app>-<release>`, reads
+   the digest back and retains `registry-image-<S>` and `image-publication-outcome`.
+6. **Deploy DEV** (`deploy-dev`, environment `dev`, held until the repository variable
+   `DEV_DEPLOY_ENABLED` is `true`): one run, never a dispatch of another repository. `candidate.py
+   infra` selects Infra's newest calendar tag; Infra tooling is checked out at that commit with the
+   `CROSS_REPO_READ_TOKEN` secret and runs its own deploy chain (`application_workflow config`,
+   `application_inputs`, `plan`, `application_approval approve` with a second owner issue, `verify`,
+   `execute`) against the reviewed config in `DEV_DEPLOYMENT_CONFIG_JSON`. The candidate result
+   and the deployment inputs are retained.
+7. **Verify DEV** (`verify-dev`): `candidate.py verify` proves the Infra result names this tag and
+   the digest ECR returned at publish; with `DEV_VERIFY_URL` set, the live candidate must answer
+   200 and name the tag. A failed verification rolls back without a question.
+8. **Keep or roll back DEV** (`decide-dev`): a third owner issue bound to this run:
+   `APPROVE KEEP DEV <digest>` keeps and proceeds, `APPROVE ROLLBACK DEV <digest>` restores the
+   previous release, `REJECT` stops with nothing changed; 40-minute window.
+9. **Keep DEV** / **Roll back DEV**: the DEV cutover and rollback tools are Infra-owned and not
+   available yet (`candidate.py cutover` and `rollback` stop with the reason and change nothing).
+10. **05 · Deploy PROD (not configured)**: visible, skipped until `PROD_ENABLED` and a PROD
+    account, cluster and environment exist; it never pretends to deploy.
+11. **Record the release** (`record`): one `release-record-<tag>` artifact per run with the tag,
+    source, image digest, approvals, verification and decision receipts (absent stages recorded as
+    absent).
 
-Rollback is a new tag at an older `main` commit: S is older than M, the build, scan
-and owner approval happen again, and the existing ECR tag is never overwritten. A
-tag that moves between resolve and publish, or a `main` that moves during the run,
-stops the run before credentials. A release tag older than this tooling fails safely:
-its checkout has no `--source-root`/`workflowSha` contract, so `image.py` at M rejects
-the receipt and nothing is uploaded; create a new tag at a commit that includes it.
+Rollback by tag is a new run of `04 · Deploy DEV` (or `03 · Publish`) with an older tag; S is
+older than M, every approval happens again, and the existing ECR tag is never overwritten.
 
-The `dev` environment must allow only the `main` branch using one custom branch
-rule, with no tag rules. Any existing native environment review still happens
-before the job starts. The workflow then creates an issue showing the release tag,
-the image source commit S, the workflow source commit M, merged PR context for S,
-exact image and archive hashes, role, target, run and recovery limits.
-Only the owner may comment `APPROVE IMAGE <digest>` within 40 minutes. `REJECT`,
-edited approvals, moved main, altered issue/plan or missing provenance block upload.
-This is workflow-enforced owner approval, not an independent reviewer control.
+## Settings the repository needs
 
-The approved publisher role is assumed only after a fresh approval check, with a
-15-minute session policy restricted to the exact Domain repository. The uploader
-rechecks live approval before push, rejects an existing or uncertain app-prefixed calendar tag,
-verifies the loaded image configuration, records intent, pushes once and binds
-the ECR manifest/configuration to the tested archive. It does not run SQL or deploy.
+Environment `dev` allowing exactly the `main` branch, with required reviewers. Repository
+variables: `DEV_PUBLISH_ROLE_ARN` (optional override of `lookahead-dev-deploy`),
+`DEV_DEPLOY_ENABLED`, `DEV_DEPLOYMENT_CONFIG_JSON`, `DEV_VERIFY_URL`, later `PROD_ENABLED`.
+Secret `CROSS_REPO_READ_TOKEN` (read-only on Infra) for the DEV deploy stage. Actions allow-list:
+GitHub-owned plus the pinned `aws-actions/configure-aws-credentials`. Issues enabled.
 
-After a timeout or failed readback/artifact upload, retain `image-publication-outcome`
-and inspect the exact tag before any new run. ECR may have accepted an upload even
-when the job failed. Never automatically retry, overwrite, delete or rebuild.
-A failed overall run is not a trusted publication for downstream database jobs.
+## Shared copies and local checks
 
-The portable `owner_approval.py` is maintained from Infra's
-`github/approvals/image_publication.py`; keep both copies and paired tests identical.
-No private Infra checkout is required by this public repository. The older
-`registry.validateApproval` function remains available for existing callers;
-this workflow uses the explicit owner flow rather than silently weakening that
-independent-review helper. `registry.bind` remains the remote identity verifier.
-
-CI uses Python 3.14 and a hash-locked coverage dependency. Local checks:
+`release_version.py`, `issue_template.py` and `owner_approval.py` are byte-identical copies of
+Infra's `github/releases/release_version.py`, `github/approvals/issue_template.py` and
+`github/approvals/image_publication.py`; `owner_release.py`, `candidate.py`, `pipeline_tag.py`
+and every test are identical across the three app repositories. Update all copies together.
 
 ```sh
 python3 -m unittest discover -s tools/release -p 'test_*.py'
 python3 -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'
-python3 -m coverage report --include='*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/release_version.py,*/image.py,*/registry.py' --fail-under=85
+python3 -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py' --fail-under=85
+actionlint .github/workflows/*.yml
 ```
 
-`tools/release/release_version.py` is a byte-identical copy of Infra's
-`github/releases/release_version.py` (Web and Gateway carry the same copy). Keep all
-four and `test_release_version.py` identical apart from the import line.
-
-Tests simulate GitHub/AWS/Docker boundaries and verify rejection and upload
-ambiguity. They do not certify live IAM, ECR publication or application deployment.
-
-## Shared approval page
-
-Image approval uses the common seven sections: Decision summary; What changes;
-Validation and source; Risks and recovery; Owner, run and deadlines; Approve or
-reject; Technical evidence. Native headings, separators, vertical resource details
-and expandable evidence use GitHub's own responsive theme. The exact command is
-alone in its copyable block.
-
-`issue_template.py` is a byte-identical copy of Infra's
-`github/approvals/issue_template.py`. Update Infra, Domain and Content copies and
-pinned presentation tests together. Presentation does not change commands,
-digests, owner/provenance/expiry checks or authorize editing an active issue.
-
-
-Approval receipt creation and expiry use whole-second UTC precision to match
-GitHub issue/comment timestamps. The runner may otherwise record fractions of a
-second and incorrectly reject a newly created issue from that same second as older
-than the receipt. Precision is aligned before rendering; the 40-minute lifetime
-is not extended, and exact body, owner, source, tag, run and expiry checks remain.
-An issue creation time outside the review window has its own diagnostic.
-
-A run that fails at this approval check has not reached AWS credentials or upload.
-Preserve its evidence; merge the corrected publisher to `main`, create a new release
-tag at the `main` commit you want built, and start a fresh manual run with that tag.
-Do not edit the old issue, move a tag to a different commit, reuse an approval or use
-GitHub Re-run.
+Tests simulate the GitHub, AWS and Docker boundaries; they do not certify a hosted run. A hosted
+run counts only with its receipts: the release-tag record, the registry readback, the candidate
+result and the release record.

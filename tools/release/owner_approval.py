@@ -1,4 +1,4 @@
-"""Bounded owner approval for one tested image; portable copy in Domain tools/release.
+"""Bounded owner approval for one tested image; identical copy in the Domain, Web and Gateway/BFF repositories.
 
 This is workflow-code enforcement, not an independent reviewer. Never calls AWS.
 """
@@ -15,11 +15,15 @@ import time
 OWNER = 'lookahead99ms'
 ACCOUNT = '509614632283'
 REGION = 'us-east-2'
-# Publisher workflows per repository: the manual publisher and, for apps, the merge-driven pipeline that
-# calls it (`workflow_call` keeps GITHUB_WORKFLOW_REF and the run `path` on the caller, pipeline.yml).
+# Publisher workflows per repository. Infra: the manual `08 · Database Job Images` and `00 · Infra Pipeline` that calls it.
+# Apps: one numbered pipeline (`01 · Full`, release.yml) on merge push or dispatch, and `03 · Publish` (publish.yml) that
+# calls it. `workflow_call` keeps GITHUB_WORKFLOW_REF and the run `path` on the caller. The app is derived, never typed.
+APP_PIPELINE = ('.github/workflows/release.yml', '.github/workflows/publish.yml')
 PUBLISHERS = {
-    'lookahead99ms/lookahead-learning-infra': (('.github/workflows/database-job-images.yml',), 'initializer'),
-    'lookahead99ms/lookahead-learning-domain-api': (('.github/workflows/release-image.yml', '.github/workflows/pipeline.yml'), 'domain'),
+    'lookahead99ms/lookahead-learning-infra': (('.github/workflows/database-job-images.yml', '.github/workflows/infra-pipeline.yml'), 'initializer'),
+    'lookahead99ms/lookahead-learning-domain-api': (APP_PIPELINE, 'domain'),
+    'lookahead99ms/lookahead-learning-web': (APP_PIPELINE, 'web'),
+    'lookahead99ms/lookahead-learning-gateway-bff': (APP_PIPELINE, 'gateway-bff'),
 }
 
 
@@ -177,9 +181,11 @@ def body(plan, receipt):
     fields = ('target', 'releaseVersion', 'imageTag', 'sourceSha', 'workflowSha', 'imageId', 'role', 'repository', 'account', 'region')
     shown = [('**' + key + '**', commitLink(plan, plan[key]) if key in ('sourceSha', 'workflowSha') else '`' + issueTemplate.text(plan[key]) + '`')
              for key in fields if key in plan]
+    # A plan opened by the merge-driven pipeline says so first (`pipeline` is the caller note); the gate is unchanged.
+    opened = (issueTemplate.text(plan['pipeline']) + '\n\n') if plan.get('pipeline') else ''
     return issueTemplate.render(
         headline=headline(plan), gist=gist(plan), resources=[],
-        overview='**Publish the verified DEV image**\n\nAuthorize one upload of the tested image shown below. '
+        overview=opened + '**Publish the verified DEV image**\n\nAuthorize one upload of the tested image shown below. '
             'Publishing enables later selection; it does not deploy services, run SQL, install IAM or create repositories. '
             'Without approval, no upload occurs.',
         scope='### Image\n\n' + issueTemplate.table(('Field', 'Value'), shown) + '\n### Merged pull requests for this source\n\n' + pullRequestTable(plan),
