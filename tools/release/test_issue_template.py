@@ -56,6 +56,18 @@ class TemplateTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 template.render(**dict(options, **{field: value}))
 
+    def test_image_approvals_name_the_version_as_ecr_shows_it(self):
+        """User decision 2026-10-28: the comment names the ECR image tag, not the plan digest; the digest stays in the body."""
+        options = self.fixture()
+        headline = {'env': 'DEV', 'action': 'Publish image', 'subject': 'web-v2026.10.28.15.01', 'change': 'numbered pipeline'}
+        body = template.render(**dict(options, command='APPROVE IMAGE web-v2026.10.28.15.01'), headline=headline)
+        self.assertIn('Comment `APPROVE IMAGE <version>` or `REJECT`', body)
+        self.assertIn('```text\nAPPROVE IMAGE web-v2026.10.28.15.01\n```', body)
+        self.assertIn('Comment `APPROVE KEEP <version>` or `REJECT`', template.render(**dict(options, command='APPROVE KEEP DEV gateway-bff-v2026.10.28.15.00'), headline=headline))
+        for bad in ('APPROVE IMAGE web-v2026.10.28', 'APPROVE IMAGE Web-v2026.10.28.15.01', 'APPROVE IMAGE v2026.10.28.15.01', 'APPROVE IMAGE web-v2026.10.28.15.1'):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                template.render(**dict(options, command=bad))
+
     def test_headline_resources_and_validation_render_change_first(self):
         options = self.fixture()
         headline = {'env': 'DEV', 'action': 'Apply', 'subject': 'lookahead-dev-compute', 'change': 'create network load balancer'}
@@ -89,7 +101,7 @@ class TemplateTests(unittest.TestCase):
 
     def test_portable_renderer_matches_reviewed_version(self):
         # An accidental edit in one repository must fail until all reviewed copies are synchronized.
-        expected = 'e923aaed69c1950bfbd9c4929353d9f3b99a72e14bd3b18fd9f8c687f84d078f'
+        expected = '757340d5131532720ce231ef6103f714f37bc069eff9909d41576f2f82cb48a6'
         self.assertEqual(hashlib.sha256(Path(template.__file__).read_bytes()).hexdigest(), expected)
 
 

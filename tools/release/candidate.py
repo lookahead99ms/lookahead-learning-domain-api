@@ -7,7 +7,7 @@ commit. Modes:
   infra      pick the newest Infra calendar release tag (Infra tooling is checked out at that commit, never at main)
   verify     prove the deployed DEV candidate is this release: the Infra candidate result names the tag and the
              published image digest; an optional live URL must answer 200 and name the tag
-  decide     owner issue bound to this run: `APPROVE KEEP DEV <digest>` proceeds, `APPROVE ROLLBACK DEV <digest>`
+  decide     owner issue bound to this run: `APPROVE KEEP DEV <version>` proceeds, `APPROVE ROLLBACK DEV <version>`
              restores the previous release, `REJECT` stops the run with nothing changed; edited comments, expiry
              (40 minutes) and drift fail closed exactly like the publish approval
   cutover    held: the DEV public cutover tool lives in Infra and is not available yet (AWS lane, DLV-914)
@@ -143,8 +143,8 @@ def headline(stage, plan):
 
 
 def commands(stage, plan):
-    """Digest-bound like every approval on this platform (issue_template accepts `APPROVE <WORDS> <sha256>` only)."""
-    bound = ' ' + stage.upper() + ' ' + approval.digest(plan)
+    """Named by the version as ECR shows it (user decision 2026-10-28); the plan digest binds the issue body and the receipt."""
+    bound = ' ' + stage.upper() + ' ' + plan['imageTag']
     return {'KEEP': 'APPROVE KEEP' + bound, 'ROLLBACK': 'APPROVE ROLLBACK' + bound}
 
 

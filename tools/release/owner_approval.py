@@ -178,6 +178,7 @@ def gist(plan):
 
 
 def body(plan, receipt):
+    # The comment names the version as ECR shows it (user decision 2026-10-28); the digest binds the plan in the body and receipt.
     fields = ('target', 'releaseVersion', 'imageTag', 'sourceSha', 'workflowSha', 'imageId', 'role', 'repository', 'account', 'region')
     shown = [('**' + key + '**', commitLink(plan, plan[key]) if key in ('sourceSha', 'workflowSha') else '`' + issueTemplate.text(plan[key]) + '`')
              for key in fields if key in plan]
@@ -199,7 +200,7 @@ def body(plan, receipt):
         repository=plan['repository'], runId=plan['runId'], owner=OWNER, expires=receipt['expiresAt'],
         created=receipt.get('createdAt'),
         permissionDeadline='This approval does not extend IAM permissions; the write session is at most 15 minutes.',
-        command='APPROVE IMAGE ' + digest(plan), payload=plan)
+        command='APPROVE IMAGE ' + plan['imageTag'], payload=plan)
 
 
 def timestamp(value):
@@ -233,7 +234,7 @@ def decision(plan, receipt, env, get=api, now=None):
         if comment.get('created_at') != comment.get('updated_at'):
             continue
         when = timestamp(comment['created_at'])
-        if created <= when <= now and when < expires and command == 'APPROVE IMAGE ' + digest(plan):
+        if created <= when <= now and when < expires and command == 'APPROVE IMAGE ' + plan['imageTag']:
             selected = comment['id']
     return selected
 

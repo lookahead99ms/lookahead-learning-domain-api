@@ -33,7 +33,7 @@ the application is built from the commit the release tag resolves to (`sourceSha
    retained as `release-image-<S>` with a `lookahead-scanned-image/v3` receipt that records S and M.
 4. **Approve publication** (`approve`): no credentials, no environment. `owner_release.py gate`
    re-resolves the tag from the frozen record and `owner_release.py approve` opens the owner issue
-   (gist first, then tables) bound to the exact image: `APPROVE IMAGE <digest>` within 40 minutes,
+   (gist first, then tables) bound to the exact image: `APPROVE IMAGE <version>` (the ECR image tag, for example `web-v2026.10.28.15.01`) within 40 minutes,
    `REJECT` stops; edited comments, a moved tag or main, or a changed issue fail closed.
 5. **Publish** (`publish`, environment `dev`): rechecks the live approval and the tag before OIDC,
    imports the scanned image without rebuilding, assumes the publisher role for one 15-minute
@@ -50,7 +50,7 @@ the application is built from the commit the release tag resolves to (`sourceSha
    the digest ECR returned at publish; with `DEV_VERIFY_URL` set, the live candidate must answer
    200 and name the tag. A failed verification rolls back without a question.
 8. **Keep or roll back DEV** (`decide-dev`): a third owner issue bound to this run:
-   `APPROVE KEEP DEV <digest>` keeps and proceeds, `APPROVE ROLLBACK DEV <digest>` restores the
+   `APPROVE KEEP DEV <version>` keeps and proceeds, `APPROVE ROLLBACK DEV <version>` restores the
    previous release, `REJECT` stops with nothing changed; 40-minute window.
 9. **Keep DEV** / **Roll back DEV**: the DEV cutover and rollback tools are Infra-owned and not
    available yet (`candidate.py cutover` and `rollback` stop with the reason and change nothing).
