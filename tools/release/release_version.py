@@ -3,6 +3,10 @@
 Source is selected by an existing release tag. The tag is resolved once per run to its exact
 commit, that commit must be an ancestor of main, and the frozen record is re-checked before any
 credential or upload step. The commit is derived and recorded; it is never an operator input.
+
+Runs are accepted from main only, as a merge push (`push`, the merge-driven pipeline) or a manual
+`workflow_dispatch`. A dispatched run must execute the current main head; a merge push executes its
+merge commit, which must still be on main when checked (later merges queue, they do not void it).
 """
 import argparse
 from datetime import datetime, timezone
@@ -19,6 +23,8 @@ APPS = ('domain', 'web', 'gateway-bff', 'initializer', 'content')
 PATTERN = r'v\d{4}\.\d{2}\.\d{2}\.\d{2}\.(?:\d{2}|[1-9]\d{2,})'
 FIELDS = {'app', 'releaseVersion', 'buildVersion', 'imageTag'}
 REPOSITORY = '509614632283.dkr.ecr.us-east-2.amazonaws.com/lookahead-dev-ecr'
+# Accepted run events on main (user decision 2026-10-27: merge-driven pipeline plus manual dispatch).
+EVENTS = ('push', 'workflow_dispatch')
 
 
 def calendar(version):
@@ -95,6 +101,19 @@ def onMain(commit, mainSha, get):
         raise ValueError('Release tag commit must be on main')
 
 
+def mainBinding(event, workflowSha, mainSha, get):
+    """Bind the executed workflow commit to main. A dispatch runs the exact head; a merge push runs its merge
+    commit, which must be an ancestor of (or equal to) the head observed now. Returns the observed head."""
+    if event not in EVENTS or not re.fullmatch('[a-f0-9]{40}', str(workflowSha)):
+        raise ValueError('Main release run required (merge push or manual dispatch)')
+    if event == 'workflow_dispatch':
+        if mainSha != workflowSha:
+            raise ValueError('Main moved; review a new run')
+    else:
+        onMain(workflowSha, mainSha, get)
+    return mainSha
+
+
 def resolve(version, get, mainSha, app=None):
     """Resolve a release tag once: exact commit, tag object and observed main. Never moves a tag."""
     result = metadata(app, version) if app else {'releaseVersion': calendar(version)}
@@ -153,8 +172,9 @@ def main(argv=None):
     def get(path):
         raw = subprocess.check_output(['gh', 'api', 'repos/' + os.environ['GITHUB_REPOSITORY'] + '/' + path], text=True, timeout=30)
         return json.loads(raw)
-    if os.environ.get('GITHUB_REF') != 'refs/heads/main' or os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch':
-        raise ValueError('Manual main release required')
+    event = os.environ.get('GITHUB_EVENT_NAME')
+    if os.environ.get('GITHUB_REF') != 'refs/heads/main' or event not in EVENTS:
+        raise ValueError('Main release run required (merge push or manual dispatch)')
     if os.environ.get('ECR_REPOSITORY', REPOSITORY) != REPOSITORY:
         raise ValueError('Exact shared DEV repository required')
     if args.mode == 'check':
@@ -165,9 +185,7 @@ def main(argv=None):
     if not args.record:
         raise ValueError('--record path required')
     workflowSha = os.environ['GITHUB_SHA']
-    mainSha = get('commits/main').get('sha', '')
-    if mainSha != workflowSha:
-        raise ValueError('Main moved; review a new run')
+    mainSha = mainBinding(event, workflowSha, get('commits/main').get('sha', ''), get)
     if args.mode == 'resolve':
         if os.path.exists(args.record):
             raise ValueError('Release-source record already exists; use a new run')

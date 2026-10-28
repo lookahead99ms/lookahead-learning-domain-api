@@ -21,6 +21,26 @@
           "required": true
         }
       }
+    },
+    "workflow_call": {
+      "inputs": {
+        "role-arn": {
+          "description": "Reviewed scoped DEV OIDC publisher role ARN",
+          "required": true,
+          "type": "string"
+        },
+        "ecr-repository": {
+          "description": "Exact DEV ECR registry/repository",
+          "required": true,
+          "type": "string",
+          "default": "509614632283.dkr.ecr.us-east-2.amazonaws.com/lookahead-dev-ecr"
+        },
+        "release-version": {
+          "description": "Existing Git tag vyyyy.mm.dd.hh.<00-nn> (UTC) at a main commit; the run resolves it to that commit",
+          "required": true,
+          "type": "string"
+        }
+      }
     }
   },
   "permissions": {

@@ -52,7 +52,8 @@ public class DomainSecurityConfiguration {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.GET, "/api/v1/membership/plans", "/api/v1/sales/active").permitAll()
                         .requestMatchers("/api/v1/account/access-summary", "/api/v1/account/access-records", "/api/v1/account/purchases", "/api/v1/account/purchases/**", "/api/v1/admin/accounts/**", "/api/v1/admin/sales", "/api/v1/admin/sales/**", "/api/v1/admin/membership/**").hasAuthority("SCOPE_account")
-                        .requestMatchers(HttpMethod.GET, "/api/v1/status", "/actuator/health", "/actuator/health/**").permitAll()
+                        // DLV-914: /actuator/info reports build.version, releaseTag and sourceRevision; read-only, nothing else exposed.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/status", "/actuator/health", "/actuator/health/**", "/actuator/info").permitAll()
                         .requestMatchers(HttpMethod.GET, "/content/**").access((authentication, request) -> {
                             var value = authentication.get();
                             return new AuthorizationDecision(value instanceof AnonymousAuthenticationToken || value.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("SCOPE_content")));

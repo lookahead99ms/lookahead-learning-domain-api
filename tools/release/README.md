@@ -1,5 +1,25 @@
 # Domain image publication
 
+## Merge-driven pipeline (user decision 2026-10-27)
+
+`pipeline.yml` runs on every merge to `main` and can also be dispatched by hand from `main`
+(any other ref is refused). Its `tag` job cuts the next calendar tag of this repository's
+sequence at the run commit with `pipeline_tag.py cut` (GitHub API, `contents: write` in that
+job only; an existing tag that already names the commit is reused, a name claimed by another
+run fails, nothing is ever moved). The `build-scan-publish` job then calls `release-image.yml`
+through `workflow_call` with that tag, so merge runs and manual reruns by tag share one
+implementation, the same scans and the same owner approval issue. `deploy-dev` is held
+(`DEV_DEPLOY_ENABLED` repository variable) until the first hosted ECR publication is proven;
+once enabled it dispatches Infra `application-deploy.yml` with `app` and `release_version`
+using the `INFRA_DISPATCH_TOKEN` secret, and Infra's own approval decides the deploy.
+`deploy-prod` is a dummy stage. `owner_approval.provenance` accepts a merge `push` or a
+`workflow_dispatch` by the owner from `main`; a dispatched run must be the exact main head,
+a merge run's commit must still be on `main` when re-checked (later merges queue, they do
+not void an approval in progress). The caller path `.github/workflows/pipeline.yml` is a
+registered publisher workflow for this repository.
+
+## Manual publisher by tag
+
 The manual `release-image.yml` workflow takes one source selector: an existing UTC
 calendar release tag `vYYYY.MM.DD.HH.NN`. Nobody types a commit. The workflow file
 and the trusted tooling under `tools/release/` always run from `main` (the executed

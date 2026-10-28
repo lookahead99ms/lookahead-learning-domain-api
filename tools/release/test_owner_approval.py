@@ -25,7 +25,7 @@ def record(repository, source, workflow, path=None):
 
 class Github:
     def __init__(self, repository='lookahead99ms/lookahead-learning-infra', source='a'*40):
-        workflow, target = m.PUBLISHERS[repository]
+        workflow, target = m.PUBLISHERS[repository][0][0], m.PUBLISHERS[repository][1]
         self.now = datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
         self.env = {'GITHUB_REPOSITORY': repository, 'GITHUB_ACTOR': m.OWNER, 'GITHUB_TRIGGERING_ACTOR': m.OWNER,
                     'GITHUB_REF': 'refs/heads/main', 'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_RUN_ATTEMPT': '1',
@@ -79,6 +79,37 @@ class ApprovalTests(unittest.TestCase):
             self.assertIn(fake.plan['imageId'], fake.data['issues/3']['body'])
             self.assertIn('does not deploy services', fake.data['issues/3']['body'])
             self.assertIn('Permission deadline', fake.data['issues/3']['body'])
+
+    def test_merge_push_through_the_pipeline_caller_is_accepted_and_bound_to_main_per_event(self):
+        repo, pipeline = 'lookahead99ms/lookahead-learning-domain-api', '.github/workflows/pipeline.yml'
+        self.assertEqual(m.PUBLISHERS[repo][0], ('.github/workflows/release-image.yml', pipeline))
+        self.assertEqual(m.PUBLISHERS['lookahead99ms/lookahead-learning-infra'][0], ('.github/workflows/database-job-images.yml',))
+        def pushed(moved=True):
+            fake = Github(repo)
+            fake.env.update(GITHUB_EVENT_NAME='push', GITHUB_WORKFLOW_REF=repo + '/' + pipeline + '@refs/heads/main')
+            fake.data['actions/runs/12'].update(event='push', path=pipeline)
+            if moved:  # another merge landed while this run waited at approval: still an ancestor of main
+                fake.data['commits/main'] = {'sha': 'f'*40}
+                fake.data['compare/'+'a'*40+'...'+'f'*40] = {'status': 'ahead', 'merge_base_commit': {'sha': 'a'*40}}
+            return fake
+        for moved in (False, True):
+            fake = pushed(moved); fake.plan = {**fake.plan, **m.provenance(fake.env, fake.get)}
+            receipt = fake.approved(); m.verify(fake.plan, receipt, fake.env, fake.get, fake.now)
+        fake = pushed(); fake.data['compare/'+'a'*40+'...'+'f'*40] = {'status': 'diverged', 'merge_base_commit': {'sha': '8'*40}}
+        with self.assertRaisesRegex(ValueError, 'on main'): m.provenance(fake.env, fake.get)
+        # The pipeline may also be dispatched by hand from the main head; it is still the exact head then.
+        fake = pushed(moved=False); fake.env['GITHUB_EVENT_NAME'] = 'workflow_dispatch'; fake.data['actions/runs/12']['event'] = 'workflow_dispatch'
+        m.provenance(fake.env, fake.get)
+        fake.data['commits/main'] = {'sha': 'f'*40}
+        with self.assertRaisesRegex(ValueError, 'Main moved'): m.provenance(fake.env, fake.get)
+        for edit in [lambda f: f.env.update(GITHUB_EVENT_NAME='pull_request'), lambda f: f.data['actions/runs/12'].update(event='workflow_dispatch'),
+                     lambda f: f.data['actions/runs/12'].update(path='.github/workflows/release-image.yml'),
+                     lambda f: f.env.update(GITHUB_WORKFLOW_REF=repo + '/' + pipeline + '@refs/heads/feature'),
+                     lambda f: f.env.update(GITHUB_ACTOR='other'), lambda f: f.env.update(GITHUB_RUN_ATTEMPT='2')]:
+            fake = pushed(); edit(fake)
+            with self.subTest(edit=edit), self.assertRaises(ValueError): m.provenance(fake.env, fake.get)
+        fake = Github('lookahead99ms/lookahead-learning-infra'); fake.env.update(GITHUB_EVENT_NAME='push'); fake.data['actions/runs/12'].update(event='push')
+        m.provenance(fake.env, fake.get)
 
     def test_github_second_precision_accepts_fractional_runner_clock_for_both_publishers(self):
         for repository in m.PUBLISHERS:

@@ -86,7 +86,7 @@
         },
         {
           "name": "Verify immutable image binding",
-          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/release_version.py,*/image.py,*/registry.py' --fail-under=85",
+          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py' --fail-under=85",
           "env": {
             "COVERAGE_FILE": "${{ runner.temp }}/domain-release.coverage"
           }
@@ -152,7 +152,7 @@
         },
         {
           "name": "Build the standalone application image from pinned bases",
-          "run": "if [ -z \"$RELEASE_VERSION\" ]; then RELEASE_VERSION=0.0.1-SNAPSHOT; fi\ndocker build --pull --build-arg \"RELEASE_VERSION=${RELEASE_VERSION:-dev}\" --build-arg \"BUILD_VERSION=${RELEASE_VERSION#v}\" --build-arg \"SOURCE_REVISION=$SOURCE_SHA\" --tag lookahead-domain-api:ci ."
+          "run": "if [ -z \"$RELEASE_VERSION\" ]; then RELEASE_VERSION=dev; BUILD_VERSION=0.0.1-SNAPSHOT; else BUILD_VERSION=\"${RELEASE_VERSION#v}\"; fi\ndocker build --pull --build-arg \"RELEASE_VERSION=$RELEASE_VERSION\" --build-arg \"BUILD_VERSION=$BUILD_VERSION\" --build-arg \"SOURCE_REVISION=$SOURCE_SHA\" --tag lookahead-domain-api:ci ."
         },
         {
           "name": "Scan exact builder base, runtime base and built application image",

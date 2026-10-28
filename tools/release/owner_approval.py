@@ -15,9 +15,11 @@ import time
 OWNER = 'lookahead99ms'
 ACCOUNT = '509614632283'
 REGION = 'us-east-2'
+# Publisher workflows per repository: the manual publisher and, for apps, the merge-driven pipeline that
+# calls it (`workflow_call` keeps GITHUB_WORKFLOW_REF and the run `path` on the caller, pipeline.yml).
 PUBLISHERS = {
-    'lookahead99ms/lookahead-learning-infra': ('.github/workflows/database-job-images.yml', 'initializer'),
-    'lookahead99ms/lookahead-learning-domain-api': ('.github/workflows/release-image.yml', 'domain'),
+    'lookahead99ms/lookahead-learning-infra': (('.github/workflows/database-job-images.yml',), 'initializer'),
+    'lookahead99ms/lookahead-learning-domain-api': (('.github/workflows/release-image.yml', '.github/workflows/pipeline.yml'), 'domain'),
 }
 
 
@@ -52,11 +54,13 @@ def api(repository, path, payload=None):
 def provenance(env, get=api):
     repository = env.get('GITHUB_REPOSITORY')
     require(repository in PUBLISHERS, 'Unknown image publisher')
-    workflow, app = PUBLISHERS[repository]
-    expected = {'GITHUB_ACTOR': OWNER, 'GITHUB_TRIGGERING_ACTOR': OWNER,
-                'GITHUB_REF': 'refs/heads/main', 'GITHUB_EVENT_NAME': 'workflow_dispatch',
-                'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_WORKFLOW_REF': repository + '/' + workflow + '@refs/heads/main'}
-    require(all(env.get(k) == v for k, v in expected.items()), 'Fresh owner/manual/main run required')
+    workflows, app = PUBLISHERS[repository]
+    event = env.get('GITHUB_EVENT_NAME')
+    expected = {'GITHUB_ACTOR': OWNER, 'GITHUB_TRIGGERING_ACTOR': OWNER, 'GITHUB_REF': 'refs/heads/main', 'GITHUB_RUN_ATTEMPT': '1'}
+    # A merge push (merge-driven pipeline) or a manual dispatch, by the owner, first attempt, from main.
+    require(all(env.get(k) == v for k, v in expected.items()) and event in versions.EVENTS, 'Fresh owner main run required')
+    workflow = next((w for w in workflows if env.get('GITHUB_WORKFLOW_REF') == repository + '/' + w + '@refs/heads/main'), None)
+    require(workflow is not None, 'Fresh owner/manual/main run required')
     sha, runId = env.get('GITHUB_SHA', ''), env.get('GITHUB_RUN_ID', '')
     require(re.fullmatch('[a-f0-9]{40}', sha) and re.fullmatch('[1-9][0-9]*', runId), 'Exact source/run required')
     metadata = get(repository, '')
@@ -65,10 +69,11 @@ def provenance(env, get=api):
             and str(metadata.get('owner', {}).get('id')) == env.get('GITHUB_REPOSITORY_OWNER_ID'), 'Repository identity changed')
     require(repository != 'lookahead99ms/lookahead-learning-infra' or metadata.get('private') is True,
             'Infra approval evidence must stay private')
-    require(get(repository, 'commits/main').get('sha') == sha, 'Main moved; review a new run')
+    # Dispatch: this run is the exact main head. Merge push: the merge commit must still be on main (later merges queue).
+    versions.mainBinding(event, sha, get(repository, 'commits/main').get('sha', ''), lambda path: get(repository, path))
     run = get(repository, 'actions/runs/' + runId)
     fields = {'id': int(runId), 'path': workflow, 'head_sha': sha, 'head_branch': 'main',
-              'event': 'workflow_dispatch', 'run_attempt': 1, 'status': 'in_progress'}
+              'event': event, 'run_attempt': 1, 'status': 'in_progress'}
     require(all(run.get(k) == v for k, v in fields.items())
             and all(run.get(k, {}).get('full_name') == repository for k in ('repository', 'head_repository'))
             and all(run.get(k, {}).get('login') == OWNER for k in ('actor', 'triggering_actor')), 'Run provenance changed')
