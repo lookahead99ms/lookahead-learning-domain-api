@@ -144,7 +144,8 @@ def briefField(markdown, name):
 
 def render(*, overview, scope, evidence, risks, repository, runId, owner, expires,
            permissionDeadline, command, payload, created=None, planDeadline=None,
-           headline=None, resources=None, validation=None):
+           headline=None, resources=None, validation=None, gist=None):
+    """`gist`: plain-language Markdown (what this run does, in order, and why) shown before any table."""
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
         raise ValueError('Exact repository required for review links')
     if not re.fullmatch(r'[0-9]+', str(runId)) or not re.fullmatch(r'[A-Za-z0-9-]+', owner):
@@ -180,7 +181,10 @@ def render(*, overview, scope, evidence, risks, repository, runId, owner, expire
                 + alert('CAUTION', 'Leave this issue open. Editing or closing the issue, editing the approval comment, '
                         'or changing the preview invalidates approval.'))
     scope = ('### Affected AWS resources\n\n' + records(resources) + '\n\n' if resources else '') + scope
-    sections = [summary(overview, resources, expires), scope, evidence, risks, metadata, decision,
+    first = summary(overview, resources, expires)
+    if gist:
+        first = '### What this run does\n\n' + gist.strip() + '\n\n' + first
+    sections = [first, scope, evidence, risks, metadata, decision,
                 details('Expand exact plan and verification data', code(json.dumps(payload, sort_keys=True, indent=2), 'json'))]
     return top + '\n\n---\n\n'.join('## ' + heading + '\n\n' + body.strip()
                                      for heading, body in zip(SECTIONS, sections)) + '\n'

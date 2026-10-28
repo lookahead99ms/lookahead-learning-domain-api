@@ -76,6 +76,10 @@ class TemplateTests(unittest.TestCase):
         self.assertIn('| Template checks | 52 resources |', body.split('## Validation and source')[1].split('## Risks')[0])
         self.assertIn('| **Affected AWS resources** | **None** created, updated or replaced. |', template.render(**options, resources=[]))
         self.assertNotIn('Affected AWS resources', template.render(**options))
+        # The plain-language gist comes before any table, right under the headline.
+        body = template.render(**options, headline=headline, gist='1. Cut the tag.\n2. Upload.\n\nWhy: reviewers read this first.')
+        self.assertLess(body.index('### What this run does'), body.index('| Item | Detail |'))
+        self.assertIn('1. Cut the tag.', body.split('## What changes')[0])
         for bad in [{**headline, 'change': ''}, {**headline, 'env': '\n'}]:
             with self.assertRaises(ValueError): template.title(bad, 123)
         with self.assertRaises(ValueError): template.title(headline, 'x')
@@ -85,7 +89,7 @@ class TemplateTests(unittest.TestCase):
 
     def test_portable_renderer_matches_reviewed_version(self):
         # An accidental edit in one repository must fail until all reviewed copies are synchronized.
-        expected = '78201360cb3e6c76d1b7d624e1d751ba4b05e9c4c78df8ffd621d882505dc2db'
+        expected = 'e923aaed69c1950bfbd9c4929353d9f3b99a72e14bd3b18fd9f8c687f84d078f'
         self.assertEqual(hashlib.sha256(Path(template.__file__).read_bytes()).hexdigest(), expected)
 
 
