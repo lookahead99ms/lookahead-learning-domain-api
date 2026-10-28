@@ -96,6 +96,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn('SOURCE_REVISION=$GITHUB_SHA', ci)
         self.assertIn('git fetch --depth 1 origin \\"$GITHUB_SHA\\"' if ci.startswith('{') else 'git fetch --depth 1 origin "$GITHUB_SHA"', ci)
         self.assertLess(ci.index('git fetch --depth 1 origin'), ci.index('docker build'))
+        # A build without a release tag (pull request, plain push) reports releaseTag dev and jar version 0.0.1-SNAPSHOT;
+        # the Dockerfile test suite rejects any other tag shape, so the fallback must never pass the snapshot as the tag.
+        plain = ci.replace('\\"', '"')  # the workflow file is JSON-shaped YAML, so quotes inside run strings are escaped
+        self.assertIn('if [ -z "$RELEASE_VERSION" ]; then RELEASE_VERSION=dev; BUILD_VERSION=0.0.1-SNAPSHOT; else BUILD_VERSION="${RELEASE_VERSION#v}"; fi', plain)
+        self.assertIn('--build-arg "RELEASE_VERSION=$RELEASE_VERSION" --build-arg "BUILD_VERSION=$BUILD_VERSION"', plain)
+        self.assertNotIn('RELEASE_VERSION=0.0.1-SNAPSHOT', plain)
 
 
 class PipelineWorkflowTests(unittest.TestCase):
