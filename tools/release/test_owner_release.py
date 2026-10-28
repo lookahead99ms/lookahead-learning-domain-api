@@ -10,18 +10,24 @@ import owner_release as m
 from test_owner_approval import Github
 import test_image
 
+# One copy of this file per app repository: the app under test is the one this checkout builds (package.json = web,
+# build.gradle = gateway-bff, otherwise domain), and the repository is the one that publishes that app.
+ROOT = Path(__file__).resolve().parents[2]
+APP = 'web' if (ROOT / 'package.json').exists() else 'gateway-bff' if (ROOT / 'build.gradle').exists() else 'domain'
+REPO = next(repo for repo, (_, app) in m.approval.PUBLISHERS.items() if app == APP)
+
 
 class Candidate:
     """One tested image. `source` is the tag-resolved commit S; the workflow and tooling run from main M ('a'*40)."""
     def __init__(self, directory, source='a'*40):
         self.directory = Path(directory).resolve()
-        self.github = Github('lookahead99ms/lookahead-learning-domain-api', source=source)
+        self.github = Github(REPO, source=source)
         self.github.data['commits/'+source+'/pulls?per_page=100'] = []
         self.github.now = datetime.now(timezone.utc)
         self.env = {**self.github.env, 'DEPLOY_ROLE': self.github.plan['role'], 'ECR_REPOSITORY': m.REPOSITORY}
         self.expected = {'revision': source, 'workflowSha': 'a'*40, 'dockerfileSha256': 'd'*64, 'workflowSha256': 'e'*64}
-        config = test_image.ImmutableImageTests().archive(self.directory/'image.tar', labels={'org.opencontainers.image.version': 'v2026.10.26.20.00', 'org.opencontainers.image.revision': source, 'com.lookahead.app': 'domain'})
-        self.image = {**m.approval.versions.metadata('domain', 'v2026.10.26.20.00'), 'schemaVersion':'lookahead-scanned-image/v3', **self.expected, 'imageId':config,
+        config = test_image.ImmutableImageTests().archive(self.directory/'image.tar', labels={'org.opencontainers.image.version': 'v2026.10.26.20.00', 'org.opencontainers.image.revision': source, 'com.lookahead.app': APP})
+        self.image = {**m.approval.versions.metadata(APP, 'v2026.10.26.20.00'), 'schemaVersion':'lookahead-scanned-image/v3', **self.expected, 'imageId':config,
                       'archiveSha256':m.image.digest(self.directory/'image.tar'),'platform':'linux/amd64'}
         m.write(self.directory/'image.json',self.image,new=True)
         self.receiptPath=self.directory/'approval.json';self.reads=0;self.calls=[]
@@ -37,7 +43,7 @@ class Candidate:
         self.reads+=1
         if self.reads==1:return {'images':[],'failures':[{'failureCode':'ImageNotFound'}]}
         raw=json.dumps({'schemaVersion':2,'config':{'digest':self.image['imageId']}})
-        return {'images':[{'imageManifest':raw,'imageId':{'imageTag':'domain-v2026.10.26.20.00','imageDigest':'sha256:'+hashlib.sha256(raw.encode()).hexdigest()}}]}
+        return {'images':[{'imageManifest':raw,'imageId':{'imageTag':APP+'-v2026.10.26.20.00','imageDigest':'sha256:'+hashlib.sha256(raw.encode()).hexdigest()}}]}
 
     def publish(self,provider=None):
         return m.publish(self.directory,self.receiptPath,self.env,'loaded-image',self.github.get,provider or self.provider)
@@ -78,10 +84,10 @@ class OwnerReleaseTests(unittest.TestCase):
                 self.assertEqual((plan['sourceSha'],plan['workflowSha']),('9'*40,'a'*40))
                 inputs.assert_called_with(Path.cwd(),None,'a'*40)
                 body=c.github.data['issues/3']['body'];self.assertIn('/commit/'+'9'*40,body);self.assertIn('/commit/'+'a'*40,body)
-                self.assertEqual(c.github.data['issues/3']['title'],'DEV: Publish image domain-v2026.10.26.20.00 — no merged PR associated with this source · run 12')
-                self.assertIn('| **Affected AWS resources** | **None** created, updated or replaced. |',body);self.assertIn('| **imageTag** | `domain-v2026.10.26.20.00` |',body)
+                self.assertEqual(c.github.data['issues/3']['title'],'DEV: Publish image '+APP+'-v2026.10.26.20.00 — no merged PR associated with this source · run 12')
+                self.assertIn('| **Affected AWS resources** | **None** created, updated or replaced. |',body);self.assertIn('| **imageTag** | `'+APP+'-v2026.10.26.20.00` |',body)
                 bound=c.publish()
-                self.assertEqual((bound['revision'],bound['workflowSha'],bound['imageTag']),('9'*40,'a'*40,'domain-v2026.10.26.20.00'))
+                self.assertEqual((bound['revision'],bound['workflowSha'],bound['imageTag']),('9'*40,'a'*40,APP+'-v2026.10.26.20.00'))
                 outcome=json.loads((Path(temp)/'publication-outcome.json').read_text())
                 self.assertEqual((outcome['sourceSha'],outcome['workflowSha'],outcome['releaseVersion']),('9'*40,'a'*40,'v2026.10.26.20.00'))
             # The source root is passed through to the image binding when the tooling runs from main.

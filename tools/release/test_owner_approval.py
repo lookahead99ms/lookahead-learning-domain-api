@@ -81,9 +81,11 @@ class ApprovalTests(unittest.TestCase):
             self.assertIn('Permission deadline', fake.data['issues/3']['body'])
 
     def test_merge_push_through_the_pipeline_caller_is_accepted_and_bound_to_main_per_event(self):
-        repo, pipeline = 'lookahead99ms/lookahead-learning-domain-api', '.github/workflows/pipeline.yml'
-        self.assertEqual(m.PUBLISHERS[repo][0], ('.github/workflows/release-image.yml', pipeline))
-        self.assertEqual(m.PUBLISHERS['lookahead99ms/lookahead-learning-infra'][0], ('.github/workflows/database-job-images.yml',))
+        # Every app repository publishes through its `01 · Full` pipeline (release.yml); `03 · Publish` calls it (publish.yml).
+        repo, pipeline = 'lookahead99ms/lookahead-learning-domain-api', '.github/workflows/release.yml'
+        for app in ('lookahead-learning-domain-api', 'lookahead-learning-web', 'lookahead-learning-gateway-bff'):
+            self.assertEqual(m.PUBLISHERS['lookahead99ms/' + app][0], (pipeline, '.github/workflows/publish.yml'))
+        self.assertEqual(m.PUBLISHERS['lookahead99ms/lookahead-learning-infra'][0], ('.github/workflows/database-job-images.yml', '.github/workflows/infra-pipeline.yml'))
         def pushed(moved=True):
             fake = Github(repo)
             fake.env.update(GITHUB_EVENT_NAME='push', GITHUB_WORKFLOW_REF=repo + '/' + pipeline + '@refs/heads/main')
@@ -103,7 +105,7 @@ class ApprovalTests(unittest.TestCase):
         fake.data['commits/main'] = {'sha': 'f'*40}
         with self.assertRaisesRegex(ValueError, 'Main moved'): m.provenance(fake.env, fake.get)
         for edit in [lambda f: f.env.update(GITHUB_EVENT_NAME='pull_request'), lambda f: f.data['actions/runs/12'].update(event='workflow_dispatch'),
-                     lambda f: f.data['actions/runs/12'].update(path='.github/workflows/release-image.yml'),
+                     lambda f: f.data['actions/runs/12'].update(path='.github/workflows/build.yml'),
                      lambda f: f.env.update(GITHUB_WORKFLOW_REF=repo + '/' + pipeline + '@refs/heads/feature'),
                      lambda f: f.env.update(GITHUB_ACTOR='other'), lambda f: f.env.update(GITHUB_RUN_ATTEMPT='2')]:
             fake = pushed(); edit(fake)
@@ -255,7 +257,7 @@ class ApprovalTests(unittest.TestCase):
 
 
     def test_business_gist_is_the_first_thing_after_the_headline(self):
-        for repo, app in (('lookahead99ms/lookahead-learning-infra', 'initializer'), ('lookahead99ms/lookahead-learning-domain-api', 'domain')):
+        for repo, (_, app) in m.PUBLISHERS.items():
             fake = Github(repo); tag = fake.plan['imageTag']; fake.approved(); body = fake.data['issues/3']['body']
             top = body.split('## What changes')[0]
             self.assertIn('### What this run does', top)

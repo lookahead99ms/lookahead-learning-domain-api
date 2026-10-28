@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge-driven pipeline: cut this app's calendar release tag at the run commit; request the DEV deploy.
+"""`01 · Full`: cut this app's calendar release tag at the run commit.
 
 Tag-driven, never commit-driven. The pipeline cuts the next tag (`release_version.nextVersion`) at
 $GITHUB_SHA: the merge commit on `push`, the main head on `workflow_dispatch` (refused off main).
@@ -7,9 +7,9 @@ The tag is created through the GitHub API with GITHUB_TOKEN (`contents: write` i
 POST git/refs refuses an existing ref, so a tag is never moved or force-updated. A tag of this
 sequence that already names the run commit is reused (a dispatch from the same main head); a name
 another run claimed first fails. Everything downstream resolves the tag with release_version.py;
-no commit SHA is ever an input. The DEV deploy request is a dispatch of Infra's deploy workflow with
-the app and the release tag; Infra's own approval decides the deploy. This file is identical in
-the Domain, Web and Gateway/BFF repositories.
+no commit SHA is ever an input. The DEV deploy runs inside the same pipeline run (candidate.py and
+Infra tooling at Infra's release tag), never as a dispatch of another repository's workflow. This
+file is identical in the Domain, Web and Gateway/BFF repositories.
 """
 import argparse
 from datetime import datetime, timezone
@@ -22,11 +22,6 @@ import subprocess
 import release_version as versions
 
 SCHEMA = 'release-tag/v1'
-INFRA = 'lookahead99ms/lookahead-learning-infra'
-DEPLOY_WORKFLOW = 'application-deploy.yml'
-HOLD = 'DEV deploy held until the first hosted ECR publication is proven (set DEV_DEPLOY_ENABLED=true)'
-TOKEN_MISSING = ('Secret INFRA_DISPATCH_TOKEN is missing: create a fine-grained token with Actions read/write on '
-                 + INFRA + ' and add it to this repository before enabling DEV deploys')
 
 
 def require(condition, message):
@@ -36,7 +31,7 @@ def require(condition, message):
 
 def gh(args, env=None):
     result = subprocess.run(['gh', *args], capture_output=True, text=True, timeout=60, env=env)
-    require(result.returncode == 0, 'GitHub request failed; no tag or deploy request was recorded')
+    require(result.returncode == 0, 'GitHub request failed; no tag was recorded')
     require(len(result.stdout) <= 4 * 1024 * 1024, 'GitHub response exceeds bound')
     return result.stdout
 
@@ -84,31 +79,13 @@ def cut(app, repository, sha, runId, record, run=None, now=None):
     return result
 
 
-def deployRequest(app, env, run=None):
-    """Held until the user enables it; then one dispatch of Infra's deploy workflow with app + release tag."""
-    run = run or gh
-    release = versions.metadata(app, env.get('RELEASE_VERSION'))
-    if env.get('DEV_DEPLOY_ENABLED') != 'true':
-        print(HOLD, flush=True)
-        return {**release, 'requested': False}
-    token = env.get('INFRA_DISPATCH_TOKEN', '')
-    require(bool(token), TOKEN_MISSING)
-    run(['workflow', 'run', DEPLOY_WORKFLOW, '--repo', INFRA, '--ref', 'main',
-         '-f', 'app=' + app, '-f', 'release_version=' + release['releaseVersion']], env={**os.environ, 'GH_TOKEN': token})
-    print('Requested the DEV deployment of ' + release['imageTag'] + ' through ' + INFRA + ' ' + DEPLOY_WORKFLOW
-          + '; the deploy itself waits for the Infra approval.', flush=True)
-    return {**release, 'requested': True}
-
-
 def main(argv=None, env=None):
     env = os.environ if env is None else env
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['cut', 'deploy-request'])
+    parser.add_argument('mode', choices=['cut'])
     parser.add_argument('--app', required=True, choices=versions.APPS)
     parser.add_argument('--record', help='cut: frozen release-tag record to write (must not exist)')
     args = parser.parse_args(argv)
-    if args.mode == 'deploy-request':
-        return deployRequest(args.app, env)
     require(args.record is not None, '--record path required')
     event, sha, repository = env.get('GITHUB_EVENT_NAME'), env.get('GITHUB_SHA', ''), env.get('GITHUB_REPOSITORY', '')
     require(env.get('GITHUB_REF') == 'refs/heads/main' and event in versions.EVENTS and env.get('GITHUB_RUN_ATTEMPT') == '1',

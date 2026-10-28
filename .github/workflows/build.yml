@@ -1,0 +1,33 @@
+{
+  "name": "02 · Build",
+  "run-name": "${{ github.workflow }} | ${{ inputs.release_version || github.ref_name }} | ${{ github.event_name }} | #${{ github.run_number }}",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "release_version": {
+          "description": "Existing release tag vyyyy.mm.dd.hh.nn to build; blank cuts the next tag at the main head and builds it",
+          "type": "string",
+          "required": false,
+          "default": ""
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "write",
+    "actions": "read",
+    "issues": "write",
+    "pull-requests": "read",
+    "id-token": "write"
+  },
+  "jobs": {
+    "release": {
+      "uses": "./.github/workflows/release.yml",
+      "with": {
+        "action": "build",
+        "release_version": "${{ inputs.release_version }}"
+      },
+      "secrets": "inherit"
+    }
+  }
+}
