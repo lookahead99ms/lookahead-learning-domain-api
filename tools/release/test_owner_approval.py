@@ -223,6 +223,24 @@ class ApprovalTests(unittest.TestCase):
         with self.assertRaises(ValueError): m.validatePlan(fake.plan, fake.env, fake.get)
 
 
+    def test_business_gist_is_the_first_thing_after_the_headline(self):
+        for repo, app in (('lookahead99ms/lookahead-learning-infra', 'initializer'), ('lookahead99ms/lookahead-learning-domain-api', 'domain')):
+            fake = Github(repo); tag = fake.plan['imageTag']; fake.approved(); body = fake.data['issues/3']['body']
+            top = body.split('## What changes')[0]
+            self.assertIn('### What this run does', top)
+            self.assertLess(top.index('### What this run does'), top.index('| Item | Detail |'))
+            self.assertIn('**Business change:** the tested ' + app + ' image `' + tag + '` (release `v2026.10.26.20.00`) becomes available in the DEV registry', top)
+            self.assertIn('1. Recheck that release tag `v2026.10.26.20.00` still resolves to source commit `aaaaaaaaaaaa`', top)
+            self.assertIn('2. Assume the scoped publisher role `arn:aws:iam::509614632283:role/synthetic-publisher`', top)
+            self.assertIn('3. Push the already scanned image (configuration digest `sha256:' + 'b' * 64 + '`) once to `' + fake.plan['target'] + '`', top)
+            self.assertIn('4. Read the published digest back from ECR and retain the publication receipt and proof files (`image.json`, `image.tar`)', top)
+            self.assertIn('approval expires 40 minutes after this issue is created.', top)
+            # Deterministic: the verification re-render must equal the posted body.
+            self.assertEqual(m.gist(fake.plan), m.gist(fake.plan))
+            fallback = {k: v for k, v in fake.plan.items() if k != 'app'}
+            self.assertIn('the tested ' + app + ' image', m.gist(fallback))
+        self.assertIn('proof files (none listed)', m.gist({**fake.plan, 'files': {}}))
+
     def test_issue_title_and_body_state_the_change_and_absence_of_aws_resources(self):
         for repo in m.PUBLISHERS:
             fake = Github(repo); tag = fake.plan['imageTag']

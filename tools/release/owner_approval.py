@@ -148,12 +148,32 @@ def pullRequestTable(plan):
                                [('[#' + str(r['number']) + '](' + r['url'] + ')', issueTemplate.text(r['title']), 'into main') for r in rows])
 
 
+def gist(plan):
+    """Plain-language description, read before any table: what this run does, in order, and why."""
+    t = issueTemplate.text
+    app = plan.get('app') or PUBLISHERS.get(plan.get('repository'), ('', 'application'))[1]
+    files = ', '.join('`' + t(name) + '`' for name in sorted(plan.get('files') or {}))
+    lines = ['**Business change:** the tested ' + t(app) + ' image `' + t(plan['imageTag']) + '` (release `' + t(plan['releaseVersion'])
+             + '`) becomes available in the DEV registry for a later deployment; nothing is deployed and no running service changes.',
+             '',
+             '1. Recheck that release tag `' + t(plan['releaseVersion']) + '` still resolves to source commit `' + t(plan['sourceSha'][:12])
+             + '` and that this approval is unchanged, before any AWS credentials are issued.',
+             '2. Assume the scoped publisher role `' + t(plan['role']) + '` for one upload session of at most 15 minutes.',
+             '3. Push the already scanned image (configuration digest `' + t(plan['imageId']) + '`) once to `' + t(plan['target'])
+             + '`; the tag is immutable and is never overwritten.',
+             '4. Read the published digest back from ECR and retain the publication receipt and proof files (' + (files or 'none listed') + ') as run artifacts.',
+             '',
+             'No service, task or SQL job is started; no IAM role, repository or stack is created or changed; existing image tags are never '
+             'deleted or rebuilt; approval expires 40 minutes after this issue is created.']
+    return '\n'.join(lines)
+
+
 def body(plan, receipt):
     fields = ('target', 'releaseVersion', 'imageTag', 'sourceSha', 'workflowSha', 'imageId', 'role', 'repository', 'account', 'region')
     shown = [('**' + key + '**', commitLink(plan, plan[key]) if key in ('sourceSha', 'workflowSha') else '`' + issueTemplate.text(plan[key]) + '`')
              for key in fields if key in plan]
     return issueTemplate.render(
-        headline=headline(plan), resources=[],
+        headline=headline(plan), gist=gist(plan), resources=[],
         overview='**Publish the verified DEV image**\n\nAuthorize one upload of the tested image shown below. '
             'Publishing enables later selection; it does not deploy services, run SQL, install IAM or create repositories. '
             'Without approval, no upload occurs.',
