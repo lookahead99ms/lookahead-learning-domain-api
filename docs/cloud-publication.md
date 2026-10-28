@@ -28,13 +28,14 @@ execution role, so the application needs no Secrets Manager client.
 The three release variables are set together or left unset together; a partial pin
 fails startup. A release is identified by its Content calendar release tag (user decision
 2026-10-27); the earlier `release-` plus 24 hash characters identity is retired. S3 keys are
-`releases/<tag>/publication.tar.gz`, `releases/<tag>/manifest.json` and `live/<tag>/…` (only
-the folder carries the tag; object names are fixed), and the manifest's `releaseId` carries
-the same tag. **Pinned mode** reads `releases/<tag>/` and
-checks both externally supplied digests; it is the candidate-validation path. **Live mode**
-(all three unset, added 2026-10-26) lists the `live/` prefix and serves the single complete
-release that a separate, owner-approved promotion placed there after the deployment that
-validated it succeeded.
+`live/<tag>/publication.tar.gz` and `live/<tag>/manifest.json` while a release serves, and
+`archive/<tag>/…` once it is retired (user decision 2026-10-28: the serving release exists in
+one place; only the folder carries the tag; object names are fixed). The manifest's `releaseId`
+carries the same tag. **Pinned mode** reads `live/<tag>/` and checks both externally supplied
+digests; it is the candidate-validation path and fails closed once that tag has been retired to
+`archive/`. **Live mode** (all three unset, added 2026-10-26) lists the `live/` prefix and
+serves the single complete release there; the Content publish run writes it and retires the
+previous folder into `archive/` after readback.
 Infra selects values in its environment YAML and binds the service manifest to
 maintained CloudFormation parameters. Static AWS credentials and custom AWS endpoint
 overrides are rejected. Runtime SQL roles and migrations remain separately owned;
@@ -57,8 +58,8 @@ listing must still carry one per key. An empty prefix, a foreign key (including 
 its archive fails startup; Domain never falls back to a lower tag. The manifest's own digest
 is not pinned in live mode; the archive digest comes from that manifest.
 
-1. Fetch only `<prefix>/manifest.json` (`releases/<tag>/` when pinned, the discovered
-   `live/<tag>/` otherwise); verify the externally pinned hash when pinned.
+1. Fetch only `<prefix>/manifest.json` (`live/<tag>/`, pinned or discovered); verify the
+   externally pinned hash when pinned.
 2. Validate its schema, that `releaseId` equals the selected tag, the archive hash and the
    bounded file inventory. Unknown manifest fields are ignored.
 3. Stream `<prefix>/publication.tar.gz` to private temporary disk and verify the archive
@@ -86,10 +87,10 @@ is not pinned in live mode; the archive digest comes from that manifest.
 No automatic refresh, Redis, extra EBS, public S3 URLs or private content in images.
 Pinned mode rolls out a new release by replacing the task with new pins. Live mode picks
 up a newly promoted release when its tasks restart; a running task keeps the bytes it
-verified at startup. Rollback in live mode is a separate approved promotion of the
-previous tag (it still exists under `releases/<tag>/`) that retires the current `live/`
-folder, followed by a task restart; because the highest tag is served, the previous
-folder must be removed, not merely joined. In pinned mode rollback selects the previous
+verified at startup. Rollback in live mode is a separate approved restore of the
+previous tag from `archive/<tag>/` into `live/<tag>/` (Infra `aws/s3/content_live.py promote`)
+that archives and retires the current `live/` folder, followed by a task restart; because the
+highest tag is served, the previous folder must be removed, not merely joined. In pinned mode rollback selects the previous
 reviewed image/tag/digest combination.
 
 ## Validation and operational limits

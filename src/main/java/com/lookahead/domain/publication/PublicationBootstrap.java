@@ -16,7 +16,7 @@ import tools.jackson.databind.ObjectMapper;
 /**
  * Complete hash-pinned extraction into a fresh private directory before bean publication.
  * A release is identified by its Content calendar release tag. A pinned deployment reads
- * releases/&lt;tag&gt;/ and checks both externally supplied digests. A live deployment lists live/,
+ * live/&lt;tag&gt;/ and checks both externally supplied digests. A live deployment lists live/,
  * selects the complete release folder with the highest tag and binds the archive to the digest
  * inside that manifest. Content identity is bound through the manifest's per-file digests and,
  * when the publisher recorded it, {@code contentSha256} over the publication and catalog bytes.
@@ -54,7 +54,7 @@ public final class PublicationBootstrap {
             Files.createDirectories(parent);
             stage = Files.createTempDirectory(parent, "publication-", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
             Selection selected = settings.live() ? discoverLive(source)
-                    : new Selection(PublicationSettings.RELEASES_PREFIX + settings.releaseId() + "/", settings.releaseId(), settings.manifestSha256(), settings.archiveSha256());
+                    : new Selection(PublicationSettings.LIVE_PREFIX + settings.releaseId() + "/", settings.releaseId(), settings.manifestSha256(), settings.archiveSha256());
             String prefix = selected.prefix();
             byte[] manifestBytes;
             try (InputStream stream = source.open(prefix + "manifest.json")) { manifestBytes = stream.readNBytes(MAX_FILE + 1); }
