@@ -101,7 +101,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
 class PipelineWorkflowTests(unittest.TestCase):
     """Merge-driven pipeline (user decision 2026-10-27): merge -> tag -> build/scan/publish -> held DEV deploy -> PROD dummy."""
     ROOT = Path(__file__).resolve().parents[2]
-    APP = 'web' if 'web-public' in ROOT.name else 'gateway-bff' if 'gateway-bff' in ROOT.name else 'domain'
+    # The hosted checkout folder is the repository name (lookahead-learning-web, not web-public), so detect the app from the build file, never the folder.
+    APP = 'web' if (ROOT / 'package.json').exists() else 'gateway-bff' if (ROOT / 'build.gradle').exists() else 'domain'
 
     def test_two_triggers_one_pipeline_tag_first_and_the_publisher_shared_through_workflow_call(self):
         workflow = json.loads((self.ROOT / '.github/workflows/pipeline.yml').read_text())
