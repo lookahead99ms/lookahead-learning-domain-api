@@ -151,8 +151,9 @@ def render(*, overview, scope, evidence, risks, repository, runId, owner, expire
     if not re.fullmatch(r'[0-9]+', str(runId)) or not re.fullmatch(r'[A-Za-z0-9-]+', owner):
         raise ValueError('Exact owner and numeric workflow run required')
     digestCommand = r'APPROVE [A-Z][A-Z -]* [0-9a-f]{64}'
-    # Image approvals name the version as ECR shows it (`<app>-vYYYY.MM.DD.HH.NN`); the digest stays in the body and receipt.
-    versionCommand = r'APPROVE [A-Z][A-Z -]* [a-z][a-z-]*-v\d{4}\.\d{2}\.\d{2}\.\d{2}\.(?:\d{2}|[1-9]\d{2,})'
+    # Version-named approvals (user decision 2026-10-28): the ECR image tag `<app>-vYYYY.MM.DD.HH.NN`, or a bare content
+    # release `vYYYY.MM.DD.HH.NN`; the plan digest stays in the body and the receipt.
+    versionCommand = r'APPROVE [A-Z][A-Z -]* (?:[a-z][a-z-]*-)?v\d{4}\.\d{2}\.\d{2}\.\d{2}\.(?:\d{2}|[1-9]\d{2,})'
     resourceCommand = r'APPROVE APPLY (?:NO_CHANGES|(?:s3|s3-policy|kms|cloudtrail) (?:CREATE|UPDATE) [A-Za-z0-9_./:=-]+)'
     if not command or any(not re.fullmatch(digestCommand + '|' + versionCommand + '|' + resourceCommand, line) for line in command.split('\n')):
         raise ValueError('Exact approval command or complete resource approval block required')

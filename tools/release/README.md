@@ -8,7 +8,7 @@ tool derives from the repository or the build file and nobody types.
 
 | Entry | File | What it runs |
 | --- | --- | --- |
-| `01 · Full` | `release.yml` | on every merge to `main`, and by hand: Security gate → Release tag → Build → Approve publication → Publish → Deploy DEV → Verify DEV → Keep or roll back DEV → (Keep DEV or Roll back DEV) → `05 · Deploy PROD` (shown, skipped until PROD exists) → Record the release |
+| `01 · Full` | `release.yml` | on every merge to `main`, and by hand: Security gate → Release tag → Build → Approve ECR publish → Publish to ECR → Plan DEV deploy → Approve DEV deploy → Deploy to DEV → Verify DEV app → Keep DEV or roll back → (Keep DEV: cut over, or Roll back DEV) → Deploy to PROD (shown, skipped until PROD is set up) → Record release |
 | `02 · Build` | `build.yml` | `release.yml` with `action: build`: cut the next tag at the main head (or use the given tag) and build; no approval, no credentials |
 | `03 · Publish` | `publish.yml` | `release.yml` with `action: publish` for an existing tag: build, scan, owner approval, publish without rebuilding in between |
 | `04 · Deploy DEV` | `deploy-dev.yml` | `release.yml` with `action: deploy-dev` for an existing published tag: plan, owner approval, deploy of the inactive DEV slot, verification, keep or roll back |
@@ -31,32 +31,35 @@ the application is built from the commit the release tag resolves to (`sourceSha
 3. **Build** (`build`): `ci.yml` through `workflow_call` with `source-sha` = S and image export:
    every CI gate unchanged, the image built with `SOURCE_REVISION=S`, and the scanned archive
    retained as `release-image-<S>` with a `lookahead-scanned-image/v3` receipt that records S and M.
-4. **Approve publication** (`approve`): no credentials, no environment. `owner_release.py gate`
+4. **Approve ECR publish** (`approve`): no credentials, no environment. This issue is the only approval before the push; the `dev` environment on the next job exists for the OIDC trust and the main-only branch policy, not for a second review. `owner_release.py gate`
    re-resolves the tag from the frozen record and `owner_release.py approve` opens the owner issue
    (gist first, then tables) bound to the exact image: `APPROVE IMAGE <version>` (the ECR image tag, for example `web-v2026.10.28.15.01`) within 40 minutes,
    `REJECT` stops; edited comments, a moved tag or main, or a changed issue fail closed.
-5. **Publish** (`publish`, environment `dev`): rechecks the live approval and the tag before OIDC,
+5. **Publish to ECR** (`publish`, environment `dev`, no required reviewers): rechecks the live approval and the tag before OIDC,
    imports the scanned image without rebuilding, assumes the publisher role for one 15-minute
    ECR-only session, pushes once to the immutable `lookahead-dev-ecr` tag `<app>-<release>`, reads
    the digest back and retains `registry-image-<S>` and `image-publication-outcome`.
-6. **Deploy DEV** (`deploy-dev`, environment `dev`, held until the repository variable
+6. **Plan DEV deploy** (`plan-dev`, environment `dev`, held until the repository variable
    `DEV_DEPLOY_ENABLED` is `true`): one run, never a dispatch of another repository. `candidate.py
    infra` selects Infra's newest calendar tag; Infra tooling is checked out at that commit with the
-   `CROSS_REPO_READ_TOKEN` secret and runs its own deploy chain (`application_workflow config`,
-   `application_inputs`, `plan`, `application_approval approve` with a second owner issue, `verify`,
-   `execute`) against the reviewed config in `DEV_DEPLOYMENT_CONFIG_JSON`. The candidate result
-   and the deployment inputs are retained.
-7. **Verify DEV** (`verify-dev`): `candidate.py verify` proves the Infra result names this tag and
+   `CROSS_REPO_READ_TOKEN` secret and runs its configuration check and the plan of the inactive slot
+   (`application_workflow config`, `application_inputs`, `plan`) with the plan role, against the
+   reviewed config in `DEV_DEPLOYMENT_CONFIG_JSON`. The plan is retained as `deploy-dev-plan`.
+   **Approve DEV deploy** (`approve-deploy`): no credentials; Infra's `application_approval approve`
+   opens the second owner issue (`APPROVE DEPLOY …`) bound to that plan. **Deploy to DEV**
+   (`deploy-dev`, environment `dev`): rechecks the approval, assumes the deploy role once, executes
+   the change sets and verifies the exact running tasks; the candidate result is retained.
+7. **Verify DEV app** (`verify-dev`): `candidate.py verify` proves the Infra result names this tag and
    the digest ECR returned at publish; with `DEV_VERIFY_URL` set, the live candidate must answer
    200 and name the tag. A failed verification rolls back without a question.
-8. **Keep or roll back DEV** (`decide-dev`): a third owner issue bound to this run:
+8. **Keep DEV or roll back** (`decide-dev`): a third owner issue bound to this run:
    `APPROVE KEEP DEV <version>` keeps and proceeds, `APPROVE ROLLBACK DEV <version>` restores the
    previous release, `REJECT` stops with nothing changed; 40-minute window.
-9. **Keep DEV** / **Roll back DEV**: the DEV cutover and rollback tools are Infra-owned and not
+9. **Keep DEV: cut over** / **Roll back DEV**: the DEV cutover and rollback tools are Infra-owned and not
    available yet (`candidate.py cutover` and `rollback` stop with the reason and change nothing).
-10. **05 · Deploy PROD (not configured)**: visible, skipped until `PROD_ENABLED` and a PROD
+10. **Deploy to PROD (not set up)**: visible, skipped until `PROD_ENABLED` and a PROD
     account, cluster and environment exist; it never pretends to deploy.
-11. **Record the release** (`record`): one `release-record-<tag>` artifact per run with the tag,
+11. **Record release** (`record`): one `release-record-<tag>` artifact per run with the tag,
     source, image digest, approvals, verification and decision receipts (absent stages recorded as
     absent).
 
@@ -65,7 +68,7 @@ older than M, every approval happens again, and the existing ECR tag is never ov
 
 ## Settings the repository needs
 
-Environment `dev` allowing exactly the `main` branch, with required reviewers. Repository
+Environment `dev` allowing exactly the `main` branch and **without** required reviewers (the owner issue is the approval; a reviewer rule would add GitHub's deployment pop-up on top of it). Repository
 variables: `DEV_PUBLISH_ROLE_ARN` (optional override of `lookahead-dev-deploy`),
 `DEV_DEPLOY_ENABLED`, `DEV_DEPLOYMENT_CONFIG_JSON`, `DEV_VERIFY_URL`, later `PROD_ENABLED`.
 Secret `CROSS_REPO_READ_TOKEN` (read-only on Infra) for the DEV deploy stage. Actions allow-list:
@@ -73,7 +76,7 @@ GitHub-owned plus the pinned `aws-actions/configure-aws-credentials`. Issues ena
 
 ## Shared copies and local checks
 
-`release_version.py`, `issue_template.py` and `owner_approval.py` are byte-identical copies of
+`release_version.py`, `issue_template.py`, `issue_close.py` and `owner_approval.py` are byte-identical copies of
 Infra's `github/releases/release_version.py`, `github/approvals/issue_template.py` and
 `github/approvals/image_publication.py`; `owner_release.py`, `candidate.py`, `pipeline_tag.py`
 and every test are identical across the three app repositories. Update all copies together.
@@ -81,7 +84,7 @@ and every test are identical across the three app repositories. Update all copie
 ```sh
 python3 -m unittest discover -s tools/release -p 'test_*.py'
 python3 -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'
-python3 -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py' --fail-under=85
+python3 -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py' --fail-under=85
 actionlint .github/workflows/*.yml
 ```
 

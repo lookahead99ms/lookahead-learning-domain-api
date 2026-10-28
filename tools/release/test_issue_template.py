@@ -64,7 +64,8 @@ class TemplateTests(unittest.TestCase):
         self.assertIn('Comment `APPROVE IMAGE <version>` or `REJECT`', body)
         self.assertIn('```text\nAPPROVE IMAGE web-v2026.10.28.15.01\n```', body)
         self.assertIn('Comment `APPROVE KEEP <version>` or `REJECT`', template.render(**dict(options, command='APPROVE KEEP DEV gateway-bff-v2026.10.28.15.00'), headline=headline))
-        for bad in ('APPROVE IMAGE web-v2026.10.28', 'APPROVE IMAGE Web-v2026.10.28.15.01', 'APPROVE IMAGE v2026.10.28.15.01', 'APPROVE IMAGE web-v2026.10.28.15.1'):
+        self.assertIn('Comment `APPROVE DEV <version>` or `REJECT`', template.render(**dict(options, command='APPROVE DEV RESTART v2026.10.28.16.00'), headline=headline))
+        for bad in ('APPROVE IMAGE web-v2026.10.28', 'APPROVE IMAGE Web-v2026.10.28.15.01', 'APPROVE IMAGE web-v2026.10.28.15.1', 'APPROVE IMAGE 2026.10.28.15.01'):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 template.render(**dict(options, command=bad))
 
@@ -101,7 +102,7 @@ class TemplateTests(unittest.TestCase):
 
     def test_portable_renderer_matches_reviewed_version(self):
         # An accidental edit in one repository must fail until all reviewed copies are synchronized.
-        expected = '757340d5131532720ce231ef6103f714f37bc069eff9909d41576f2f82cb48a6'
+        expected = '82ba7692d80962b3e4230fd04b5e57a761892915320ff5396fa45269a5bd892a'
         self.assertEqual(hashlib.sha256(Path(template.__file__).read_bytes()).hexdigest(), expected)
 
 

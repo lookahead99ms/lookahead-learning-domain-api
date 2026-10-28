@@ -89,7 +89,7 @@
         },
         {
           "name": "Test the release tooling this run executes and require 85 percent coverage",
-          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py' --fail-under=85",
+          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py' --fail-under=85",
           "env": {
             "COVERAGE_FILE": "${{ runner.temp }}/release-tooling.coverage"
           }
@@ -184,7 +184,7 @@
       }
     },
     "approve": {
-      "name": "Approve publication",
+      "name": "Approve ECR publish",
       "needs": [
         "release",
         "build"
@@ -258,11 +258,16 @@
             "if-no-files-found": "error",
             "retention-days": 21
           }
+        },
+        {
+          "name": "Close the approval issue when no approval was given",
+          "if": "failure()",
+          "run": "python3 tools/release/issue_close.py --stage \"Approve ECR publish\" --outcome failure --detail \"Rejected, expired or failed; nothing was published.\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --match \"Publish image\""
         }
       ]
     },
     "publish": {
-      "name": "Publish",
+      "name": "Publish to ECR",
       "needs": [
         "release",
         "approve"
@@ -274,7 +279,7 @@
       "permissions": {
         "contents": "read",
         "actions": "read",
-        "issues": "read",
+        "issues": "write",
         "pull-requests": "read",
         "id-token": "write"
       },
@@ -393,25 +398,38 @@
           "name": "Clear registry login",
           "if": "always()",
           "run": "docker logout \"${ECR_REPOSITORY%%/*}\""
+        },
+        {
+          "name": "Close the approval issue with the publish outcome",
+          "if": "always()",
+          "env": {
+            "OUTCOME": "${{ steps.publish.outcome }}"
+          },
+          "run": "if [ \"$OUTCOME\" = success ]; then detail=\"Image published to ECR and its digest read back.\"; else detail=\"Publish did not complete after approval; nothing is reused. Start a new run (next merge, or 03 · Publish by tag), which opens a new issue.\"; fi\npython3 tools/release/issue_close.py --stage \"Publish to ECR\" --outcome \"$OUTCOME\" --detail \"$detail\" --receipt \"$RUNNER_TEMP/owner-approval.json\""
         }
       ]
     },
-    "deploy-dev": {
-      "name": "Deploy DEV",
+    "plan-dev": {
+      "name": "Plan DEV deploy",
       "needs": [
         "release",
         "publish"
       ],
       "if": "always() && needs.release.result == 'success' && vars.DEV_DEPLOY_ENABLED == 'true' && (((inputs.action || 'full') == 'full' && needs.publish.result == 'success') || (inputs.action || 'full') == 'deploy-dev')",
       "runs-on": "ubuntu-24.04",
-      "timeout-minutes": 120,
+      "timeout-minutes": 40,
       "environment": "dev",
       "permissions": {
         "contents": "read",
         "actions": "read",
-        "issues": "write",
-        "pull-requests": "read",
         "id-token": "write"
+      },
+      "outputs": {
+        "infra-sha": "${{ steps.infra.outputs.infra_sha }}",
+        "infra-ref": "${{ steps.infra.outputs.infra_ref }}",
+        "account": "${{ steps.config.outputs.account }}",
+        "region": "${{ steps.config.outputs.region }}",
+        "deploy-role": "${{ steps.config.outputs.deployRoleArn }}"
       },
       "env": {
         "GH_TOKEN": "${{ github.token }}",
@@ -507,12 +525,187 @@
           "run": "python3 -m github.workflows.application_workflow plan"
         },
         {
+          "name": "Retain the Infra tooling selection, deployment inputs and plan",
+          "if": "always() && steps.infra.outcome == 'success'",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "deploy-dev-plan",
+            "path": "${{ runner.temp }}/infra-tooling.json\ninfra-tooling/app-inputs/\ninfra-tooling/app-plan/",
+            "if-no-files-found": "error",
+            "retention-days": 30
+          }
+        }
+      ]
+    },
+    "approve-deploy": {
+      "name": "Approve DEV deploy",
+      "needs": [
+        "release",
+        "plan-dev"
+      ],
+      "if": "always() && needs.plan-dev.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 45,
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "issues": "write",
+        "pull-requests": "read"
+      },
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "RELEASE_VERSION": "${{ needs.release.outputs.release-version }}"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Checkout Infra tooling at its release tag",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "repository": "lookahead99ms/lookahead-learning-infra",
+            "ref": "${{ needs.plan-dev.outputs.infra-sha }}",
+            "path": "infra-tooling",
+            "token": "${{ secrets.CROSS_REPO_READ_TOKEN }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Set up Python for Infra tooling",
+          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+          "with": {
+            "python-version": "3.14"
+          }
+        },
+        {
+          "name": "Restore the deployment inputs and plan",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "deploy-dev-plan",
+            "path": "${{ runner.temp }}/deploy-dev-plan"
+          }
+        },
+        {
+          "name": "Place the plan beside the Infra tooling",
+          "run": "cp -R \"$RUNNER_TEMP/deploy-dev-plan/infra-tooling/app-inputs\" \"$RUNNER_TEMP/deploy-dev-plan/infra-tooling/app-plan\" infra-tooling/"
+        },
+        {
           "name": "Wait for the owner approval of this exact deployment (issue with gist first)",
           "working-directory": "infra-tooling",
           "env": {
             "CHANGE_CONTEXT_TOKEN": "${{ secrets.CROSS_REPO_READ_TOKEN }}"
           },
           "run": "python3 -m github.approvals.application_approval approve --plan app-plan/plan.json --receipt app-approval/approval.json"
+        },
+        {
+          "name": "Retain the deployment approval",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "deploy-dev-approval",
+            "path": "infra-tooling/app-approval/",
+            "if-no-files-found": "error",
+            "retention-days": 30
+          }
+        },
+        {
+          "name": "Close the deployment approval issue when no approval was given",
+          "if": "failure()",
+          "run": "python3 tools/release/issue_close.py --stage \"Approve DEV deploy\" --outcome failure --detail \"Rejected, expired or failed; nothing was deployed.\" --receipt infra-tooling/app-approval/approval.json --match \"Deploy\""
+        }
+      ]
+    },
+    "deploy-dev": {
+      "name": "Deploy to DEV",
+      "needs": [
+        "release",
+        "plan-dev",
+        "approve-deploy"
+      ],
+      "if": "always() && needs.approve-deploy.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 90,
+      "environment": "dev",
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "issues": "write",
+        "id-token": "write"
+      },
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "RELEASE_VERSION": "${{ needs.release.outputs.release-version }}",
+        "SOURCE_SHA": "${{ needs.release.outputs.source-sha }}",
+        "CROSS_REPO_READ_TOKEN": "${{ secrets.CROSS_REPO_READ_TOKEN }}",
+        "DEPLOY_APP": "domain",
+        "DEPLOY_RELEASE_VERSION": "${{ needs.release.outputs.release-version }}",
+        "AWS_MAX_ATTEMPTS": "1",
+        "AWS_RETRY_MODE": "standard",
+        "AWS_EC2_METADATA_DISABLED": "true"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Restore the frozen release-source record",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "release-source",
+            "path": "${{ runner.temp }}"
+          }
+        },
+        {
+          "name": "Point the release-source record at the runner temp directory",
+          "run": "echo \"RELEASE_SOURCE_RECORD=$RUNNER_TEMP/release-source.json\" >> \"$GITHUB_ENV\""
+        },
+        {
+          "name": "Checkout Infra tooling at its release tag",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "repository": "lookahead99ms/lookahead-learning-infra",
+            "ref": "${{ needs.plan-dev.outputs.infra-sha }}",
+            "path": "infra-tooling",
+            "token": "${{ secrets.CROSS_REPO_READ_TOKEN }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Set up Python for Infra tooling",
+          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+          "with": {
+            "python-version": "3.14"
+          }
+        },
+        {
+          "name": "Restore the deployment inputs and plan",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "deploy-dev-plan",
+            "path": "${{ runner.temp }}/deploy-dev-plan"
+          }
+        },
+        {
+          "name": "Restore the deployment approval",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "deploy-dev-approval",
+            "path": "infra-tooling/app-approval"
+          }
+        },
+        {
+          "name": "Place the plan beside the Infra tooling",
+          "run": "cp -R \"$RUNNER_TEMP/deploy-dev-plan/infra-tooling/app-inputs\" \"$RUNNER_TEMP/deploy-dev-plan/infra-tooling/app-plan\" infra-tooling/"
         },
         {
           "name": "Recheck the deployment approval before AWS credentials",
@@ -523,9 +716,9 @@
           "name": "Use short-lived DEV OIDC credentials for the deployment",
           "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
           "with": {
-            "aws-region": "${{ steps.config.outputs.region }}",
-            "role-to-assume": "${{ steps.config.outputs.deployRoleArn }}",
-            "allowed-account-ids": "${{ steps.config.outputs.account }}",
+            "aws-region": "${{ needs.plan-dev.outputs.region }}",
+            "role-to-assume": "${{ needs.plan-dev.outputs.deploy-role }}",
+            "allowed-account-ids": "${{ needs.plan-dev.outputs.account }}",
             "role-duration-seconds": 3600,
             "unset-current-credentials": true,
             "output-credentials": false,
@@ -551,20 +744,17 @@
           }
         },
         {
-          "name": "Retain the Infra tooling selection, deployment inputs, plan and approval",
-          "if": "always() && steps.infra.outcome == 'success'",
-          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-          "with": {
-            "name": "deploy-dev-receipts",
-            "path": "${{ runner.temp }}/infra-tooling.json\ninfra-tooling/app-inputs/\ninfra-tooling/app-plan/\ninfra-tooling/app-approval/",
-            "if-no-files-found": "error",
-            "retention-days": 30
-          }
+          "name": "Close the deployment approval issue with the deploy outcome",
+          "if": "always()",
+          "env": {
+            "OUTCOME": "${{ steps.execute.outcome }}"
+          },
+          "run": "if [ \"$OUTCOME\" = success ]; then detail=\"Candidate deployed to the inactive DEV slot and its running tasks verified.\"; else detail=\"Deploy did not complete after approval; the previous release keeps serving. Start a new run (04 · Deploy DEV by tag), which opens a new issue.\"; fi\npython3 tools/release/issue_close.py --stage \"Deploy to DEV\" --outcome \"$OUTCOME\" --detail \"$detail\" --receipt infra-tooling/app-approval/approval.json"
         }
       ]
     },
     "verify-dev": {
-      "name": "Verify DEV",
+      "name": "Verify DEV app",
       "needs": [
         "release",
         "deploy-dev"
@@ -614,7 +804,7 @@
           "name": "Restore the deployment inputs (publication receipt of this release)",
           "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
           "with": {
-            "name": "deploy-dev-receipts",
+            "name": "deploy-dev-plan",
             "path": "${{ runner.temp }}/deploy-dev"
           }
         },
@@ -643,7 +833,7 @@
       ]
     },
     "decide-dev": {
-      "name": "Keep or roll back DEV",
+      "name": "Keep DEV or roll back",
       "needs": [
         "release",
         "verify-dev"
@@ -708,11 +898,16 @@
             "if-no-files-found": "error",
             "retention-days": 30
           }
+        },
+        {
+          "name": "Close the decision issue when no decision was given",
+          "if": "failure()",
+          "run": "python3 tools/release/issue_close.py --stage \"Keep DEV or roll back\" --outcome failure --detail \"Rejected, expired or failed; the candidate was left as it was.\" --receipt \"$RUNNER_TEMP/candidate-decision.json\" --match \"Keep or roll back\""
         }
       ]
     },
     "keep-dev": {
-      "name": "Keep DEV: cut over to the kept release",
+      "name": "Keep DEV: cut over",
       "needs": [
         "release",
         "decide-dev"
@@ -724,10 +919,12 @@
       "permissions": {
         "contents": "read",
         "actions": "read",
-        "id-token": "write"
+        "id-token": "write",
+        "issues": "write"
       },
       "env": {
-        "RELEASE_VERSION": "${{ needs.release.outputs.release-version }}"
+        "RELEASE_VERSION": "${{ needs.release.outputs.release-version }}",
+        "GH_TOKEN": "${{ github.token }}"
       },
       "steps": [
         {
@@ -739,8 +936,25 @@
           }
         },
         {
+          "name": "Restore the decision receipt",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "candidate-decision",
+            "path": "${{ runner.temp }}"
+          }
+        },
+        {
           "name": "Cut DEV public traffic over to the kept release (Infra-owned tool; stops with the reason while unavailable)",
-          "run": "python3 tools/release/candidate.py cutover --stage dev --output \"$RUNNER_TEMP/candidate-cutover.json\""
+          "run": "python3 tools/release/candidate.py cutover --stage dev --output \"$RUNNER_TEMP/candidate-cutover.json\"",
+          "id": "cutover"
+        },
+        {
+          "name": "Close the decision issue with the outcome",
+          "if": "always()",
+          "env": {
+            "OUTCOME": "${{ steps.cutover.outcome }}"
+          },
+          "run": "if [ \"$OUTCOME\" = success ]; then detail=\"DEV traffic now serves the kept release.\"; else detail=\"Cutover did not complete; the previous release keeps serving.\"; fi\npython3 tools/release/issue_close.py --stage \"Keep DEV: cut over\" --outcome \"$OUTCOME\" --detail \"$detail\" --receipt \"$RUNNER_TEMP/candidate-decision.json\""
         }
       ]
     },
@@ -759,10 +973,12 @@
       "permissions": {
         "contents": "read",
         "actions": "read",
-        "id-token": "write"
+        "id-token": "write",
+        "issues": "write"
       },
       "env": {
-        "RELEASE_VERSION": "${{ needs.release.outputs.release-version }}"
+        "RELEASE_VERSION": "${{ needs.release.outputs.release-version }}",
+        "GH_TOKEN": "${{ github.token }}"
       },
       "steps": [
         {
@@ -774,13 +990,30 @@
           }
         },
         {
+          "name": "Restore the decision receipt",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "candidate-decision",
+            "path": "${{ runner.temp }}"
+          }
+        },
+        {
           "name": "Restore the previously served DEV release (Infra-owned tool; stops with the reason while unavailable)",
-          "run": "python3 tools/release/candidate.py rollback --stage dev --output \"$RUNNER_TEMP/candidate-rollback.json\""
+          "run": "python3 tools/release/candidate.py rollback --stage dev --output \"$RUNNER_TEMP/candidate-rollback.json\"",
+          "id": "rollback"
+        },
+        {
+          "name": "Close the decision issue with the outcome",
+          "if": "always()",
+          "env": {
+            "OUTCOME": "${{ steps.rollback.outcome }}"
+          },
+          "run": "if [ \"$OUTCOME\" = success ]; then detail=\"The previous DEV release was restored.\"; else detail=\"Rollback did not complete; inspect the slot before any new run.\"; fi\npython3 tools/release/issue_close.py --stage \"Roll back DEV\" --outcome \"$OUTCOME\" --detail \"$detail\" --receipt \"$RUNNER_TEMP/candidate-decision.json\""
         }
       ]
     },
     "deploy-prod": {
-      "name": "05 · Deploy PROD (not configured)",
+      "name": "Deploy to PROD (not set up)",
       "needs": [
         "release",
         "keep-dev"
@@ -797,12 +1030,14 @@
       ]
     },
     "record": {
-      "name": "Record the release",
+      "name": "Record release",
       "needs": [
         "release",
         "build",
         "approve",
         "publish",
+        "plan-dev",
+        "approve-deploy",
         "deploy-dev",
         "verify-dev",
         "decide-dev",
@@ -846,7 +1081,7 @@
           "continue-on-error": true,
           "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
           "with": {
-            "pattern": "{registry-image-*,owner-approval,candidate-verify,candidate-decision,deploy-dev-receipts}",
+            "pattern": "{registry-image-*,owner-approval,candidate-verify,candidate-decision,deploy-dev-plan,deploy-dev-approval}",
             "path": "${{ runner.temp }}/receipts",
             "merge-multiple": true
           }
