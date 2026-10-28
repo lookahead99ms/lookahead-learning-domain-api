@@ -49,7 +49,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual('write', publish['permissions']['id-token'])
         self.assertEqual('write',publish['permissions']['issues'])
         self.assertIn('--source-root release-source', commands)
-        self.assertEqual('${{ runner.temp }}/release-source.json', publish['env']['RELEASE_SOURCE_RECORD'])
+        # runner.* is only valid inside steps; a job-level runner.temp made the whole file invalid (GitHub rejected every
+        # run at startup from 2026-10-27 until DLV-914 fixed it), so the record path is exported by the first step instead.
+        self.assertNotIn('RELEASE_SOURCE_RECORD', publish['env'])
+        self.assertNotIn('runner.', json.dumps(publish['env']))
+        export = next(i for i, s in enumerate(publish['steps']) if s.get('name') == 'Point the release-source record at the runner temp directory')
+        self.assertEqual('echo "RELEASE_SOURCE_RECORD=$RUNNER_TEMP/release-source.json" >> "$GITHUB_ENV"', publish['steps'][export]['run'])
+        self.assertEqual('release-source', publish['steps'][export - 1]['with']['name'])  # the record is restored first, then named
         self.assertIn('${{ runner.temp }}/release-source.json', steps[names.index('Preserve owner approval and publication outcome')]['with']['path'])
         policy=json.loads(steps[oidc]['with']['inline-session-policy'])
         self.assertEqual(policy['Statement'][1]['Resource'],'arn:aws:ecr:us-east-2:509614632283:repository/lookahead-dev-ecr')
@@ -95,7 +101,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         uploads = {s['with']['name']: s['with']['path'] for s in steps if str(s.get('uses', '')).startswith('actions/upload-artifact@')}
         self.assertIn('registry-image-' + source, uploads)
         self.assertTrue(any('release-source.json' in path for path in uploads.values()))
-        self.assertEqual((source, '${{ runner.temp }}/release-source.json'), (publish['env']['SOURCE_SHA'], publish['env']['RELEASE_SOURCE_RECORD']))
+        self.assertEqual(source, publish['env']['SOURCE_SHA'])
+        self.assertIn('RELEASE_SOURCE_RECORD=$RUNNER_TEMP/release-source.json', '\n'.join(step.get('run', '') for step in publish['steps']))
         commands = '\n'.join(step.get('run', '') for step in steps)
         self.assertNotIn('$GITHUB_SHA', commands)
         self.assertNotIn('github.sha', json.dumps(steps).replace('${{ github.sha }}', ''))
