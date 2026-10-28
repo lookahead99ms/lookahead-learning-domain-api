@@ -62,7 +62,9 @@ class PublicationBootstrapTest {
     @Test void downloadsOnlyPinnedObjectsAndPublishesReadOnlyCompleteRelease() throws Exception {
         var f = fixture(null,false,false); var keys = new ArrayList<String>();
         var location = new PublicationBootstrap(mapper).load(settings(f), key -> {keys.add(key);return source(f).open(key);});
-        assertThat(keys).containsExactly("releases/"+f.release()+"/manifest.json", "releases/"+f.release()+"/publication.tar.gz");
+        // The serving release exists in one place: a pinned deployment reads live/<tag>/, never releases/ or archive/.
+        assertThat(keys).containsExactly("live/"+f.release()+"/manifest.json", "live/"+f.release()+"/publication.tar.gz");
+        assertThat(keys).noneMatch(key -> key.startsWith("releases/") || key.startsWith("archive/"));
         assertThat(Files.readString(Path.of(location.contentRoot()).resolve("sample.json"))).contains("synthetic");
         assertThat(Files.getPosixFilePermissions(Path.of(location.manifest()))).isEqualTo(PosixFilePermissions.fromString("r--------"));
         assertThat(Path.of(location.accountCatalog())).exists();
@@ -247,10 +249,10 @@ class PublicationBootstrapTest {
                 .hasMessage("Selected cloud publication failed startup verification");
             try (var files = Files.list(directory)) { assertThat(files.toList()).isEmpty(); }
         }
-        // A pinned deployment never lists, and a source without listing support cannot serve live.
+        // A pinned deployment never lists; it reads its own live/<tag>/ folder only. A source without listing support cannot serve live.
         var pinnedRequests = new ArrayList<String>();
         new PublicationBootstrap(mapper).load(settings(f), key -> { pinnedRequests.add(key); return source(f).open(key); });
-        assertThat(pinnedRequests).noneMatch(key -> key.startsWith("list:") || key.startsWith("live/"));
+        assertThat(pinnedRequests).noneMatch(key -> key.startsWith("list:")).allMatch(key -> key.startsWith("live/"+f.release()+"/"));
         assertThatThrownBy(() -> new PublicationBootstrap(mapper).load(liveSettings(), source(f))).isInstanceOf(IllegalStateException.class);
     }
     Fixture distinctFixture() throws Exception { return distinctFixture(LATER_TAG); }
