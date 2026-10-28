@@ -113,8 +113,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('release-image-${{ inputs.source-sha || github.sha }}', ci)
         self.assertIn('SOURCE_REVISION=$SOURCE_SHA', ci)
         self.assertNotIn('SOURCE_REVISION=$GITHUB_SHA', ci)
-        self.assertIn('git fetch --depth 1 origin \\"$GITHUB_SHA\\"' if ci.startswith('{') else 'git fetch --depth 1 origin "$GITHUB_SHA"', ci)
-        self.assertLess(ci.index('git fetch --depth 1 origin'), ci.index('docker build'))
+        # The history secret scan refuses a shallow clone, and a --depth fetch after the full checkout marks the clone shallow
+        # (Domain pipeline run #3, tag v2026.10.28.13.00, failed there on 2026-10-28), so the binding commit is fetched in full.
+        self.assertIn('git fetch origin \\"$GITHUB_SHA\\"' if ci.startswith('{') else 'git fetch origin "$GITHUB_SHA"', ci)
+        self.assertNotIn('--depth', ci)
+        self.assertLess(ci.index('git fetch origin'), ci.index('check.py history' if 'check.py history' in ci else 'security:secrets'))
+        self.assertLess(ci.index('git fetch origin'), ci.index('docker build'))
         # A build without a release tag (pull request, plain push) reports releaseTag dev and jar version 0.0.1-SNAPSHOT;
         # the Dockerfile test suite rejects any other tag shape, so the fallback must never pass the snapshot as the tag.
         plain = ci.replace('\\"', '"')  # the workflow file is JSON-shaped YAML, so quotes inside run strings are escaped
