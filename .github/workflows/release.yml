@@ -7,36 +7,16 @@
         "main"
       ]
     },
-    "workflow_dispatch": {
-      "inputs": {
-        "action": {
-          "description": "full: tag, build, approve, publish, DEV stages; build: tag (or the given tag) and build only; publish: build, approve and publish the given tag; deploy-dev: DEV stages for the given published tag",
-          "type": "choice",
-          "options": [
-            "full",
-            "build",
-            "publish",
-            "deploy-dev"
-          ],
-          "default": "full"
-        },
-        "release_version": {
-          "description": "Existing release tag vyyyy.mm.dd.hh.nn at a main commit; required for publish and deploy-dev, optional for build, ignored by full",
-          "type": "string",
-          "required": false,
-          "default": ""
-        }
-      }
-    },
+    "workflow_dispatch": {},
     "workflow_call": {
       "inputs": {
         "action": {
-          "description": "full, build, publish or deploy-dev (the numbered entries 02, 03 and 04 pass it)",
+          "description": "full (also a manual run of this file), build, publish or deploy-dev; the numbered entries 02, 03 and 04 pass it",
           "type": "string",
           "required": true
         },
         "release_version": {
-          "description": "Existing release tag vyyyy.mm.dd.hh.nn at a main commit; required for publish and deploy-dev, optional for build",
+          "description": "Existing published release tag vyyyy.mm.dd.hh.nn, used by deploy-dev only; build and publish cut the next tag at the main head",
           "type": "string",
           "required": false,
           "default": ""
@@ -125,8 +105,8 @@
           "run": "test \"$GITHUB_REF\" = refs/heads/main"
         },
         {
-          "name": "Require an existing release tag for publish and deploy-dev",
-          "if": "(inputs.action || 'full') == 'publish' || (inputs.action || 'full') == 'deploy-dev'",
+          "name": "Require an existing published release tag for deploy-dev",
+          "if": "(inputs.action || 'full') == 'deploy-dev'",
           "env": {
             "RELEASE_VERSION": "${{ inputs.release_version }}"
           },
@@ -135,7 +115,7 @@
         {
           "name": "Cut the next release tag at the run commit, or reuse the one that already names it",
           "id": "cut",
-          "if": "(inputs.action || 'full') == 'full' || ((inputs.action || 'full') == 'build' && inputs.release_version == '')",
+          "if": "(inputs.action || 'full') != 'deploy-dev'",
           "run": "python3 tools/release/pipeline_tag.py cut --app domain --record \"$RUNNER_TEMP/release-tag.json\""
         },
         {

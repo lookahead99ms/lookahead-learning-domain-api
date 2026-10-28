@@ -1,17 +1,8 @@
 {
   "name": "02 · Build",
-  "run-name": "${{ github.workflow }} | ${{ inputs.release_version || github.ref_name }} | ${{ github.event_name }} | #${{ github.run_number }}",
+  "run-name": "${{ github.workflow }} | ${{ github.ref_name }} | ${{ github.event_name }} | #${{ github.run_number }}",
   "on": {
-    "workflow_dispatch": {
-      "inputs": {
-        "release_version": {
-          "description": "Existing release tag vyyyy.mm.dd.hh.nn to build; blank cuts the next tag at the main head and builds it",
-          "type": "string",
-          "required": false,
-          "default": ""
-        }
-      }
-    }
+    "workflow_dispatch": {}
   },
   "permissions": {
     "contents": "write",
@@ -24,8 +15,7 @@
     "release": {
       "uses": "./.github/workflows/release.yml",
       "with": {
-        "action": "build",
-        "release_version": "${{ inputs.release_version }}"
+        "action": "build"
       },
       "secrets": "inherit"
     }
