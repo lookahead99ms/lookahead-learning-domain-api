@@ -1,9 +1,9 @@
 """The numbered pipeline of this repository against the platform standard (Content `01 · Content Full`, Infra `00 · Infra Pipeline`).
 
 One implementation, `release.yml` (`01 · Full`), runs on merge push and on dispatch; `02 · Build`, `03 · Publish` and
-`04 · Deploy DEV` are thin callers that pass `action`. Stages in order: Security gate, Release tag, Build, Approve
-publication, Publish, Deploy DEV, Verify DEV, Keep or roll back DEV (then Keep DEV / Roll back DEV), 05 · Deploy PROD
-(not configured, shown skipped), Record the release. Identical test in Domain, Web and Gateway/BFF apart from APP.
+`04 · Deploy DEV` are thin callers that pass `action`. Stages in order: Security gate, Release tag, Build, Approve ECR
+publish, Publish to ECR, Plan DEV deploy, Approve DEV deploy, Deploy to DEV, Verify DEV app, Keep DEV or roll back (then Keep DEV / Roll back DEV), Deploy to PROD
+(not set up, shown skipped), Record release. Identical test in Domain, Web and Gateway/BFF apart from APP.
 """
 import json
 from pathlib import Path
@@ -13,10 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 # The hosted checkout folder is the repository name (lookahead-learning-web, not web-public): detect the app from the build file.
 APP = 'web' if (ROOT / 'package.json').exists() else 'gateway-bff' if (ROOT / 'build.gradle').exists() else 'domain'
 A = "(inputs.action || 'full')"
-STAGES = ['validate', 'release', 'build', 'approve', 'publish', 'deploy-dev', 'verify-dev', 'decide-dev', 'keep-dev', 'rollback-dev', 'deploy-prod', 'record']
-NAMES = {'validate': 'Security gate', 'release': 'Release tag', 'build': 'Build', 'approve': 'Approve publication', 'publish': 'Publish',
-         'deploy-dev': 'Deploy DEV', 'verify-dev': 'Verify DEV', 'decide-dev': 'Keep or roll back DEV', 'keep-dev': 'Keep DEV: cut over to the kept release',
-         'rollback-dev': 'Roll back DEV', 'deploy-prod': '05 · Deploy PROD (not configured)', 'record': 'Record the release'}
+STAGES = ['validate', 'release', 'build', 'approve', 'publish', 'plan-dev', 'approve-deploy', 'deploy-dev', 'verify-dev', 'decide-dev', 'keep-dev', 'rollback-dev', 'deploy-prod', 'record']
+NAMES = {'validate': 'Security gate', 'release': 'Release tag', 'build': 'Build', 'approve': 'Approve ECR publish', 'publish': 'Publish to ECR', 'plan-dev': 'Plan DEV deploy', 'approve-deploy': 'Approve DEV deploy', 'deploy-dev': 'Deploy to DEV', 'verify-dev': 'Verify DEV app', 'decide-dev': 'Keep DEV or roll back', 'keep-dev': 'Keep DEV: cut over', 'rollback-dev': 'Roll back DEV', 'deploy-prod': 'Deploy to PROD (not set up)', 'record': 'Record release'}
 ENTRIES = {'build.yml': ('02 · Build', 'build', False), 'publish.yml': ('03 · Publish', 'publish', True), 'deploy-dev.yml': ('04 · Deploy DEV', 'deploy-dev', True)}
 PINNED = {'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
           'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333', 'actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97',
@@ -86,7 +84,7 @@ class StandardShapeTests(unittest.TestCase):
                     self.assertFalse(step['run'].startswith('echo') and 'no PROD' in step['run'])
             if name not in ('release',):
                 self.assertNotEqual('write', job.get('permissions', {}).get('contents'), name)
-            if name not in ('publish', 'deploy-dev', 'keep-dev', 'rollback-dev'):
+            if name not in ('publish', 'plan-dev', 'deploy-dev', 'keep-dev', 'rollback-dev'):
                 self.assertNotIn('id-token', job.get('permissions', {}), name)
         text = json.dumps(full)
         self.assertNotIn('$GITHUB_SHA', text)
@@ -155,7 +153,7 @@ class StageContractTests(unittest.TestCase):
         self.assertEqual([('${{ github.sha }}', None, False), ('${{ needs.release.outputs.source-sha }}', 'release-source', False)], checkouts)
         self.assertEqual(['echo "RELEASE_SOURCE_RECORD=$RUNNER_TEMP/release-source.json" >> "$GITHUB_ENV"',
                           'python3 tools/release/owner_release.py gate --directory "$RUNNER_TEMP/release-image" --receipt "$RUNNER_TEMP/owner-approval.json"',
-                          'python3 tools/release/owner_release.py approve --directory "$RUNNER_TEMP/release-image" --receipt "$RUNNER_TEMP/owner-approval.json" --source-root release-source'], runs(approve))
+                          'python3 tools/release/owner_release.py approve --directory "$RUNNER_TEMP/release-image" --receipt "$RUNNER_TEMP/owner-approval.json" --source-root release-source'], runs(approve)[:3])
         self.assertEqual(('owner-approval', '${{ runner.temp }}/owner-plan.json\n${{ runner.temp }}/owner-approval.json'),
                          next((s['with']['name'], s['with']['path']) for s in uses(approve, 'actions/upload-artifact@')))
 
@@ -164,7 +162,7 @@ class StageContractTests(unittest.TestCase):
         self.assertEqual(['release', 'approve'], publish['needs'])
         self.assertEqual("always() && needs.approve.result == 'success'", publish['if'])
         self.assertEqual('dev', publish['environment'])
-        self.assertEqual({'contents': 'read', 'actions': 'read', 'issues': 'read', 'pull-requests': 'read', 'id-token': 'write'}, publish['permissions'])
+        self.assertEqual({'contents': 'read', 'actions': 'read', 'issues': 'write', 'pull-requests': 'read', 'id-token': 'write'}, publish['permissions'])
         self.assertEqual('1', publish['env']['AWS_MAX_ATTEMPTS'])
         commands = runs(publish)
         oidc = next(i for i, s in enumerate(publish['steps']) if str(s.get('uses', '')).startswith('aws-actions/configure-aws-credentials@'))
@@ -186,37 +184,56 @@ class StageContractTests(unittest.TestCase):
         self.assertEqual('${{ runner.temp }}/registry-image.json\n${{ runner.temp }}/release-source.json', uploads['registry-image-${{ needs.release.outputs.source-sha }}']['with']['path'])
         self.assertIn('publication-outcome.json', uploads['image-publication-outcome']['with']['path'])
         self.assertEqual("always() && (steps.publish.outcome == 'success' || steps.publish.outcome == 'failure')", uploads['image-publication-outcome']['if'])
-        self.assertEqual('docker logout "${ECR_REPOSITORY%%/*}"', commands[-1])
+        self.assertEqual('docker logout "${ECR_REPOSITORY%%/*}"', commands[-2])
+        # The consumed approval issue is closed with the outcome as the last step, whatever happened (user decision 2026-10-28).
+        last = publish['steps'][-1]
+        self.assertEqual(('always()', '${{ steps.publish.outcome }}'), (last['if'], last['env']['OUTCOME']))
+        self.assertIn('issue_close.py --stage "Publish to ECR" --outcome "$OUTCOME" --detail "$detail" --receipt "$RUNNER_TEMP/owner-approval.json"', last['run'])
+        approve = self.jobs['approve']
+        self.assertEqual(('failure()', True), (approve['steps'][-1]['if'], '--match "Publish image"' in approve['steps'][-1]['run']))
 
-    def test_deploy_dev_runs_infra_tooling_at_its_release_tag_inside_this_run_behind_the_flag(self):
-        deploy = self.jobs['deploy-dev']
-        self.assertEqual(['release', 'publish'], deploy['needs'])
-        self.assertEqual("always() && needs.release.result == 'success' && vars.DEV_DEPLOY_ENABLED == 'true' && ((" + A + " == 'full' && needs.publish.result == 'success') || " + A + " == 'deploy-dev')", deploy['if'])
-        self.assertEqual('dev', deploy['environment'])
-        self.assertEqual({'contents': 'read', 'actions': 'read', 'issues': 'write', 'pull-requests': 'read', 'id-token': 'write'}, deploy['permissions'])
-        self.assertEqual((APP if APP != 'gateway-bff' else 'gateway', '${{ needs.release.outputs.release-version }}'), (deploy['env']['DEPLOY_APP'], deploy['env']['DEPLOY_RELEASE_VERSION']))
-        steps = {s['name']: s for s in deploy['steps'] if 'name' in s}
+    def test_dev_deploy_is_plan_approve_deploy_with_infra_tooling_at_its_release_tag_behind_the_flag(self):
+        plan, approve, deploy = self.jobs['plan-dev'], self.jobs['approve-deploy'], self.jobs['deploy-dev']
+        self.assertEqual(['release', 'publish'], plan['needs'])
+        self.assertEqual("always() && needs.release.result == 'success' && vars.DEV_DEPLOY_ENABLED == 'true' && ((" + A + " == 'full' && needs.publish.result == 'success') || " + A + " == 'deploy-dev')", plan['if'])
+        self.assertEqual(('dev', {'contents': 'read', 'actions': 'read', 'id-token': 'write'}), (plan['environment'], plan['permissions']))
+        self.assertEqual((APP if APP != 'gateway-bff' else 'gateway', '${{ needs.release.outputs.release-version }}'), (plan['env']['DEPLOY_APP'], plan['env']['DEPLOY_RELEASE_VERSION']))
+        self.assertEqual({'infra-sha': '${{ steps.infra.outputs.infra_sha }}', 'infra-ref': '${{ steps.infra.outputs.infra_ref }}', 'account': '${{ steps.config.outputs.account }}',
+                          'region': '${{ steps.config.outputs.region }}', 'deploy-role': '${{ steps.config.outputs.deployRoleArn }}'}, plan['outputs'])
+        steps = {s['name']: s for s in plan['steps'] if 'name' in s}
         self.assertEqual(('infra', 'python3 tools/release/candidate.py infra --output "$RUNNER_TEMP/infra-tooling.json"'),
                          (steps['Select the Infra tooling release (newest Infra calendar tag)']['id'], steps['Select the Infra tooling release (newest Infra calendar tag)']['run']))
         infra = steps['Checkout Infra tooling at its release tag']['with']
         self.assertEqual(('lookahead99ms/lookahead-learning-infra', '${{ steps.infra.outputs.infra_sha }}', 'infra-tooling', '${{ secrets.CROSS_REPO_READ_TOKEN }}', False),
                          (infra['repository'], infra['ref'], infra['path'], infra['token'], infra['persist-credentials']))
-        chain = [s['run'] for s in deploy['steps'] if s.get('working-directory') == 'infra-tooling']
         self.assertEqual(['python3 -m github.workflows.application_workflow config',
                           'python3 -m github.workflows.application_inputs --config app-inputs/workflow-config.json --runs app-inputs/runs.json --output app-inputs',
-                          'python3 -m github.workflows.application_workflow plan',
-                          'python3 -m github.approvals.application_approval approve --plan app-plan/plan.json --receipt app-approval/approval.json',
-                          'python3 -m github.approvals.application_approval verify --plan app-plan/plan.json --receipt app-approval/approval.json',
-                          'python3 -m github.workflows.application_workflow execute'], chain)
-        creds = [s['with'] for s in uses(deploy, 'aws-actions/configure-aws-credentials@')]
-        self.assertEqual([('${{ steps.config.outputs.planRoleArn }}', 'app-deploy-plan-${{ github.run_id }}-1'), ('${{ steps.config.outputs.deployRoleArn }}', 'app-deploy-${{ github.run_id }}-1')],
-                         [(c['role-to-assume'], c['role-session-name']) for c in creds])
+                          'python3 -m github.workflows.application_workflow plan'], [s['run'] for s in plan['steps'] if s.get('working-directory') == 'infra-tooling'])
+        self.assertEqual([('${{ steps.config.outputs.planRoleArn }}', 'app-deploy-plan-${{ github.run_id }}-1', 900)],
+                         [(c['with']['role-to-assume'], c['with']['role-session-name'], c['with']['role-duration-seconds']) for c in uses(plan, 'aws-actions/configure-aws-credentials@')])
+        self.assertEqual({'deploy-dev-plan': '${{ runner.temp }}/infra-tooling.json\ninfra-tooling/app-inputs/\ninfra-tooling/app-plan/'}, {s['with']['name']: s['with']['path'] for s in uses(plan, 'actions/upload-artifact@')})
+        # Approve DEV deploy: its own stage, no credentials, no environment; Infra tooling at the same commit the plan used.
+        self.assertEqual((['release', 'plan-dev'], "always() && needs.plan-dev.result == 'success'"), (approve['needs'], approve['if']))
+        self.assertEqual({'contents': 'read', 'actions': 'read', 'issues': 'write', 'pull-requests': 'read'}, approve['permissions'])
+        self.assertNotIn('environment', approve); self.assertEqual([], uses(approve, 'aws-actions/'))
+        self.assertEqual('${{ needs.plan-dev.outputs.infra-sha }}', next(s for s in uses(approve, 'actions/checkout@') if s['with'].get('path') == 'infra-tooling')['with']['ref'])
+        self.assertEqual(['python3 -m github.approvals.application_approval approve --plan app-plan/plan.json --receipt app-approval/approval.json'], [s['run'] for s in approve['steps'] if s.get('working-directory') == 'infra-tooling'])
+        self.assertEqual({'deploy-dev-plan': '${{ runner.temp }}/deploy-dev-plan'}, {s['with']['name']: s['with']['path'] for s in uses(approve, 'actions/download-artifact@')})
+        self.assertEqual({'deploy-dev-approval': 'infra-tooling/app-approval/'}, {s['with']['name']: s['with']['path'] for s in uses(approve, 'actions/upload-artifact@')})
+        # Deploy to DEV: rechecks the approval before credentials, assumes the deploy role once, executes, retains the candidate result.
+        self.assertEqual((['release', 'plan-dev', 'approve-deploy'], "always() && needs.approve-deploy.result == 'success'", 'dev'), (deploy['needs'], deploy['if'], deploy['environment']))
+        self.assertEqual({'contents': 'read', 'actions': 'read', 'issues': 'write', 'id-token': 'write'}, deploy['permissions'])
+        self.assertEqual(('always()', '${{ steps.execute.outcome }}'), (deploy['steps'][-1]['if'], deploy['steps'][-1]['env']['OUTCOME']))
+        self.assertIn('issue_close.py --stage "Deploy to DEV"', deploy['steps'][-1]['run']); self.assertEqual('failure()', approve['steps'][-1]['if'])
+        self.assertEqual(['python3 -m github.approvals.application_approval verify --plan app-plan/plan.json --receipt app-approval/approval.json', 'python3 -m github.workflows.application_workflow execute'],
+                         [s['run'] for s in deploy['steps'] if s.get('working-directory') == 'infra-tooling'])
+        creds = [c['with'] for c in uses(deploy, 'aws-actions/configure-aws-credentials@')]
+        self.assertEqual([('${{ needs.plan-dev.outputs.deploy-role }}', 'app-deploy-${{ github.run_id }}-1', '${{ needs.plan-dev.outputs.region }}', '${{ needs.plan-dev.outputs.account }}')],
+                         [(c['role-to-assume'], c['role-session-name'], c['aws-region'], c['allowed-account-ids']) for c in creds])
         order = names(deploy)
-        self.assertLess(order.index('Wait for the owner approval of this exact deployment (issue with gist first)'), order.index('Use short-lived DEV OIDC credentials for the deployment'))
         self.assertLess(order.index('Recheck the deployment approval before AWS credentials'), order.index('Use short-lived DEV OIDC credentials for the deployment'))
-        uploads = {s['with']['name']: s['with']['path'] for s in uses(deploy, 'actions/upload-artifact@')}
-        self.assertEqual('infra-tooling/app-result/', uploads['application-candidate-result'])
-        self.assertIn('infra-tooling/app-inputs/', uploads['deploy-dev-receipts'])
+        self.assertEqual({'release-source': '${{ runner.temp }}', 'deploy-dev-plan': '${{ runner.temp }}/deploy-dev-plan', 'deploy-dev-approval': 'infra-tooling/app-approval'}, {s['with']['name']: s['with']['path'] for s in uses(deploy, 'actions/download-artifact@')})
+        self.assertEqual({'application-candidate-result': 'infra-tooling/app-result/'}, {s['with']['name']: s['with']['path'] for s in uses(deploy, 'actions/upload-artifact@')})
 
     def test_verify_decide_keep_rollback_and_grey_prod(self):
         verify, decide, keep, back, prod = (self.jobs[k] for k in ('verify-dev', 'decide-dev', 'keep-dev', 'rollback-dev', 'deploy-prod'))
@@ -232,8 +249,11 @@ class StageContractTests(unittest.TestCase):
         # Failed verification rolls back without a question; a ROLLBACK decision rolls back too (user decision 2026-10-28).
         self.assertEqual("always() && needs.deploy-dev.result == 'success' && (needs.verify-dev.result == 'failure' || needs.decide-dev.outputs.decision == 'rollback')", back['if'])
         self.assertIn('candidate.py rollback --stage dev', '\n'.join(runs(back)))
-        for job in (keep, back):
-            self.assertEqual('dev', job['environment'])
+        for job, sid in ((keep, 'cutover'), (back, 'rollback')):
+            self.assertEqual(('dev', 'write'), (job['environment'], job['permissions']['issues']))
+            self.assertEqual(('always()', '${{ steps.' + sid + '.outcome }}'), (job['steps'][-1]['if'], job['steps'][-1]['env']['OUTCOME']))
+            self.assertIn('--receipt "$RUNNER_TEMP/candidate-decision.json"', job['steps'][-1]['run'])
+        self.assertEqual('failure()', decide['steps'][-1]['if']); self.assertIn('--match "Keep or roll back"', decide['steps'][-1]['run'])
         # PROD is visible as a stage and skipped (grey) until PROD exists; it never pretends to deploy.
         self.assertEqual("always() && needs.keep-dev.result == 'success' && vars.PROD_ENABLED == 'true'", prod['if'])
         self.assertEqual({}, prod['permissions']); self.assertTrue(runs(prod)[0].endswith('exit 1'))
@@ -245,7 +265,7 @@ class StageContractTests(unittest.TestCase):
         self.assertEqual({'contents': 'read', 'actions': 'read'}, record['permissions'])
         optional = next(s for s in uses(record, 'actions/download-artifact@') if 'pattern' in s['with'])
         self.assertTrue(optional['continue-on-error']); self.assertTrue(optional['with']['merge-multiple'])
-        for name in ('registry-image-*', 'owner-approval', 'candidate-verify', 'candidate-decision', 'deploy-dev-receipts'):
+        for name in ('registry-image-*', 'owner-approval', 'candidate-verify', 'candidate-decision', 'deploy-dev-plan', 'deploy-dev-approval'):
             self.assertIn(name, optional['with']['pattern'])
         self.assertIn('candidate.py record --registry-image "$r/registry-image.json" --approval "$r/owner-approval.json" --verification "$r/candidate-verify.json" --decision "$r/candidate-decision.json" --infra "$r/infra-tooling.json" --output "$RUNNER_TEMP/release-record.json"', '\n'.join(runs(record)))
         upload = next(s['with'] for s in uses(record, 'actions/upload-artifact@'))

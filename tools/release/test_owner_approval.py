@@ -62,7 +62,7 @@ class Github:
         return deepcopy(self.data[path])
 
     def comment(self):
-        return {'id': 7, 'user': {'login': m.OWNER}, 'body': 'APPROVE IMAGE '+m.digest(self.plan),
+        return {'id': 7, 'user': {'login': m.OWNER}, 'body': 'APPROVE IMAGE '+self.plan['imageTag'],
                 'created_at': self.now.replace(microsecond=0).isoformat(), 'updated_at': self.now.replace(microsecond=0).isoformat()}
 
     def approved(self):

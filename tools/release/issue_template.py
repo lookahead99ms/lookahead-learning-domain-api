@@ -151,16 +151,20 @@ def render(*, overview, scope, evidence, risks, repository, runId, owner, expire
     if not re.fullmatch(r'[0-9]+', str(runId)) or not re.fullmatch(r'[A-Za-z0-9-]+', owner):
         raise ValueError('Exact owner and numeric workflow run required')
     digestCommand = r'APPROVE [A-Z][A-Z -]* [0-9a-f]{64}'
+    # Version-named approvals (user decision 2026-10-28): the ECR image tag `<app>-vYYYY.MM.DD.HH.NN`, or a bare content
+    # release `vYYYY.MM.DD.HH.NN`; the plan digest stays in the body and the receipt.
+    versionCommand = r'APPROVE [A-Z][A-Z -]* (?:[a-z][a-z-]*-)?v\d{4}\.\d{2}\.\d{2}\.\d{2}\.(?:\d{2}|[1-9]\d{2,})'
     resourceCommand = r'APPROVE APPLY (?:NO_CHANGES|(?:s3|s3-policy|kms|cloudtrail) (?:CREATE|UPDATE) [A-Za-z0-9_./:=-]+)'
-    if not command or any(not re.fullmatch(digestCommand + '|' + resourceCommand, line) for line in command.split('\n')):
+    if not command or any(not re.fullmatch(digestCommand + '|' + versionCommand + '|' + resourceCommand, line) for line in command.split('\n')):
         raise ValueError('Exact approval command or complete resource approval block required')
     run = f'https://github.com/{repository}/actions/runs/{runId}'
     verb = ' '.join(command.split('\n')[0].split(' ')[:2])
+    placeholder = '<version>' if re.fullmatch(versionCommand, command.split('\n')[0]) else '<digest>'
     top = ''
     if headline:
         top = alert('IMPORTANT', '**' + text(headline['env']) + ' · ' + text(headline['action']) + ' ' + text(headline['subject']) + '** — '
                     + text(headline['change']) + '\n\nApprove by **' + text(expires) + '** · Owner @' + owner + ' · [Run ' + str(runId) + '](' + run
-                    + ') · Comment `' + verb + ' <digest>` or `REJECT`') + '\n\n'
+                    + ') · Comment `' + verb + ' ' + placeholder + '` or `REJECT`') + '\n\n'
     metadata = table(('Item', 'Detail'), [('**Responsible owner**', f'@{owner}'), ('**Workflow run**', f'[Run {runId}]({run})')]
                      + ([('**Created (UTC)**', text(created))] if created else [])
                      + [('**Approval deadline (UTC)**', text(expires)), ('**Permission deadline (separate)**', text(permissionDeadline))]

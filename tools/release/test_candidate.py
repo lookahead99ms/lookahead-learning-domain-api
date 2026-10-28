@@ -70,7 +70,7 @@ class CandidateTests(unittest.TestCase):
             f = Fixture(temp); verification = f.verified()
             plan = m.planFor(f.env, f.github.get)
             keep, back = m.commands('dev', plan).values()
-            self.assertTrue(keep.startswith('APPROVE KEEP DEV ') and back.startswith('APPROVE ROLLBACK DEV ') and keep.endswith(m.approval.digest(plan)))
+            self.assertTrue(keep.startswith('APPROVE KEEP DEV ') and back.startswith('APPROVE ROLLBACK DEV ') and keep.endswith(plan['imageTag']))
             def comment(text, edited=False):
                 stamp = f.github.now.replace(microsecond=0).isoformat()
                 return {'id': 9, 'user': {'login': m.approval.OWNER}, 'body': text, 'created_at': stamp, 'updated_at': stamp[:-6] + '+01:00' if edited else stamp}
