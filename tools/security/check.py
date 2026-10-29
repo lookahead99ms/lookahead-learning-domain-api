@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / '.codex-scratch/security'
 PINS = Path(__file__).with_name('tools.json')
 SAST_EXCEPTIONS = Path(__file__).with_name('sast-exceptions.json')
+VULNERABILITY_EXCEPTIONS = Path(__file__).with_name('vulnerability-exceptions.json')
 
 
 # Only trusted constant reasons may reach public CI logs. Never echo exception
@@ -26,11 +27,17 @@ SAST_EXCEPTIONS = Path(__file__).with_name('sast-exceptions.json')
 SAFE_SAST_FAILURES = frozenset({
     'CodeQL report missing runs',
     'Duplicate SAST exception',
+    'Duplicate vulnerability exception',
     'Expired SAST exception',
+    'Expired vulnerability exception',
     'Incomplete SAST exception',
+    'Incomplete vulnerability exception',
     'Invalid SAST exception contract',
     'Invalid SAST exception expiry',
     'Invalid SAST security severity',
+    'Invalid vulnerability exception contract',
+    'Invalid vulnerability exception expiry',
+    'Invalid vulnerability exception identifier',
     'SAST exception file must be repository-relative',
     'SAST exception is stale or was not exercised',
     'SAST exception source changed or is missing',
@@ -184,7 +191,8 @@ def scan(kind, target=None, require_java=False):
     controlled = OUT / 'scanner-config'
     controlled.mkdir(parents=True, exist_ok=True)
     (controlled / 'trivy.yaml').write_text('{}\n')
-    (controlled / 'ignore').write_text('')
+    exceptions = load_vulnerability_exceptions() if kind in ('image', 'sbom') else {}
+    (controlled / 'ignore').write_text(''.join(identifier + ' exp:' + item['expiresAt'] + '\n' for identifier, item in sorted(exceptions.items())))
     clean_env = {k: v for k, v in os.environ.items() if not k.startswith('TRIVY_')}
     common = ['--config', str(controlled / 'trivy.yaml'), '--ignorefile', str(controlled / 'ignore'), '--format', 'json', '--output', str(report), '--exit-code', '0', '--timeout', '15m', '--quiet']
     if kind == 'sbom':
@@ -196,7 +204,7 @@ def scan(kind, target=None, require_java=False):
     run([trivy, *args], env=clean_env)
     counts = trivy_gate(read(report), kind, require_java)
     # Never print secret matches, source excerpts or raw reports into public logs.
-    print(json.dumps({'scan': kind, 'countsRequiringAction': counts}))
+    print(json.dumps({'scan': kind, 'countsRequiringAction': counts, 'ignoredAdvisories': sorted(exceptions)}))
     if any(counts.values()):
         raise ValueError('Security findings require review')
 
@@ -208,6 +216,35 @@ def base_images(text):
     if not re.search(r':21-jdk(?:-noble)?@', images[0]) or not re.search(r':21-jre(?:-noble|-alpine)?@', images[1]):
         raise ValueError('Expected JDK builder followed by JRE runtime')
     return images
+
+
+def load_vulnerability_exceptions(path=VULNERABILITY_EXCEPTIONS, today=None):
+    """Reviewed, expiring ignores for advisories in the pinned base images (owner decision 2026-10-29). Each entry names
+    one advisory and one package; image and SBOM scans drop that advisory until expiresAt and nothing else. Source,
+    configuration and secret scans never read this file."""
+    if not Path(path).exists():
+        return {}
+    document = read(path)
+    if document.get('version') != 1 or not isinstance(document.get('exceptions'), list):
+        raise ValueError('Invalid vulnerability exception contract')
+    today = today or date.today()
+    accepted = {}
+    for item in document['exceptions']:
+        required = ('vulnerabilityId', 'package', 'expiresAt', 'ticket', 'rationale')
+        if not all(isinstance(item.get(field), str) and item[field].strip() for field in required):
+            raise ValueError('Incomplete vulnerability exception')
+        if not re.fullmatch(r'CVE-[0-9]{4}-[0-9]{4,}|GHSA(?:-[0-9a-z]{4}){3}', item['vulnerabilityId']):
+            raise ValueError('Invalid vulnerability exception identifier')
+        try:
+            expiry = date.fromisoformat(item['expiresAt'])
+        except ValueError as error:
+            raise ValueError('Invalid vulnerability exception expiry') from error
+        if expiry < today:
+            raise ValueError('Expired vulnerability exception')
+        if item['vulnerabilityId'] in accepted:
+            raise ValueError('Duplicate vulnerability exception')
+        accepted[item['vulnerabilityId']] = item
+    return accepted
 
 
 def load_sast_exceptions(path=SAST_EXCEPTIONS, root=ROOT, today=None):

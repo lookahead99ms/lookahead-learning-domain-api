@@ -294,4 +294,32 @@ class SecurityGateTests(unittest.TestCase):
         for bad in ['FROM eclipse-temurin:21-jre', valid.splitlines()[0], valid.replace('21-jdk@sha256:'+64*'a','21-jdk'), valid.replace('21-jre@sha256:'+64*'b','21-jre-alpine'), valid.replace('eclipse-temurin:21-jre@','untrusted/java:21-jre@')]:
             with self.assertRaises(ValueError):checks.base_images(bad)
 
+
+    def test_vulnerability_exceptions_are_reviewed_expiring_and_written_to_the_ignore_file(self):
+        # Owner decision 2026-10-29: an advisory in a pinned base image may be carried for a bounded time; nothing else is ignored.
+        with tempfile.TemporaryDirectory() as directory:
+            policy=Path(directory)/'vulnerability-exceptions.json'
+            item={'vulnerabilityId':'CVE-2026-111497','package':'libbrotli1','expiresAt':'2026-11-05','ticket':'DLV-914','rationale':'Reviewed synthetic fixture.'}
+            policy.write_text(checks.json.dumps({'version':1,'exceptions':[item]}))
+            self.assertEqual(['CVE-2026-111497'],list(checks.load_vulnerability_exceptions(policy,date(2026,11,5))))
+            with self.assertRaisesRegex(ValueError,'Expired'):checks.load_vulnerability_exceptions(policy,date(2026,11,6))
+            for bad in [dict(item,vulnerabilityId='not-an-id'),dict(item,expiresAt='soon'),{k:v for k,v in item.items() if k!='rationale'}]:
+                policy.write_text(checks.json.dumps({'version':1,'exceptions':[bad]}))
+                with self.assertRaises(ValueError):checks.load_vulnerability_exceptions(policy,date(2026,11,1))
+            policy.write_text(checks.json.dumps({'version':1,'exceptions':[item,item]}))
+            with self.assertRaisesRegex(ValueError,'Duplicate'):checks.load_vulnerability_exceptions(policy,date(2026,11,1))
+            self.assertEqual({},checks.load_vulnerability_exceptions(Path(directory)/'missing.json',date(2026,11,1)))
+        image={'Metadata':{'OS':{'Family':'ubuntu'}},'Results':[{'Class':'os-pkgs','Packages':[{'Name':'fixture','Version':'1'}]}]}
+        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run'), patch.object(checks,'read',return_value=image), patch.object(checks,'load_vulnerability_exceptions',return_value={'CVE-2026-111497':{'expiresAt':'2026-11-05'}}):
+            checks.scan('image','fixture:1')
+            self.assertEqual('CVE-2026-111497 exp:2026-11-05\n',(Path(directory)/'scanner-config'/'ignore').read_text())
+        config={'Results':[{'Class':'config','Target':'Dockerfile','MisconfSummary':{'Successes':1}}]}
+        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run'), patch.object(checks,'read',return_value=config), patch.object(checks,'load_vulnerability_exceptions',side_effect=AssertionError('source scans must not read the policy')):
+            checks.scan('config')
+            self.assertEqual('',(Path(directory)/'scanner-config'/'ignore').read_text())
+
+    def test_repository_vulnerability_exceptions_are_current_and_name_the_pinned_base_finding(self):
+        exceptions=checks.load_vulnerability_exceptions()
+        self.assertEqual({'CVE-2026-111497'},set(exceptions)); self.assertEqual('libbrotli1',exceptions['CVE-2026-111497']['package'])
+
 if __name__=='__main__':unittest.main()
