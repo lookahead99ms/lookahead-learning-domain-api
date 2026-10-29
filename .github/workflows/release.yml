@@ -242,6 +242,7 @@
         {
           "name": "Close the approval issue when no approval was given",
           "if": "failure()",
+          "continue-on-error": true,
           "run": "python3 tools/release/issue_close.py --stage \"Approve ECR publish\" --outcome failure --detail \"Rejected, expired or failed; nothing was published.\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --match \"Publish image\""
         }
       ]
@@ -382,6 +383,7 @@
         {
           "name": "Close the approval issue with the publish outcome",
           "if": "always()",
+          "continue-on-error": true,
           "env": {
             "OUTCOME": "${{ steps.publish.outcome }}"
           },
@@ -596,6 +598,7 @@
         {
           "name": "Close the deployment approval issue when no approval was given",
           "if": "failure()",
+          "continue-on-error": true,
           "run": "python3 tools/release/issue_close.py --stage \"Approve DEV deploy\" --outcome failure --detail \"Rejected, expired or failed; nothing was deployed.\" --receipt infra-tooling/app-approval/approval.json --match \"Deploy\""
         }
       ]
@@ -726,6 +729,7 @@
         {
           "name": "Close the deployment approval issue with the deploy outcome",
           "if": "always()",
+          "continue-on-error": true,
           "env": {
             "OUTCOME": "${{ steps.execute.outcome }}"
           },
@@ -882,6 +886,7 @@
         {
           "name": "Close the decision issue when no decision was given",
           "if": "failure()",
+          "continue-on-error": true,
           "run": "python3 tools/release/issue_close.py --stage \"Keep DEV or roll back\" --outcome failure --detail \"Rejected, expired or failed; the candidate was left as it was.\" --receipt \"$RUNNER_TEMP/candidate-decision.json\" --match \"Keep or roll back\""
         }
       ]
@@ -931,6 +936,7 @@
         {
           "name": "Close the decision issue with the outcome",
           "if": "always()",
+          "continue-on-error": true,
           "env": {
             "OUTCOME": "${{ steps.cutover.outcome }}"
           },
@@ -985,6 +991,7 @@
         {
           "name": "Close the decision issue with the outcome",
           "if": "always()",
+          "continue-on-error": true,
           "env": {
             "OUTCOME": "${{ steps.rollback.outcome }}"
           },
