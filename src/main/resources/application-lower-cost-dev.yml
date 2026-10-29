@@ -1,16 +1,5 @@
 # Explicit DEV-only application TLS; the ordinary local profile is unchanged.
-spring:
-  config:
-    import: configtree:/run/credentials/
-  ssl:
-    bundle:
-      pem:
-        serving:
-          keystore:
-            certificate: file:/run/credentials/server.crt
-            private-key: file:/run/credentials/server.key
-          truststore:
-            certificate: file:/run/credentials/trust.pem
+# Validated inline SSL bundles are installed by InjectedCredentials before context refresh.
 server:
   address: 0.0.0.0
   port: 8443

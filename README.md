@@ -479,9 +479,17 @@ The `lower-cost-dev` profile serves application mTLS on8443 and loopback-only
 management readiness on8081. TLS validates the peer chain; the application filter
 also requires the Gateway client identity `gateway.lookahead-dev.internal` and
 clientAuth usage. OAuth and Domain account/ownership checks remain required.
-Startup credentials use exact-version files under `/run/credentials`; database
-runtime, migration and bootstrap connections retain `sslmode=verify-full`.
-Bootstrap can read its three passwords from the restricted credential directory.
+Application credentials now use immutable-version ECS injection. Private keys must be one complete
+unencrypted PKCS8 PEM block with line-separated boundaries; incomplete envelopes,
+extra blocks and surrounding material are rejected before startup. `InjectedCredentials`
+validates certificate validity, remaining lifetime, SAN, EKU, chain and matching
+PKCS8 keys before context refresh, then installs inline Spring PEM and scalar
+properties. Inputs are `LOOKAHEAD_TLS_{SCHEMA,SERVER_CERTIFICATE,SERVER_KEY,TRUST}`,
+`LOOKAHEAD_DOMAIN_DB_PASSWORD` and `LOOKAHEAD_DOMAIN_GATEWAY_SECRET`;
+`LOOKAHEAD_TLS_SERVER_NAME` is public configuration. Validation errors reveal no
+input values and deny startup. Database connections retain `sslmode=verify-full`.
+The separate retained bootstrap/migration jobs still use restricted files under
+`/run/credentials`; their Local/Flyway Utils cutover and retirement are a later gate.
 
 This is local candidate code, not AWS deployment evidence. The standard Local
 configuration and preserved Service Connect mode remain separate. Infra owns
