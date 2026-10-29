@@ -128,7 +128,7 @@
         },
         {
           "name": "Retain the frozen release-source record",
-          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
           "with": {
             "name": "release-source",
             "path": "${{ runner.temp }}/release-source.json",
@@ -139,7 +139,7 @@
         {
           "name": "Retain the release-tag record",
           "if": "steps.cut.outcome == 'success'",
-          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
           "with": {
             "name": "release-tag",
             "path": "${{ runner.temp }}/release-tag.json",
@@ -231,7 +231,7 @@
         },
         {
           "name": "Retain the approval plan and receipt",
-          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
           "with": {
             "name": "owner-approval",
             "path": "${{ runner.temp }}/owner-plan.json\n${{ runner.temp }}/owner-approval.json",
@@ -356,7 +356,7 @@
         },
         {
           "name": "Retain immutable registry release receipt",
-          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
           "with": {
             "name": "registry-image-${{ needs.release.outputs.source-sha }}",
             "path": "${{ runner.temp }}/registry-image.json\n${{ runner.temp }}/release-source.json",
@@ -367,7 +367,7 @@
         {
           "name": "Preserve owner approval and publication outcome",
           "if": "always() && (steps.publish.outcome == 'success' || steps.publish.outcome == 'failure')",
-          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
           "with": {
             "name": "image-publication-outcome",
             "path": "${{ runner.temp }}/release-source.json\n${{ runner.temp }}/owner-plan.json\n${{ runner.temp }}/owner-approval.json\n${{ runner.temp }}/publication-outcome.json",
@@ -509,7 +509,7 @@
         {
           "name": "Retain the Infra tooling selection, deployment inputs and plan",
           "if": "always() && steps.infra.outcome == 'success'",
-          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
           "with": {
             "name": "deploy-dev-plan",
             "path": "${{ runner.temp }}/infra-tooling.json\ninfra-tooling/app-inputs/\ninfra-tooling/app-plan/",
@@ -587,7 +587,7 @@
         },
         {
           "name": "Retain the deployment approval",
-          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
           "with": {
             "name": "deploy-dev-approval",
             "path": "infra-tooling/app-approval/",
@@ -718,7 +718,7 @@
         {
           "name": "Retain the candidate result",
           "if": "always() && (steps.execute.outcome == 'success' || steps.execute.outcome == 'failure')",
-          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
           "with": {
             "name": "application-candidate-result",
             "path": "infra-tooling/app-result/",
@@ -806,7 +806,7 @@
         {
           "name": "Retain the verification receipt",
           "if": "always()",
-          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
           "with": {
             "name": "candidate-verify",
             "path": "${{ runner.temp }}/candidate-verify.json",
@@ -875,7 +875,7 @@
         },
         {
           "name": "Retain the decision receipt",
-          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
           "with": {
             "name": "candidate-decision",
             "path": "${{ runner.temp }}/candidate-decision.json",
@@ -1079,7 +1079,7 @@
         },
         {
           "name": "Retain the release record",
-          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
           "with": {
             "name": "release-record-${{ needs.release.outputs.release-version }}",
             "path": "${{ runner.temp }}/release-record.json",
