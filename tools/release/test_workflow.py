@@ -77,6 +77,17 @@ class StandardShapeTests(unittest.TestCase):
         self.assertFalse((ROOT / '.github/workflows/pipeline.yml').exists())
         self.assertFalse((ROOT / '.github/workflows/release-image.yml').exists())
 
+    def test_every_issue_close_step_is_fail_safe(self):
+        # Closing a consumed approval issue must never fail the stage: a hand-closed or hand-edited issue, or a GitHub
+        # error, is a warning and the job stays green (user decision 2026-10-29). The helper exits 0 for a closed issue.
+        jobs = load('release.yml')['jobs']
+        closers = [(name, s) for name, job in jobs.items() for s in job.get('steps', []) if 'issue_close.py --stage' in s.get('run', '')]
+        self.assertEqual(7, len(closers))
+        for name, step in closers:
+            self.assertIs(True, step.get('continue-on-error'), (name, step['name']))
+            self.assertIn(step['if'].split(' ')[0], ('failure()', 'always()'), (name, step['name']))
+            self.assertEqual('write', jobs[name]['permissions'].get('issues'), name)
+
     def test_every_job_is_valid_for_github_and_pinned(self):
         full = load('release.yml')
         for name, job in full['jobs'].items():
