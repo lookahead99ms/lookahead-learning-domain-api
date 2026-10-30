@@ -48,15 +48,20 @@ On Unix, install `unzip` so the wrapper uses the checksum-pinned ZIP distributio
 The application Dockerfile supplies it in the build stage.
 The Boot parent still owns the dependency baseline; temporary Jackson 2/3 patch
 BOM overrides are documented in [Security CI](docs/security-ci.md).
-The executable artifact is `target/lookahead-domain-api.jar`; its main class is
-`com.lookahead.domain.DomainApiApplication`. The one-shot migration entry point
-is `com.lookahead.domain.DomainApiMigration`, using `SPRING_FLYWAY_URL`,
-`SPRING_FLYWAY_USER` set to the adapter's dedicated migration role and either
-`SPRING_FLYWAY_PASSWORD` or `LOOKAHEAD_MIGRATION_PASSWORD_FILE`. Migration scripts
-live in `db/domain`; runtime Flyway is disabled. The initial script's historical
-filename and bytes remain unchanged to preserve installed migration history.
-Java migrations are registered explicitly in `DomainApiMigration.configure`
-(currently V5, below) so Flyway never finds one twice.
+The executable service artifact is `target/lookahead-domain-api-<version>.jar`;
+its main class remains `com.lookahead.domain.DomainApiApplication`. The old
+`DomainApiMigration` and `DomainApiBootstrap` executable entrypoints are retired:
+they reject invocation before reading credentials or connecting to PostgreSQL.
+Use Infra's separately approved **Flyway Utils · Run** workflow for DEV, and its
+explicit Flyway utility selection for Local orchestration. Runtime Flyway remains
+disabled in the application service.
+
+Domain still owns the unchanged SQL sources in `db/domain` and the Java V5 migration.
+Retiring a launcher does not move/delete migration sources or change installed
+history. `DomainApiMigration.configure`, role/target validation and bootstrap
+fixture helpers remain for existing tests and account administration. Their presence
+is not a supported standalone migration command. Historical cutover fixtures use a
+retained pre-retirement Domain JAR; new artifacts cannot run the old launcher.
 
 ## Blaze catalog ID (DLV-931)
 
@@ -400,23 +405,13 @@ image published locally. Configure approved settings and action allowlists befor
 activation; private content and AWS credentials are never bundled in the image.
 
 
-The Domain image also contains a fixed one-shot database bootstrap entry point:
-
-```sh
-java -Dloader.main=com.lookahead.domain.DomainApiBootstrap -cp /opt/lookahead/app.jar org.springframework.boot.loader.launch.PropertiesLauncher
-```
-
-Use only the dedicated private bootstrap ECS task defined by Infra, after operator
-approval. Its injected master, application and migrator secrets never enter the
-runtime Domain task. It requires explicit DEV/PROD, an exact regional RDS endpoint,
-port 5432 and the existing `verify-full` CA policy; it refuses command arguments.
-Bootstrap provisions only the fixed application/migrator roles and schema, checks
-safe existing state on re-entry, and does not run Flyway. The separate migration
-task runs the existing migration entry point before application rollout. Connection
-and query deadlines are bounded, secrets and SQL are omitted from error output,
-and PostgreSQL receives SCRAM verifiers rather than plaintext password SQL. Local
-PostgreSQL 17 tests cover initial setup, repeat invocation, wrong secrets and unsafe
-role recovery; they do not certify AWS execution-role or endpoint connectivity.
+The old Domain bootstrap launcher is retired. Running it returns a fixed message
+pointing to Infra Flyway Utils `prepare`, without inspecting arguments, secrets or
+SQL state. The legacy bootstrap helper and its PostgreSQL/credential-file fixtures
+remain as compatibility evidence. Supported database preparation is owned by Infra;
+its separately approved utility prepares roles/grants without starting the Domain
+server or automatically applying migrations. Old image/task revisions remain
+historical artifacts and are not deleted by this source change.
 
 Publication explicitly pushes only the verified `linux/amd64` manifest (Docker API
 1.46 or newer). The registry receipt checks its config digest against the saved
@@ -488,18 +483,18 @@ properties. Inputs are `LOOKAHEAD_TLS_{SCHEMA,SERVER_CERTIFICATE,SERVER_KEY,TRUS
 `LOOKAHEAD_DOMAIN_DB_PASSWORD` and `LOOKAHEAD_DOMAIN_GATEWAY_SECRET`;
 `LOOKAHEAD_TLS_SERVER_NAME` is public configuration. Validation errors reveal no
 input values and deny startup. Database connections retain `sslmode=verify-full`.
-The separate retained bootstrap/migration jobs still use restricted files under
-`/run/credentials`; their Local/Flyway Utils cutover and retirement are a later gate.
+Local jobs and the reviewed DEV database operations use Flyway Utils. The legacy
+Domain launcher rejects execution even if an old credential directory is supplied.
 
 This is local candidate code, not AWS deployment evidence. The standard Local
 configuration and preserved Service Connect mode remain separate. Infra owns
 orchestration, runtime templates and operation runbooks; SQL migrations stay here.
 
-The lower-cost bootstrap credential directory must be absolute and private
+The retained historical bootstrap fixture helper requires an absolute, private credential directory
 (mode0700). Its three fixed credential files must be regular, non-symlink,
 mode0400 files, matching the initializer's output. Reads are bounded to128bytes;
 duplicate environment/file sources and invalid password bytes fail before any
-connection. `BootstrapCredentialFilesTest` covers these startup boundaries.
+connection. `BootstrapCredentialFilesTest` preserves these helper checks; the retired launcher does not call the helper.
 
 Lower-cost DEV security events use the dedicated `lookahead.security.audit` logger
 with fixed outcome names and random event IDs. The filter preserves HTTP responses
@@ -683,7 +678,12 @@ workflow triggers, AWS grants and existing approval commands are unchanged.
 
 ### Initial DEV migration guard
 
-The Infra database-job workflow opts the separate migration entry point into `LOOKAHEAD_INITIAL_MIGRATION=true`. Only DEV accepts this flag. The guard requires an empty `public` schema (tables, functions and types all count) and keeps a PostgreSQL session advisory lock for the duration of Flyway. A populated schema or concurrent initial migration is rejected; no clean, repair or automatic retry occurs. Without explicit opt-in, existing migration behavior is unchanged. This is initial setup, not a routine upgrade procedure; no historical SQL migration was edited. Unit tests and `InitialMigrationDatabaseTest` cover the boundary using the existing disposable database fixture. Actual AWS job execution remains separate from local verification.
+The retained `InitialMigrationGuard` and database tests document the original DEV
+empty-schema/session-lock boundary. They remain compatibility helpers; the retired
+Domain launcher cannot activate them. Infra Flyway Utils owns supported execution,
+including exact expected/target versions, empty-schema initial installation,
+verification and rejection of stale state. No historical SQL migration was edited.
+
 
 ### Calendar image releases
 

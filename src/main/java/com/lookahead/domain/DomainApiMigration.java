@@ -1,34 +1,13 @@
 package com.lookahead.domain;
 
 import com.lookahead.domain.compatibility.LegacyStorageNames;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import org.flywaydb.core.Flyway;
 
-/** One-shot Domain schema migration. Provisioning databases and roles remains infrastructure-owned. */
+/** Retired launcher; migration configuration and role checks remain shared with administration and fixtures. */
 public final class DomainApiMigration {
     private DomainApiMigration() {}
-    public static void main(String[] args) throws Exception {
-        String user = required("SPRING_FLYWAY_USER");
-        String url = required("SPRING_FLYWAY_URL");
-        String environment = System.getenv().getOrDefault("LOOKAHEAD_ENVIRONMENT", "local");
-        validateMigrationTarget(user, url, environment, System.getenv("AWS_REGION"));
-        boolean localAuditPurge = com.lookahead.domain.database.LocalAuditProvisioning.requested(
-                System.getenv("LOOKAHEAD_LOCAL_AUDIT_PURGE"), environment, url);
-        String file = System.getenv("LOOKAHEAD_MIGRATION_PASSWORD_FILE");
-        String injected = System.getenv("SPRING_FLYWAY_PASSWORD");
-        if (file != null && injected != null) throw new IllegalStateException("Choose one migration password source");
-        String password = injected != null ? injected : Files.readString(Path.of(file != null ? file : "/run/secrets/spring.flyway.password")).stripTrailing();
-        if (password.isBlank()) throw new IllegalStateException("Migration password is required");
-        verifyMigrationRole(url, user, password);
-        var source = com.lookahead.domain.database.DomainDatabaseConnections.boundedDataSource(url, user, password);
-        boolean initialMigration = com.lookahead.domain.database.InitialMigrationGuard.requested(
-                System.getenv("LOOKAHEAD_INITIAL_MIGRATION"), environment);
-        try (var guard = com.lookahead.domain.database.InitialMigrationGuard.acquire(source, initialMigration)) {
-            configure(Flyway.configure().dataSource(source)).load().migrate();
-        }
-        if (localAuditPurge) com.lookahead.domain.database.LocalAuditProvisioning.provision(
-                com.lookahead.domain.database.DomainDatabaseConnections.boundedDataSource(url, user, password));
+    public static void main(String[] args) {
+        throw new IllegalStateException("Domain database migration entrypoint is retired; use Infra Flyway Utils");
     }
 
     /** SQL migrations live in db/domain; Java migrations are listed here so they are never found twice. */
@@ -65,9 +44,4 @@ public final class DomainApiMigration {
         }
     }
 
-    private static String required(String name) {
-        String value = System.getenv(name);
-        if (value == null || value.isBlank()) throw new IllegalStateException(name + " is required");
-        return value;
-    }
 }
