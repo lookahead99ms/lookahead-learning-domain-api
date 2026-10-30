@@ -1,7 +1,7 @@
 # Domain API storage compatibility
 
 The service is named **Domain API**. Its Java package is `com.lookahead.domain`,
-its executable is `lookahead-domain-api.jar`, and its configuration uses
+its executable is `lookahead-domain-api-<version>.jar`, and its configuration uses
 `LOOKAHEAD_DOMAIN_*` environment variables.
 
 The first installed database schema predates this service rename. Existing

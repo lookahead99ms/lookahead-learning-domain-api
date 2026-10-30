@@ -67,6 +67,7 @@ class PublicationConfigurationTest {
         assertThat(listed.get(0).lastModified()).isEqualTo(t0);
         assertThat(requests).hasSize(2).allSatisfy(request -> {
             assertThat(request.bucket()).isEqualTo("synthetic-publication"); assertThat(request.prefix()).isEqualTo("live/"); assertThat(request.expectedBucketOwner()).isEqualTo("123456789012");
+            assertThat(request.maxKeys()).isEqualTo(PublicationBootstrap.MAX_LIVE_OBJECTS + 1);
         });
         assertThat(requests.get(1).continuationToken()).isEqualTo("next");
         assertThat(new String(source.open("live/a/manifest.json").readAllBytes())).isEqualTo("live/a/manifest.json");
@@ -100,5 +101,43 @@ class PublicationConfigurationTest {
                     assertThat(configuration.contentPublication(location,policy,catalog).health().getStatus().getCode()).isEqualTo("UP");
                 });
         helper.writableForFixtureCleanup();
+    }
+
+    @ParameterizedTest @ValueSource(strings={"missing", "blank", "repeated", "advancing-empty"})
+    void incompleteOrNonProgressingListingsFailClosedWithinBoundedRequests(String mode) {
+        var client = mock(S3Client.class);
+        var settings = new PublicationSettings(true,"us-east-2","123456789012","synthetic-publication",null,null,null,Path.of("/tmp/lookahead-publications"),1024,4);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        when(client.listObjectsV2(any(java.util.function.Consumer.class))).thenAnswer(invocation -> {
+            int call = calls.incrementAndGet();
+            if (call > PublicationBootstrap.MAX_LIVE_OBJECTS + 1)
+                throw new AssertionError("Publication pagination exceeded its request bound");
+            var page = software.amazon.awssdk.services.s3.model.ListObjectsV2Response.builder().isTruncated(true);
+            if (mode.equals("blank")) page.nextContinuationToken(" ");
+            if (mode.equals("repeated")) page.nextContinuationToken("same-token");
+            if (mode.equals("advancing-empty")) page.nextContinuationToken("token-" + call);
+            return page.build();
+        });
+        var source = new PublicationConfiguration.Cloud().publicationObjects(client, settings);
+        assertThatThrownBy(() -> source.list("live/")).isInstanceOf(IllegalStateException.class)
+                .hasMessage("Cloud publication listing is incomplete or exceeds its request bound");
+        assertThat(calls.get()).isLessThanOrEqualTo(PublicationBootstrap.MAX_LIVE_OBJECTS + 1);
+        if (mode.equals("missing") || mode.equals("blank")) assertThat(calls.get()).isEqualTo(1);
+        if (mode.equals("repeated")) assertThat(calls.get()).isEqualTo(2);
+    }
+
+    @Test void emptyPagesWithAdvancingTokensCanReachACompleteListing() throws Exception {
+        var client = mock(S3Client.class);
+        var settings = new PublicationSettings(true,"us-east-2","123456789012","synthetic-publication",null,null,null,Path.of("/tmp/lookahead-publications"),1024,4);
+        when(client.listObjectsV2(any(java.util.function.Consumer.class))).thenReturn(
+                software.amazon.awssdk.services.s3.model.ListObjectsV2Response.builder()
+                    .isTruncated(true).nextContinuationToken("next-page").build(),
+                software.amazon.awssdk.services.s3.model.ListObjectsV2Response.builder().isTruncated(false)
+                    .contents(software.amazon.awssdk.services.s3.model.S3Object.builder()
+                        .key("live/v2026.10.30.00.00/manifest.json").lastModified(java.time.Instant.EPOCH).build()).build());
+        var source = new PublicationConfiguration.Cloud().publicationObjects(client, settings);
+        assertThat(source.list("live/")).extracting(PublicationObjectSource.ListedObject::key)
+                .containsExactly("live/v2026.10.30.00.00/manifest.json");
+        verify(client, times(2)).listObjectsV2(any(java.util.function.Consumer.class));
     }
 }
