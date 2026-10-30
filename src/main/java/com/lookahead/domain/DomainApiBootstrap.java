@@ -13,7 +13,7 @@ import javax.crypto.spec.PBEKeySpec;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 
-/** Fixed, one-shot cloud role provisioning; no Spring server or AWS API calls. */
+/** Retired executable entrypoint; provisioning helpers retained for compatibility fixtures. */
 public final class DomainApiBootstrap {
     private static final String MASTER = "lookahead_bootstrap";
     private static final String APP = "lookahead_platform_app";
@@ -21,20 +21,7 @@ public final class DomainApiBootstrap {
     private DomainApiBootstrap() { }
 
     public static void main(String[] args) {
-        try {
-            if (args.length != 0) throw new IllegalStateException("Arguments are forbidden");
-            var environment = credentialEnvironment(System.getenv());
-            validateConfiguration(environment);
-            bootstrap(required(environment, "SPRING_FLYWAY_URL"),
-                    required(environment, "LOOKAHEAD_BOOTSTRAP_PASSWORD"),
-                    required(environment, "LOOKAHEAD_APP_PASSWORD"),
-                    required(environment, "LOOKAHEAD_MIGRATOR_PASSWORD"));
-            System.out.println("Domain database bootstrap verified; migrations have not run");
-        } catch (Exception failure) {
-            // JDBC exceptions can contain SQL, endpoints and password verifiers.
-            System.err.println("Domain database bootstrap failed; activation remains blocked");
-            System.exit(1);
-        }
+        throw new IllegalStateException("Domain database bootstrap entrypoint is retired; use Infra Flyway Utils prepare");
     }
 
     static Map<String,String> credentialEnvironment(Map<String,String> source) throws java.io.IOException {
