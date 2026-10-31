@@ -38,6 +38,7 @@
   "jobs": {
     "validate": {
       "name": "Security gate",
+      "if": "github.event_name != 'push' || vars.RELEASE_ON_MERGE != 'false'",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 15,
       "permissions": {

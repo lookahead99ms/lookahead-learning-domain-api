@@ -148,7 +148,7 @@ class SecurityGateTests(unittest.TestCase):
 
     def test_runtime_base_avoids_known_vulnerable_alpine_pin(self):
         dockerfile = (checks.ROOT / 'Dockerfile').read_text()
-        self.assertEqual('eclipse-temurin:21-jre-noble@sha256:35501d3f93173b420ac9001658eb68157e813316b865087e345c187fca422c4c', checks.base_images(dockerfile)[1])
+        self.assertEqual('eclipse-temurin:21-jre-noble@sha256:161310cd5bd41fd549d19cf9f90b614897cb4a1532555c613b43b7e0628fe5d6', checks.base_images(dockerfile)[1])
         self.assertIn('USER 10001:10001', dockerfile)
         self.assertIn('--shell /usr/sbin/nologin', dockerfile)
         self.assertIn('HEALTHCHECK', dockerfile)
@@ -318,8 +318,8 @@ class SecurityGateTests(unittest.TestCase):
             checks.scan('config')
             self.assertEqual('',(Path(directory)/'scanner-config'/'ignore').read_text())
 
-    def test_repository_vulnerability_exceptions_are_current_and_name_the_pinned_base_finding(self):
-        exceptions=checks.load_vulnerability_exceptions()
-        self.assertEqual({'CVE-2026-111497'},set(exceptions)); self.assertEqual('libbrotli1',exceptions['CVE-2026-111497']['package'])
+    def test_repository_carries_no_vulnerability_exception_after_the_temurin_repin(self):
+        # DLV-968: the 2026-10-31 eclipse-temurin noble rebuild ships libbrotli1 1.1.0-2ubuntu0.1, so the CVE-2026-111497 entry is gone.
+        self.assertEqual({},dict(checks.load_vulnerability_exceptions()))
 
 if __name__=='__main__':unittest.main()
