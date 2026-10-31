@@ -1,4 +1,4 @@
-FROM eclipse-temurin:21-jdk-noble@sha256:b468c3fc688b14450571494f588bd939378e7fd542ed5a73f8efc13f17872a87 AS build
+FROM eclipse-temurin:21-jdk-noble@sha256:bd6ac06e2a2df928af21c75c4a8a0f2829a93377a65761d6a577bb32281e2ac3 AS build
 ARG RELEASE_VERSION=dev
 ARG BUILD_VERSION=0.0.1-SNAPSHOT
 ARG SOURCE_REVISION=local
@@ -24,7 +24,7 @@ RUN ./mvnw --batch-mode --no-transfer-progress "-Drevision=$BUILD_VERSION" "-Dre
     && mkdir /workspace/health \
     && javac --release 21 -d /workspace/health src/main/java/com/lookahead/domain/health/ContainerHealthcheck.java
 
-FROM eclipse-temurin:21-jre-noble@sha256:35501d3f93173b420ac9001658eb68157e813316b865087e345c187fca422c4c AS runtime
+FROM eclipse-temurin:21-jre-noble@sha256:161310cd5bd41fd549d19cf9f90b614897cb4a1532555c613b43b7e0628fe5d6 AS runtime
 ARG RELEASE_VERSION=dev
 ARG BUILD_VERSION=0.0.1-SNAPSHOT
 ARG SOURCE_REVISION=local
@@ -35,11 +35,17 @@ WORKDIR /opt/lookahead
 RUN groupadd --gid 10001 lookahead && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin lookahead \
     # DLV-928: a new named volume mounted here copies this owner, so Domain can write platform reviews.
     && mkdir -p /var/lib/lookahead/platform-reviews \
-    && chown 10001:10001 /var/lib/lookahead/platform-reviews && chmod 700 /var/lib/lookahead/platform-reviews
+    && chown 10001:10001 /var/lib/lookahead/platform-reviews && chmod 700 /var/lib/lookahead/platform-reviews \
+    && chown 10001:10001 /tmp && chmod 1777 /tmp
 COPY --from=build --chown=10001:10001 /workspace/target/lookahead-domain-api-${BUILD_VERSION}.jar /opt/lookahead/app.jar
 COPY --from=build --chown=10001:10001 /workspace/health /opt/lookahead/health
 COPY --from=build --chown=10001:10001 /workspace/tools/container/trust/rds-global-bundle.pem /opt/lookahead/trust/rds-global-bundle.pem
 COPY deployment/container/dns.security /opt/lookahead/dns.security
+# ECS copies a VOLUME path's ownership into the task's empty bind mount; without it the Fargate
+# mount at /tmp is root-owned 0755 and Tomcat (UID 10001) cannot create its tempDir (DLV-968). /tmp keeps the
+# conventional sticky 1777 mode: Docker gives an unparameterised tmpfs the directory's mode, so local stacks that
+# mount `/tmp:rw,noexec,nosuid,size=…` stay writable; only the ownership is new.
+VOLUME ["/tmp"]
 USER 10001:10001
 ENV LOOKAHEAD_BIND_ADDRESS=0.0.0.0 PORT=8080
 EXPOSE 8080

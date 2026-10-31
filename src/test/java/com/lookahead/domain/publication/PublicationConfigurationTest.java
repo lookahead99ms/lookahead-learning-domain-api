@@ -129,15 +129,18 @@ class PublicationConfigurationTest {
     @Test void emptyPagesWithAdvancingTokensCanReachACompleteListing() throws Exception {
         var client = mock(S3Client.class);
         var settings = new PublicationSettings(true,"us-east-2","123456789012","synthetic-publication",null,null,null,Path.of("/tmp/lookahead-publications"),1024,4);
-        when(client.listObjectsV2(any(java.util.function.Consumer.class))).thenReturn(
-                software.amazon.awssdk.services.s3.model.ListObjectsV2Response.builder()
-                    .isTruncated(true).nextContinuationToken("next-page").build(),
-                software.amazon.awssdk.services.s3.model.ListObjectsV2Response.builder().isTruncated(false)
+        // Counted thenAnswer like the sibling tests: thenReturn and verify both call MockUtil.isMock, whose mock-maker
+        // assertion (Mockito 5.23, surefire runs with -ea) fails for this S3Client mock once another mock maker is registered.
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        when(client.listObjectsV2(any(java.util.function.Consumer.class))).thenAnswer(invocation -> calls.incrementAndGet() == 1
+                ? software.amazon.awssdk.services.s3.model.ListObjectsV2Response.builder()
+                    .isTruncated(true).nextContinuationToken("next-page").build()
+                : software.amazon.awssdk.services.s3.model.ListObjectsV2Response.builder().isTruncated(false)
                     .contents(software.amazon.awssdk.services.s3.model.S3Object.builder()
                         .key("live/v2026.10.30.00.00/manifest.json").lastModified(java.time.Instant.EPOCH).build()).build());
         var source = new PublicationConfiguration.Cloud().publicationObjects(client, settings);
         assertThat(source.list("live/")).extracting(PublicationObjectSource.ListedObject::key)
                 .containsExactly("live/v2026.10.30.00.00/manifest.json");
-        verify(client, times(2)).listObjectsV2(any(java.util.function.Consumer.class));
+        assertThat(calls.get()).isEqualTo(2);
     }
 }
