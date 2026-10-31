@@ -43,8 +43,11 @@ injecting a password does not provision a database role.
 
 ## Startup and serving
 
-Live mode first discovers the release: list `live/` (bounded to 64 objects, owner-checked
-pagination), accept only `live/<tag>/manifest.json` and `live/<tag>/publication.tar.gz` keys,
+Live mode first discovers the release: list `live/` (bounded to 64 objects, at most
+65 requests and 65 keys per request, with owner-checked pagination). A truncated
+page must supply a nonblank continuation token not previously seen; incomplete,
+cycling or excessive empty-page scans fail startup. Valid advancing empty pages
+remain supported. Accept only `live/<tag>/manifest.json` and `live/<tag>/publication.tar.gz` keys,
 take the complete folder with the highest tag (`manifest.json` is the completeness marker),
 and require its archive to be present. Promotion
 writes the archive before the manifest and removes the previous folder afterwards, so a

@@ -100,6 +100,11 @@ runtime deployment is implied by the source rename.
 
 ## Independent build and container
 
+The [DEV activation contract](docs/dev-activation.md) inventories the application
+configuration, immutable injected-secret selectors, mTLS/health ports and exact
+runtime versus execution-role requirements. It separates locally checked source
+behavior from pending cloud startup and cross-service verification.
+
 ```sh
 ./mvnw --batch-mode --no-transfer-progress clean verify
 docker build -t lookahead-domain-api:local .

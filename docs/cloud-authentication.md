@@ -70,7 +70,8 @@ logout uncertainty is reported separately by Gateway.
 
 ## Explicit account administration
 
-Apply migrations with the existing one-shot migration entry point first.
+Apply migrations through Infra's separately approved Flyway Utils flow first;
+the Domain migration/bootstrap executable entrypoints remain retired.
 `V4__cloud_identity_and_sign_ins.sql` adds cloud tables without changing Local
 identity ownership. Use a verified exact provider issuer/subject, dedicated
 migration-role connection and externally injected secret. The application runtime
@@ -78,11 +79,14 @@ role must not run this command. From the built executable JAR:
 
 ```sh
 java -Dloader.main=com.lookahead.domain.cloud.CloudAccountAdministration \
-  -cp target/lookahead-domain-api.jar \
+  -cp target/lookahead-domain-api-0.0.1-SNAPSHOT.jar \
   org.springframework.boot.loader.launch.PropertiesLauncher \
   admit https://cognito-idp.us-east-2.amazonaws.com/us-east-2_Example \
   synthetic-provider-subject learner@example.invalid 'Example Learner'
 ```
+
+That filename is the default local build. For a release artifact, use its exact
+`lookahead-domain-api-<version>.jar` filename.
 
 Set `LOOKAHEAD_ENVIRONMENT=dev` or `prod` and `AWS_REGION` for cloud operator
 commands. Runtime, migrations and account administration require the same regional
