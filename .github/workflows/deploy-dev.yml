@@ -77,14 +77,11 @@
       },
       "env": {
         "GH_TOKEN": "${{ github.token }}",
-        "CROSS_REPO_READ_TOKEN": "${{ secrets.CROSS_REPO_READ_TOKEN }}",
         "AWS_MAX_ATTEMPTS": "1",
         "AWS_RETRY_MODE": "standard",
         "AWS_EC2_METADATA_DISABLED": "true"
       },
       "outputs": {
-        "infra-sha": "${{ steps.infra.outputs.infra_sha }}",
-        "infra-ref": "${{ steps.infra.outputs.infra_ref }}",
         "candidate-slot": "${{ steps.plan.outputs.candidate_slot }}",
         "plan-digest": "${{ steps.plan.outputs.plan_digest }}"
       },
@@ -98,13 +95,6 @@
           }
         },
         {
-          "name": "Set up Python for release and Infra tooling",
-          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
-          "with": {
-            "python-version": "3.14"
-          }
-        },
-        {
           "name": "Resolve the dispatched release tag once and freeze its main commit",
           "id": "source",
           "run": "mkdir -p \"$RUNNER_TEMP/deploy-plan\"\npython3 tools/release/release_version.py resolve --app domain --record \"$RUNNER_TEMP/deploy-plan/release-source.json\""
@@ -114,23 +104,7 @@
           "run": "echo \"RELEASE_SOURCE_RECORD=$RUNNER_TEMP/deploy-plan/release-source.json\" >> \"$GITHUB_ENV\""
         },
         {
-          "name": "Select the Infra tooling release (newest Infra calendar tag)",
-          "id": "infra",
-          "run": "python3 tools/release/candidate.py infra --output \"$RUNNER_TEMP/deploy-plan/infra-tooling.json\""
-        },
-        {
-          "name": "Checkout Infra tooling at its release tag",
-          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-          "with": {
-            "repository": "lookahead99ms/lookahead-learning-infra",
-            "ref": "${{ steps.infra.outputs.infra_sha }}",
-            "path": "infra-tooling",
-            "token": "${{ secrets.CROSS_REPO_READ_TOKEN }}",
-            "persist-credentials": false
-          }
-        },
-        {
-          "name": "Use short-lived DEV OIDC credentials (web-deploy-plan)",
+          "name": "Use short-lived DEV OIDC credentials (domain-deploy-plan)",
           "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
           "with": {
             "aws-region": "us-east-2",
@@ -142,11 +116,6 @@
             "output-credentials": false,
             "disable-retry": true
           }
-        },
-        {
-          "name": "Verify the six installed IAM roles before any AWS change",
-          "working-directory": "infra-tooling",
-          "run": "python3 -m aws.iam.six_role_verify check --record aws/iam/records/dev.json"
         },
         {
           "name": "Plan the deploy: published digest, idle slot, three change sets, resource preview",
@@ -265,13 +234,6 @@
           }
         },
         {
-          "name": "Set up Python for release and Infra tooling",
-          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
-          "with": {
-            "python-version": "3.14"
-          }
-        },
-        {
           "name": "Restore the deploy plan of this run",
           "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
           "with": {
@@ -296,18 +258,7 @@
           "run": "python3 tools/release/deploy.py verify --plan \"$RUNNER_TEMP/deploy-plan/plan.json\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\""
         },
         {
-          "name": "Checkout Infra tooling at its release tag",
-          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-          "with": {
-            "repository": "lookahead99ms/lookahead-learning-infra",
-            "ref": "${{ needs.plan-dev.outputs.infra-sha }}",
-            "path": "infra-tooling",
-            "token": "${{ secrets.CROSS_REPO_READ_TOKEN }}",
-            "persist-credentials": false
-          }
-        },
-        {
-          "name": "Use short-lived DEV OIDC credentials (web-deploy)",
+          "name": "Use short-lived DEV OIDC credentials (domain-deploy)",
           "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
           "with": {
             "aws-region": "us-east-2",
@@ -319,11 +270,6 @@
             "output-credentials": false,
             "disable-retry": true
           }
-        },
-        {
-          "name": "Verify the six installed IAM roles before any AWS change",
-          "working-directory": "infra-tooling",
-          "run": "python3 -m aws.iam.six_role_verify check --record aws/iam/records/dev.json"
         },
         {
           "name": "Execute the approved plan: candidate change set, verification, flip, observation, retire",

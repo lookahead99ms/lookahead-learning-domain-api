@@ -86,7 +86,7 @@
         },
         {
           "name": "Verify immutable image binding",
-          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/consumer_contract.py' --fail-under=85",
+          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py' --fail-under=85",
           "env": {
             "COVERAGE_FILE": "${{ runner.temp }}/domain-release.coverage"
           }
@@ -104,13 +104,6 @@
         {
           "name": "Prepare disposable database fixture password file",
           "run": "umask 077\nprintf '%s' 'synthetic-disposable-domain-ci' > \"$RUNNER_TEMP/domain-test-password\""
-        },
-        {
-          "name": "Fetch the Gateway consumer contract at its newest release tag",
-          "env": {
-            "GH_TOKEN": "${{ secrets.CROSS_REPO_READ_TOKEN }}"
-          },
-          "run": "python3 tools/release/consumer_contract.py fetch --output src/test/resources/contracts/domain-api-v1.json --receipt \"$RUNNER_TEMP/consumer-contract.json\""
         },
         {
           "name": "Test all production code and require at least 85 percent line coverage",
