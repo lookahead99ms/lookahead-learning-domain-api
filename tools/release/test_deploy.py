@@ -415,17 +415,19 @@ class ExecuteTests(DeployFixture):
         config = json.loads((self.root / 'deployment/dev/deploy-config.json').read_text())
         config['flip'] = {'mode': 'listener', 'listenerStack': 'lookahead-dev-ingress'}
         config['coupling'] = {'requiresSameSlot': ['lookahead-dev-web-', 'lookahead-dev-domain-']}
-        for slot in config['slots'].values():
+        for slot in config['slots'].values():  # Gateway slots: a target group, no Cloud Map service at all (run 41316978288 raised KeyError here)
             slot['targetGroupArn'] = 'arn:aws:elasticloadbalancing:us-east-2:509614632283:targetgroup/lookahead-dev-gateway-' + slot['stack'].split('-')[-1] + '/abc'
+            slot.pop('discoveryService'); slot.pop('discoveryServiceArn')
         config['slotParameters'] = {'TargetGroupArn': 'targetGroupArn'}
         (self.root / 'deployment/dev/deploy-config.json').write_text(json.dumps(config))
         self.aws = FakeAws(config)
         self.aws.listener = {'ActiveSlot': 'blue', 'VpcId': 'vpc-1', 'NlbArn': 'nlb'}
-        with self.assertRaisesRegex(ValueError, 'must be running before the Gateway'):
-            self.planned()
+        # Every application deploys independently (user decision 2026-11-01): absent siblings are reported, never a refusal.
+        planned = self.planned()
+        self.assertEqual({'checkedServices': ['lookahead-dev-web-green', 'lookahead-dev-domain-green'], 'notRunning': ['lookahead-dev-web-green', 'lookahead-dev-domain-green']}, planned['coupling'])
         self.aws.services['lookahead-dev-web-green'] = self.aws.services['lookahead-dev-domain-green'] = {'desired': 1, 'running': 1, 'rolloutState': 'COMPLETED'}
         planned = self.planned()
-        self.assertEqual(('green', {'checkedServices': ['lookahead-dev-web-green', 'lookahead-dev-domain-green']}), (planned['candidateSlot'], planned['coupling']))
+        self.assertEqual(('green', {'checkedServices': ['lookahead-dev-web-green', 'lookahead-dev-domain-green'], 'notRunning': []}), (planned['candidateSlot'], planned['coupling']))
         outcome = self.deployer(planned).run()
         self.assertEqual('green', self.aws.listener['ActiveSlot'])
         self.assertEqual('listener', next(s for s in outcome['steps'] if s['step'] == 'flipped')['mode'])
