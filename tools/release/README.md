@@ -60,10 +60,8 @@ secret ARNs and version ids, Cloud Map names, the flip mode, the observation win
 
 1. **Security gate** (`validate`): the same tests and coverage gate.
 2. **Plan DEV deploy** (`plan-dev`, environment `dev`): `release_version.py resolve` freezes the
-   dispatched tag; `candidate.py infra` selects Infra's newest calendar tag and Infra tooling is
-   checked out at that commit (`CROSS_REPO_READ_TOKEN`) only for `six_role_verify`; the plan session
-   `<app>-deploy-plan-<run>-1` (15 minutes) verifies the six installed IAM roles, then `deploy.py
-   plan` reads the digest back from the immutable ECR tag, finds the serving slot (Cloud Map alias
+   dispatched tag; the plan session `<app>-deploy-plan-<run>-1` (15 minutes) runs `deploy.py
+   plan`, which reads the digest back from the immutable ECR tag, finds the serving slot (Cloud Map alias
    instance for Web and Domain, listener `ActiveSlot` for Gateway), picks the idle slot as the
    candidate, renders the parameters and the resource preview, and writes `plan.json` with its
    digest (artifact `deploy-plan`).
@@ -71,7 +69,7 @@ secret ARNs and version ids, Cloud Map names, the flip mode, the observation win
    issue bound to that plan: `APPROVE DEPLOY <plan digest>` within 40 minutes, `REJECT` stops.
 4. **Deploy to DEV** (`deploy-dev`, environment `dev`): `deploy.py verify` rechecks the approval,
    the plan digest, the template and the configuration before OIDC; the deploy session
-   `<app>-deploy-<run>-1` (60 minutes) verifies the six roles again, then `deploy.py execute` runs,
+   `<app>-deploy-<run>-1` (60 minutes) runs `deploy.py execute`,
    in order: change set `app-<run>-candidate` (create or update of the candidate slot stack with the
    published image and `DesiredCount` 1; its preview must match the plan), ECS rollout `COMPLETED`
    with the task `HEALTHY`, service discovery listing it, a clean log window and (Gateway) healthy
@@ -107,7 +105,9 @@ Environment `dev` allowing exactly the `main` branch and **without** required re
 issue is the approval; a reviewer rule would add GitHub's deployment pop-up on top of it).
 Repository variables: `RELEASE_ON_MERGE` (`false` pauses merge-driven publication),
 `DEV_PUBLISH_ROLE_ARN` and `DEV_DEPLOY_ROLE_ARN` (optional overrides of `lookahead-dev-deploy`).
-Secret `CROSS_REPO_READ_TOKEN` (read-only on Infra) for the six-role check. Actions allow-list:
+Secret `CROSS_REPO_READ_TOKEN` (read-only on the Gateway repository) only for the consumer-contract
+fetch in CI; the deploy workflows read no other repository (the six-role IAM check is an Infra
+concern and runs in Infra workflows only, user decision 2026-11-01). Actions allow-list:
 GitHub-owned plus the pinned `aws-actions/configure-aws-credentials`. Issues enabled. The IAM deploy
 trust must admit the sessions `<app>-deploy-plan-*` and `<app>-deploy-*` (DLV-968 IAM transition).
 
@@ -118,13 +118,6 @@ Infra's `github/releases/release_version.py`, `github/approvals/issue_template.p
 `github/approvals/image_publication.py`; `owner_release.py`, `candidate.py`, `deploy.py`,
 `pipeline_tag.py` and every test are identical across the three app repositories. Update all copies together.
 
-`consumer_contract.py` (Domain and Web only, DLV-968 decision T13) fetches the Gateway/BFF's consumer
-contract `src/test/resources/contracts/domain-api-v1.json` at the Gateway's newest calendar tag (the
-same lightweight-tag selection as `candidate.py infra`, read with `CROSS_REPO_READ_TOKEN`). CI runs it
-before the application build; without the token it prints why it skipped and writes nothing, so a
-local run keeps the committed copy (Domain) or skips the Web path check (Web). Domain's
-`DomainProviderContractTest` checks every listed call against the real controllers; Web's
-`scripts/release/check-gateway-contract.mjs` checks that the built site serves every `webPaths` entry.
 
 ```sh
 python3 -m unittest discover -s tools/release -p 'test_*.py'

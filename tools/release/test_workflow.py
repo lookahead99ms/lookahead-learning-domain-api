@@ -251,27 +251,24 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertEqual('test "$GITHUB_REF" = refs/heads/main', runs(validate)[0])
         self.assertTrue(runs(validate)[-1].endswith(GATE))
 
-    def test_plan_resolves_the_tag_assumes_the_plan_session_and_verifies_the_six_roles_first(self):
+    def test_plan_resolves_the_tag_assumes_the_plan_session_and_reads_nothing_from_other_repositories(self):
+        # User decision 2026-11-01: the six-role IAM check is an Infra concern and runs in Infra workflows only; application
+        # deploys read no other repository and need no cross-repository token.
         plan = self.jobs['plan-dev']
         self.assertEqual(('validate', 'dev', {'contents': 'read', 'actions': 'read', 'id-token': 'write'}), (plan['needs'], plan['environment'], plan['permissions']))
-        self.assertEqual({'infra-sha': '${{ steps.infra.outputs.infra_sha }}', 'infra-ref': '${{ steps.infra.outputs.infra_ref }}',
-                          'candidate-slot': '${{ steps.plan.outputs.candidate_slot }}', 'plan-digest': '${{ steps.plan.outputs.plan_digest }}'}, plan['outputs'])
+        self.assertEqual({'candidate-slot': '${{ steps.plan.outputs.candidate_slot }}', 'plan-digest': '${{ steps.plan.outputs.plan_digest }}'}, plan['outputs'])
         steps = {s['name']: s for s in plan['steps'] if 'name' in s}
         self.assertIn('release_version.py resolve --app ' + APP + ' --record "$RUNNER_TEMP/deploy-plan/release-source.json"', steps['Resolve the dispatched release tag once and freeze its main commit']['run'])
-        self.assertEqual('python3 tools/release/candidate.py infra --output "$RUNNER_TEMP/deploy-plan/infra-tooling.json"', steps['Select the Infra tooling release (newest Infra calendar tag)']['run'])
-        infra = steps['Checkout Infra tooling at its release tag']['with']
-        self.assertEqual(('lookahead99ms/lookahead-learning-infra', '${{ steps.infra.outputs.infra_sha }}', 'infra-tooling', '${{ secrets.CROSS_REPO_READ_TOKEN }}', False),
-                         (infra['repository'], infra['ref'], infra['path'], infra['token'], infra['persist-credentials']))
         creds = [c['with'] for c in uses(plan, 'aws-actions/configure-aws-credentials@')]
         self.assertEqual([('${{ env.DEPLOY_ROLE }}', self.app + '-deploy-plan-${{ github.run_id }}-1', 900, '509614632283')],
                          [(c['role-to-assume'], c['role-session-name'], c['role-duration-seconds'], c['allowed-account-ids']) for c in creds])
         order = names(plan)
         oidc = order.index(next(s['name'] for s in plan['steps'] if str(s.get('uses', '')).startswith('aws-actions/')))
         self.assertLess(order.index('Point the release-source record at the runner temp directory'), oidc)
-        self.assertEqual(oidc + 1, order.index('Verify the six installed IAM roles before any AWS change'))
-        self.assertEqual('python3 -m aws.iam.six_role_verify check --record aws/iam/records/dev.json', steps['Verify the six installed IAM roles before any AWS change']['run'])
-        self.assertEqual('infra-tooling', steps['Verify the six installed IAM roles before any AWS change']['working-directory'])
         self.assertEqual('python3 tools/release/deploy.py plan --output "$RUNNER_TEMP/deploy-plan/plan.json"', steps['Plan the deploy: published digest, idle slot, three change sets, resource preview']['run'])
+        text = json.dumps(self.wf)
+        for foreign in ('lookahead-learning-infra', 'CROSS_REPO_READ_TOKEN', 'six_role_verify', 'infra-tooling', 'candidate.py infra'):
+            self.assertNotIn(foreign, text, foreign)
         self.assertEqual({'deploy-plan': '${{ runner.temp }}/deploy-plan/'}, {s['with']['name']: s['with']['path'] for s in uses(plan, 'actions/upload-artifact@')})
 
     def test_approval_is_credential_free_and_its_own_stage(self):
@@ -291,10 +288,10 @@ class DeployWorkflowTests(unittest.TestCase):
         order = names(deploy)
         oidc = order.index(next(s['name'] for s in deploy['steps'] if str(s.get('uses', '')).startswith('aws-actions/')))
         self.assertLess(order.index('Recheck the deployment approval before AWS credentials'), oidc)
-        self.assertEqual(oidc + 1, order.index('Verify the six installed IAM roles before any AWS change'))
+        self.assertEqual(oidc + 1, order.index('Execute the approved plan: candidate change set, verification, flip, observation, retire'))
         creds = [c['with'] for c in uses(deploy, 'aws-actions/configure-aws-credentials@')]
         self.assertEqual([('${{ env.DEPLOY_ROLE }}', self.app + '-deploy-${{ github.run_id }}-1', 3600)], [(c['role-to-assume'], c['role-session-name'], c['role-duration-seconds']) for c in creds])
-        self.assertEqual('${{ needs.plan-dev.outputs.infra-sha }}', next(s for s in uses(deploy, 'actions/checkout@') if s['with'].get('path') == 'infra-tooling')['with']['ref'])
+        self.assertEqual([('${{ github.sha }}', None)], [(s['with']['ref'], s['with'].get('path')) for s in uses(deploy, 'actions/checkout@')])
         execute = next(s for s in deploy['steps'] if s.get('id') == 'execute')
         self.assertEqual('python3 tools/release/deploy.py execute --plan "$RUNNER_TEMP/deploy-plan/plan.json" --receipt "$RUNNER_TEMP/deploy-approval/approval.json" --output "$RUNNER_TEMP/deploy-result/result.json"', execute['run'])
         result = next(s for s in uses(deploy, 'actions/upload-artifact@') if s['with']['name'] == 'deploy-result')
