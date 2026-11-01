@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "exceptions": [
+    {
+      "checkId": "AVD-AWS-0035",
+      "target": "deployment/dev/service.template.json",
+      "expiresAt": "2027-01-31",
+      "ticket": "DLV-968",
+      "rationale": "Trivy check AVD-AWS-0035 (ECS task definitions with EFS volumes should use in-transit encryption) flags every AWS::ECS::TaskDefinition volume that lacks EFSVolumeConfiguration, whether or not EFS is involved. The slot template's volumes (applicationTmp) are Fargate ephemeral bind mounts with no EFS file system, so there is no EFS traffic to encrypt and the HIGH finding is a false positive. Reviewed again when the pinned trivy in tools/security/tools.json is bumped."
+    }
+  ]
+}

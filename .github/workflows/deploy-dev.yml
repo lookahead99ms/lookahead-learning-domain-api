@@ -1,11 +1,11 @@
 {
-  "name": "04 · Deploy DEV",
+  "name": "04 \u00b7 Deploy DEV",
   "run-name": "${{ github.workflow }} | ${{ inputs.release_version }} | ${{ github.event_name }} | #${{ github.run_number }}",
   "on": {
     "workflow_dispatch": {
       "inputs": {
         "release_version": {
-          "description": "Existing published release tag vyyyy.mm.dd.hh.nn: plan, owner approval, deploy of the inactive DEV slot, verification, then keep or roll back",
+          "description": "Published release tag vyyyy.mm.dd.hh.nn (01 \u00b7 Full approved and published it): plan, owner approval, candidate slot, flip, observation, retire of the previous slot",
           "type": "string",
           "required": true
         }
@@ -13,20 +13,381 @@
     }
   },
   "permissions": {
-    "contents": "write",
-    "actions": "read",
-    "issues": "write",
-    "pull-requests": "read",
-    "id-token": "write"
+    "contents": "read"
+  },
+  "concurrency": {
+    "group": "deploy-dev",
+    "cancel-in-progress": false
+  },
+  "env": {
+    "DEPLOY_ROLE": "${{ vars.DEV_DEPLOY_ROLE_ARN || 'arn:aws:iam::509614632283:role/lookahead-dev-deploy' }}",
+    "RELEASE_VERSION": "${{ inputs.release_version }}"
   },
   "jobs": {
-    "release": {
-      "uses": "./.github/workflows/release.yml",
-      "with": {
-        "action": "deploy-dev",
-        "release_version": "${{ inputs.release_version }}"
+    "validate": {
+      "name": "Security gate",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 15,
+      "permissions": {
+        "contents": "read"
       },
-      "secrets": "inherit"
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Refuse any run that is not on main",
+          "run": "test \"$GITHUB_REF\" = refs/heads/main"
+        },
+        {
+          "name": "Set up Python for release and Infra tooling",
+          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+          "with": {
+            "python-version": "3.14"
+          }
+        },
+        {
+          "name": "Install hash-locked release coverage tooling",
+          "run": "python -m pip install --only-binary=:all: --require-hashes -r tools/release/requirements-coverage.txt"
+        },
+        {
+          "name": "Test the deploy tooling this run executes and require 85 percent coverage",
+          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py' --fail-under=85",
+          "env": {
+            "COVERAGE_FILE": "${{ runner.temp }}/release-tooling.coverage"
+          }
+        }
+      ]
+    },
+    "plan-dev": {
+      "name": "Plan DEV deploy",
+      "needs": "validate",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 20,
+      "environment": "dev",
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "id-token": "write"
+      },
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "CROSS_REPO_READ_TOKEN": "${{ secrets.CROSS_REPO_READ_TOKEN }}",
+        "AWS_MAX_ATTEMPTS": "1",
+        "AWS_RETRY_MODE": "standard",
+        "AWS_EC2_METADATA_DISABLED": "true"
+      },
+      "outputs": {
+        "infra-sha": "${{ steps.infra.outputs.infra_sha }}",
+        "infra-ref": "${{ steps.infra.outputs.infra_ref }}",
+        "candidate-slot": "${{ steps.plan.outputs.candidate_slot }}",
+        "plan-digest": "${{ steps.plan.outputs.plan_digest }}"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Set up Python for release and Infra tooling",
+          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+          "with": {
+            "python-version": "3.14"
+          }
+        },
+        {
+          "name": "Resolve the dispatched release tag once and freeze its main commit",
+          "id": "source",
+          "run": "mkdir -p \"$RUNNER_TEMP/deploy-plan\"\npython3 tools/release/release_version.py resolve --app domain --record \"$RUNNER_TEMP/deploy-plan/release-source.json\""
+        },
+        {
+          "name": "Point the release-source record at the runner temp directory",
+          "run": "echo \"RELEASE_SOURCE_RECORD=$RUNNER_TEMP/deploy-plan/release-source.json\" >> \"$GITHUB_ENV\""
+        },
+        {
+          "name": "Select the Infra tooling release (newest Infra calendar tag)",
+          "id": "infra",
+          "run": "python3 tools/release/candidate.py infra --output \"$RUNNER_TEMP/deploy-plan/infra-tooling.json\""
+        },
+        {
+          "name": "Checkout Infra tooling at its release tag",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "repository": "lookahead99ms/lookahead-learning-infra",
+            "ref": "${{ steps.infra.outputs.infra_sha }}",
+            "path": "infra-tooling",
+            "token": "${{ secrets.CROSS_REPO_READ_TOKEN }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Use short-lived DEV OIDC credentials (web-deploy-plan)",
+          "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
+          "with": {
+            "aws-region": "us-east-2",
+            "role-to-assume": "${{ env.DEPLOY_ROLE }}",
+            "allowed-account-ids": "509614632283",
+            "role-duration-seconds": 900,
+            "role-session-name": "domain-deploy-plan-${{ github.run_id }}-1",
+            "unset-current-credentials": true,
+            "output-credentials": false,
+            "disable-retry": true
+          }
+        },
+        {
+          "name": "Verify the six installed IAM roles before any AWS change",
+          "working-directory": "infra-tooling",
+          "run": "python3 -m aws.iam.six_role_verify check --record aws/iam/records/dev.json"
+        },
+        {
+          "name": "Plan the deploy: published digest, idle slot, three change sets, resource preview",
+          "id": "plan",
+          "run": "python3 tools/release/deploy.py plan --output \"$RUNNER_TEMP/deploy-plan/plan.json\""
+        },
+        {
+          "name": "Retain the deploy plan",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "deploy-plan",
+            "path": "${{ runner.temp }}/deploy-plan/",
+            "if-no-files-found": "error",
+            "retention-days": 30
+          }
+        }
+      ]
+    },
+    "approve-deploy": {
+      "name": "Approve DEV deploy",
+      "needs": [
+        "plan-dev"
+      ],
+      "if": "always() && needs.plan-dev.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 45,
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "issues": "write",
+        "pull-requests": "read"
+      },
+      "env": {
+        "GH_TOKEN": "${{ github.token }}"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Set up Python for release and Infra tooling",
+          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+          "with": {
+            "python-version": "3.14"
+          }
+        },
+        {
+          "name": "Restore the deploy plan of this run",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "deploy-plan",
+            "path": "${{ runner.temp }}/deploy-plan"
+          }
+        },
+        {
+          "name": "Point the release-source record at the runner temp directory",
+          "run": "echo \"RELEASE_SOURCE_RECORD=$RUNNER_TEMP/deploy-plan/release-source.json\" >> \"$GITHUB_ENV\""
+        },
+        {
+          "name": "Open the approval issue and wait for the owner comment (40 minutes)",
+          "id": "approve",
+          "run": "python3 tools/release/deploy.py approve --plan \"$RUNNER_TEMP/deploy-plan/plan.json\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\""
+        },
+        {
+          "name": "Retain the approval receipt",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "deploy-approval",
+            "path": "${{ runner.temp }}/deploy-approval/",
+            "if-no-files-found": "error",
+            "retention-days": 30
+          }
+        },
+        {
+          "name": "Close the approval issue when approval failed or expired",
+          "if": "failure()",
+          "continue-on-error": true,
+          "run": "python3 tools/release/issue_close.py --stage \"Approve DEV deploy\" --outcome failure --detail \"Rejected, expired or failed; nothing was deployed.\" --match \"Deploy\""
+        }
+      ]
+    },
+    "deploy-dev": {
+      "name": "Deploy to DEV",
+      "needs": [
+        "plan-dev",
+        "approve-deploy"
+      ],
+      "if": "always() && needs.approve-deploy.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 90,
+      "environment": "dev",
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "issues": "write",
+        "id-token": "write"
+      },
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "AWS_MAX_ATTEMPTS": "1",
+        "AWS_RETRY_MODE": "standard",
+        "AWS_EC2_METADATA_DISABLED": "true"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Set up Python for release and Infra tooling",
+          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+          "with": {
+            "python-version": "3.14"
+          }
+        },
+        {
+          "name": "Restore the deploy plan of this run",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "deploy-plan",
+            "path": "${{ runner.temp }}/deploy-plan"
+          }
+        },
+        {
+          "name": "Restore the approval receipt",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "deploy-approval",
+            "path": "${{ runner.temp }}/deploy-approval"
+          }
+        },
+        {
+          "name": "Point the release-source record at the runner temp directory",
+          "run": "echo \"RELEASE_SOURCE_RECORD=$RUNNER_TEMP/deploy-plan/release-source.json\" >> \"$GITHUB_ENV\""
+        },
+        {
+          "name": "Recheck the deployment approval before AWS credentials",
+          "run": "python3 tools/release/deploy.py verify --plan \"$RUNNER_TEMP/deploy-plan/plan.json\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\""
+        },
+        {
+          "name": "Checkout Infra tooling at its release tag",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "repository": "lookahead99ms/lookahead-learning-infra",
+            "ref": "${{ needs.plan-dev.outputs.infra-sha }}",
+            "path": "infra-tooling",
+            "token": "${{ secrets.CROSS_REPO_READ_TOKEN }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Use short-lived DEV OIDC credentials (web-deploy)",
+          "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
+          "with": {
+            "aws-region": "us-east-2",
+            "role-to-assume": "${{ env.DEPLOY_ROLE }}",
+            "allowed-account-ids": "509614632283",
+            "role-duration-seconds": 3600,
+            "role-session-name": "domain-deploy-${{ github.run_id }}-1",
+            "unset-current-credentials": true,
+            "output-credentials": false,
+            "disable-retry": true
+          }
+        },
+        {
+          "name": "Verify the six installed IAM roles before any AWS change",
+          "working-directory": "infra-tooling",
+          "run": "python3 -m aws.iam.six_role_verify check --record aws/iam/records/dev.json"
+        },
+        {
+          "name": "Execute the approved plan: candidate change set, verification, flip, observation, retire",
+          "id": "execute",
+          "run": "python3 tools/release/deploy.py execute --plan \"$RUNNER_TEMP/deploy-plan/plan.json\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\" --output \"$RUNNER_TEMP/deploy-result/result.json\""
+        },
+        {
+          "name": "Retain the deploy result whatever the outcome",
+          "if": "always()",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "deploy-result",
+            "path": "${{ runner.temp }}/deploy-result/",
+            "if-no-files-found": "warn",
+            "retention-days": 90
+          }
+        },
+        {
+          "name": "Close the approval issue with the deploy outcome",
+          "if": "always()",
+          "continue-on-error": true,
+          "env": {
+            "OUTCOME": "${{ steps.execute.outcome }}"
+          },
+          "run": "detail=\"Deploy of $RELEASE_VERSION ended with outcome $OUTCOME; the result artifact of this run holds every step.\"\npython3 tools/release/issue_close.py --stage \"Deploy to DEV\" --outcome \"$OUTCOME\" --detail \"$detail\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\""
+        }
+      ]
+    },
+    "record": {
+      "name": "Record deploy",
+      "needs": [
+        "plan-dev",
+        "approve-deploy",
+        "deploy-dev"
+      ],
+      "if": "always() && needs.plan-dev.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "permissions": {
+        "contents": "read",
+        "actions": "read"
+      },
+      "steps": [
+        {
+          "name": "Restore every receipt this run produced (absent stages stay absent)",
+          "continue-on-error": true,
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "pattern": "{deploy-plan,deploy-approval,deploy-result}",
+            "path": "${{ runner.temp }}/deploy-record",
+            "merge-multiple": false
+          }
+        },
+        {
+          "name": "Retain one record per deploy run",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "deploy-record-${{ inputs.release_version }}-${{ github.run_id }}",
+            "path": "${{ runner.temp }}/deploy-record/",
+            "if-no-files-found": "error",
+            "retention-days": 90
+          }
+        }
+      ]
     }
   }
 }

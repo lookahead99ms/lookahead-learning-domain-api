@@ -1,0 +1,70 @@
+{
+  "schema": "lookahead-app-deploy-config/v1",
+  "app": "domain",
+  "service": "domain",
+  "account": "509614632283",
+  "region": "us-east-2",
+  "imageRepository": "509614632283.dkr.ecr.us-east-2.amazonaws.com/lookahead-dev-ecr",
+  "deployRoleArn": "arn:aws:iam::509614632283:role/lookahead-dev-deploy",
+  "cloudFormationRoleArn": "arn:aws:iam::509614632283:role/lookahead-dev-cfn-provision",
+  "sessionPrefix": "domain-deploy",
+  "cluster": "arn:aws:ecs:us-east-2:509614632283:cluster/lookahead-dev-cluster",
+  "clusterName": "lookahead-dev-cluster",
+  "logGroup": "/lookahead/dev/domain",
+  "namespaceName": "lookahead-dev.internal",
+  "slots": {
+    "blue": {
+      "stack": "lookahead-dev-domain-blue",
+      "discoveryService": "domain-blue",
+      "discoveryServiceArn": "arn:aws:servicediscovery:us-east-2:509614632283:service/srv-3rlmn6tryd2odokr"
+    },
+    "green": {
+      "stack": "lookahead-dev-domain-green",
+      "discoveryService": "domain-green",
+      "discoveryServiceArn": "arn:aws:servicediscovery:us-east-2:509614632283:service/srv-5kxx2teofp6ukzhx"
+    }
+  },
+  "flip": {
+    "mode": "alias",
+    "serviceName": "domain",
+    "serviceId": "srv-kjp3rm76n4xr45ss",
+    "instanceId": "stable",
+    "hostnameSuffix": ".lookahead-dev.internal",
+    "serviceArn": "arn:aws:servicediscovery:us-east-2:509614632283:service/srv-kjp3rm76n4xr45ss"
+  },
+  "coupling": {
+    "listenerStack": "lookahead-dev-ingress",
+    "gatewayServicePrefix": "lookahead-dev-gateway-",
+    "note": "Phase 1: the Gateway reaches domain-<its own slot>; a slot a running Gateway uses is never rebuilt, and the previous slot is retired only when no Gateway runs on it (removed in phase 2, DLV-968 T12)."
+  },
+  "observationMinutes": 15,
+  "probeUrl": "https://dev.devlookahead.com/",
+  "parameters": {
+    "Cluster": "arn:aws:ecs:us-east-2:509614632283:cluster/lookahead-dev-cluster",
+    "ApplicationSubnets": "subnet-0cce664b4200b0081,subnet-0ea67dc66d4debb56",
+    "TaskRoleArn": "arn:aws:iam::509614632283:role/lookahead-dev-app-task",
+    "ExecutionRoleArn": "arn:aws:iam::509614632283:role/lookahead-dev-ecs-execution",
+    "ServiceSecurityGroup": "sg-0330183f77fd702fd",
+    "LogGroupName": "/lookahead/dev/domain",
+    "TlsSecretArn": "arn:aws:secretsmanager:us-east-2:509614632283:secret:lookahead-dev-domain-tls-YY5eoq",
+    "TlsVersion": "19cc2d51-6368-45fb-aa2a-32ac91b92fc2",
+    "DomainAppSecretArn": "arn:aws:secretsmanager:us-east-2:509614632283:secret:lookahead-dev-db-app-readwrite-h1nqjO",
+    "DomainAppVersion": "cd08e527-0e7d-a97f-87dd-f96dcc82d1ef",
+    "DomainGatewaySecretArn": "arn:aws:secretsmanager:us-east-2:509614632283:secret:lookahead-dev-domain-gateway-R7brdT",
+    "DomainGatewayVersion": "fe3fd602-9a06-d552-aed5-1a14f8ff27c5",
+    "ApplicationClientId": "2olc3ciukd97nbhmlk7r55p88n",
+    "ApplicationIssuer": "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_edT1KP4r9",
+    "ScopePrefix": "lookahead-dev",
+    "DatabaseAddress": "lookahead-dev-db.cxe4k4w40as7.us-east-2.rds.amazonaws.com",
+    "PublicationBucket": "lookahead-assets-dev-use2"
+  },
+  "slotParameters": {
+    "DiscoveryServiceArn": "discoveryServiceArn"
+  },
+  "logFailurePatterns": [
+    "ERROR",
+    "startup denied",
+    "AccessDeniedException",
+    "Unable to create tempDir"
+  ]
+}
