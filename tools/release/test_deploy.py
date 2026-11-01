@@ -83,8 +83,9 @@ class FakeAws:
             return {'OperationId': 'op-1'}
         if key == 'servicediscovery get-operation':
             return {'Operation': {'Status': self.operation}}
-        if key == 'servicediscovery discover-instances':
-            return {'Instances': [{'InstanceId': 'i'}] * self.discovered}
+        if key == 'servicediscovery list-instances':
+            assert opts['--service-id'].startswith('srv-'), opts
+            return {'Instances': [{'Id': 'i'}] * self.discovered}
         if key == 'ecs describe-services':
             counts = self.services.get(opts['--services'])
             if counts is None:
@@ -185,7 +186,7 @@ class DeployFixture(unittest.TestCase):
         self.aws.candidate = result['candidateSlot']
         stamp = self.now.replace(microsecond=0).isoformat()
         # the fake owner answers the deploy command, not the image command, once the digest is known
-        self.github.comment = lambda: {'id': 7, 'user': {'login': owner.OWNER}, 'body': 'APPROVE DEPLOY ' + result['planDigest'], 'created_at': stamp, 'updated_at': stamp}
+        self.github.comment = lambda: {'id': 7, 'user': {'login': owner.OWNER}, 'body': 'APPROVE DEPLOY ' + result['imageTag'], 'created_at': stamp, 'updated_at': stamp}
         return result
 
     def approved(self, planned):
@@ -292,7 +293,7 @@ class ApprovalTests(DeployFixture):
         receipt = self.approved(planned)
         self.assertEqual((m.SCHEMA_RECEIPT, planned['planDigest'], 3, 7), (receipt['schema'], receipt['planDigest'], receipt['issue'], receipt['commentId']))
         issue = self.github.data['issues/3']
-        self.assertIn('APPROVE DEPLOY ' + planned['planDigest'], issue['body'])
+        self.assertIn('APPROVE DEPLOY ' + planned['imageTag'], issue['body']); self.assertIn(planned['planDigest'], issue['body'])
         self.assertIn('lookahead-dev-web-blue', issue['body'])
         self.assertTrue(issue['title'].startswith('DEV: Deploy ' + self.app + ' ' + planned['imageTag'] + ' to blue'))
         m.verify(planned, receipt, self.env, self.root, self.get, now=self.now)
@@ -414,17 +415,19 @@ class ExecuteTests(DeployFixture):
         config = json.loads((self.root / 'deployment/dev/deploy-config.json').read_text())
         config['flip'] = {'mode': 'listener', 'listenerStack': 'lookahead-dev-ingress'}
         config['coupling'] = {'requiresSameSlot': ['lookahead-dev-web-', 'lookahead-dev-domain-']}
-        for slot in config['slots'].values():
+        for slot in config['slots'].values():  # Gateway slots: a target group, no Cloud Map service at all (run 41316978288 raised KeyError here)
             slot['targetGroupArn'] = 'arn:aws:elasticloadbalancing:us-east-2:509614632283:targetgroup/lookahead-dev-gateway-' + slot['stack'].split('-')[-1] + '/abc'
+            slot.pop('discoveryService'); slot.pop('discoveryServiceArn')
         config['slotParameters'] = {'TargetGroupArn': 'targetGroupArn'}
         (self.root / 'deployment/dev/deploy-config.json').write_text(json.dumps(config))
         self.aws = FakeAws(config)
         self.aws.listener = {'ActiveSlot': 'blue', 'VpcId': 'vpc-1', 'NlbArn': 'nlb'}
-        with self.assertRaisesRegex(ValueError, 'must be running before the Gateway'):
-            self.planned()
+        # Every application deploys independently (user decision 2026-11-01): absent siblings are reported, never a refusal.
+        planned = self.planned()
+        self.assertEqual({'checkedServices': ['lookahead-dev-web-green', 'lookahead-dev-domain-green'], 'notRunning': ['lookahead-dev-web-green', 'lookahead-dev-domain-green']}, planned['coupling'])
         self.aws.services['lookahead-dev-web-green'] = self.aws.services['lookahead-dev-domain-green'] = {'desired': 1, 'running': 1, 'rolloutState': 'COMPLETED'}
         planned = self.planned()
-        self.assertEqual(('green', {'checkedServices': ['lookahead-dev-web-green', 'lookahead-dev-domain-green']}), (planned['candidateSlot'], planned['coupling']))
+        self.assertEqual(('green', {'checkedServices': ['lookahead-dev-web-green', 'lookahead-dev-domain-green'], 'notRunning': []}), (planned['candidateSlot'], planned['coupling']))
         outcome = self.deployer(planned).run()
         self.assertEqual('green', self.aws.listener['ActiveSlot'])
         self.assertEqual('listener', next(s for s in outcome['steps'] if s['step'] == 'flipped')['mode'])
@@ -469,7 +472,7 @@ class TransportAndCliTests(DeployFixture):
         planned = m.main(['plan', '--root', str(self.root), '--output', str(out / 'plan.json')], env, call=self.aws, get=self.get)
         self.aws.candidate = planned['candidateSlot']
         stamp = self.now.replace(microsecond=0).isoformat()
-        self.github.comment = lambda: {'id': 7, 'user': {'login': owner.OWNER}, 'body': 'APPROVE DEPLOY ' + planned['planDigest'], 'created_at': stamp, 'updated_at': stamp}
+        self.github.comment = lambda: {'id': 7, 'user': {'login': owner.OWNER}, 'body': 'APPROVE DEPLOY ' + planned['imageTag'], 'created_at': stamp, 'updated_at': stamp}
         self.assertIn('candidate_slot=blue', (out / 'github-output').read_text())
         with self.assertRaises(FileExistsError):
             m.main(['plan', '--root', str(self.root), '--output', str(out / 'plan.json')], env, call=self.aws, get=self.get)

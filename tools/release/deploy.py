@@ -211,13 +211,18 @@ def gatewayServes(call, config, slot):
 
 
 def couplingCheck(call, config, candidate):
-    """Phase 1 only: the Gateway reaches web-<slot> and domain-<slot> by its own slot name (removed in phase 2)."""
+    """Phase 1 information only: the Gateway reaches web-<slot> and domain-<slot> by its own slot name until phase 2. Every
+    application deploys independently (user decision 2026-11-01), so a sibling that is not running is reported in the plan and
+    the approval issue, never a refusal; the owner decides."""
     coupling = config.get('coupling') or {}
+    checked, notRunning = [], []
     for prefix in coupling.get('requiresSameSlot', []):
         rows = call('ecs', 'describe-services', '--cluster', config['cluster'], '--services', prefix + candidate)
         service = next((s for s in rows.get('services', []) if s.get('status') == 'ACTIVE'), {})
-        require(service.get('runningCount', 0) >= 1, prefix + candidate + ' must be running before the Gateway can serve from slot ' + candidate)
-    return {'checkedServices': [prefix + candidate for prefix in coupling.get('requiresSameSlot', [])]}
+        checked.append(prefix + candidate)
+        if service.get('runningCount', 0) < 1:
+            notRunning.append(prefix + candidate)
+    return {'checkedServices': checked, 'notRunning': notRunning}
 
 
 def resourceRows(config, candidate, previous, candidateExists, candidateUpToDate, flip):
@@ -290,6 +295,10 @@ def aliasTarget(planned):
     return planned['flip']['serviceName'] + '-' + planned['candidateSlot'] + planned['flip']['hostnameSuffix']
 
 
+def approvalCommand(planned):
+    return 'APPROVE DEPLOY ' + planned['imageTag']
+
+
 def headline(planned):
     return {'env': 'DEV', 'action': 'Deploy ' + planned['app'], 'subject': planned['imageTag'] + ' to ' + planned['candidateSlot'],
             'change': ('alias → ' + planned['candidateSlot'] if planned['flip']['mode'] == 'alias' else 'listener ActiveSlot → ' + planned['candidateSlot'])
@@ -322,13 +331,14 @@ def body(planned, receipt):
         validation=[('Release tag ' + issueTemplate.text(planned['releaseVersion']), 'resolved to source commit ' + owner.commitLink(planned, planned['sourceSha'])),
                     ('Image', 'ECR tag `' + issueTemplate.text(planned['imageTag']) + '` read back as `' + issueTemplate.text(planned['image'].rsplit('@', 1)[-1]) + '`'),
                     ('Template and configuration', '`' + planned['templateSha256'][:16] + '…` / `' + planned['configSha256'][:16] + '…` rechecked before execution'),
-                    ('Coupling', issueTemplate.text(json.dumps(planned['coupling'])))],
+                    ('Siblings in slot ' + planned['candidateSlot'], ('not running: ' + ', '.join(planned['coupling']['notRunning']) + ' (requests through this slot fail until they run)')
+                     if planned['coupling'].get('notRunning') else ('running: ' + ', '.join(planned['coupling']['checkedServices']) if planned['coupling'].get('checkedServices') else 'none required'))],
         evidence='Review the plan artifact of this run before approving.',
         risks='A failed candidate is scaled back to zero and the alias or listener is not flipped. A failed retire leaves four tasks running until the next run. '
             'This is owner approval enforced by workflow code, not independent review.',
         repository=planned['repository'], runId=planned['runId'], owner=owner.OWNER, expires=receipt['expiresAt'], created=receipt.get('createdAt'),
         permissionDeadline='The deploy session lasts at most 60 minutes; IAM is not changed.',
-        command='APPROVE DEPLOY ' + planned['planDigest'], payload=planned)
+        command=approvalCommand(planned), payload=planned)
 
 
 def decision(planned, receipt, env, root, get=owner.api, now=None):
@@ -352,7 +362,9 @@ def decision(planned, receipt, env, root, get=owner.api, now=None):
         if comment.get('created_at') != comment.get('updated_at'):
             continue
         when = owner.timestamp(comment['created_at'])
-        if created <= when <= now and when < expires and command == 'APPROVE DEPLOY ' + planned['planDigest']:
+        # The comment names the image version as ECR shows it (user decision 2026-10-28, applied to deploys 2026-11-01);
+        # the plan digest binds the exact plan through the issue body and the receipt.
+        if created <= when <= now and when < expires and command == approvalCommand(planned):
             selected = comment['id']
     return selected
 
@@ -485,9 +497,12 @@ class Deployer:
         events = self.call('logs', 'filter-log-events', '--log-group-name', cfg['logGroup'], '--log-stream-name-prefix', cfg['service'] + '/' + cfg['service'] + '/' + taskId,
                            '--start-time', str(int(startedAt.timestamp() * 1000)), '--filter-pattern', pattern).get('events', [])
         require(not events, 'Candidate log window contains failure markers: ' + (events[0].get('message', '')[:200] if events else ''))
-        discovered = self.call('servicediscovery', 'discover-instances', '--namespace-name', cfg['namespaceName'],
-                               '--service-name', cfg['slots'][slot]['discoveryService'], '--health-status', 'HEALTHY').get('Instances', []) if p['flip']['mode'] == 'alias' else None
-        require(discovered is None or len(discovered) >= 1, 'Service discovery lists no healthy ' + cfg['slots'][slot]['discoveryService'] + ' instance')
+        # The slot service's registered instances (ECS registers the task's address); health is proven by the task itself above.
+        # list-instances is scoped to the slot service, unlike the namespace-wide discover-instances (deploy run 41274299122).
+        discovered = None
+        if p['flip']['mode'] == 'alias':  # Gateway slots are behind the load balancer and have no Cloud Map service (run 41316978288)
+            discovered = self.call('servicediscovery', 'list-instances', '--service-id', cfg['slots'][slot]['discoveryServiceArn'].rsplit('/', 1)[-1]).get('Instances', [])
+            require(len(discovered) >= 1, 'Service discovery lists no ' + cfg['slots'][slot]['discoveryService'] + ' instance')
         targets = None
         if p['flip']['mode'] == 'listener':
             group = cfg['slots'][slot]['targetGroupArn']
