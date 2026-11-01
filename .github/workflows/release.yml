@@ -377,13 +377,35 @@
         }
       ]
     },
+    "deploy": {
+      "name": "Deploy to DEV (04 \u00b7 Deploy DEV)",
+      "needs": [
+        "release",
+        "publish"
+      ],
+      "if": "always() && needs.publish.result == 'success' && vars.FULL_DEPLOYS_DEV != 'false'",
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "issues": "write",
+        "pull-requests": "read",
+        "id-token": "write"
+      },
+      "uses": "./.github/workflows/deploy-dev.yml",
+      "with": {
+        "release_version": "${{ needs.release.outputs.release-version }}",
+        "desired_count": "1"
+      },
+      "secrets": "inherit"
+    },
     "record": {
       "name": "Record release",
       "needs": [
         "release",
         "build",
         "approve",
-        "publish"
+        "publish",
+        "deploy"
       ],
       "if": "always() && needs.release.result == 'success'",
       "runs-on": "ubuntu-24.04",

@@ -1,11 +1,14 @@
-"""Per-application DEV deploy (DLV-968): plan, owner approval, verify, execute. Identical copy in the Web, Domain and
-Gateway/BFF repositories; the application differs only through `deployment/dev/deploy-config.json` and the template.
+"""Per-application DEV deploy (DLV-968, decision V of 2026-11-01): one ECS service per application, ECS rolling updates.
+Identical copy in the Web, Domain and Gateway/BFF repositories; the application differs only through
+`deployment/dev/deploy-config.json` and `deployment/dev/service.template.json`.
 
-One approved run = three CloudFormation change sets on stacks this repository owns: `app-<run>-candidate` (the idle slot gets
-the published image and DesiredCount 1), a flip (Cloud Map alias instance for Web and Domain, `ActiveSlot` change set on
-the listener stack for Gateway), then after the observation window `app-<run>-retire` (previous slot to DesiredCount 0).
-Nothing is ever deleted. AWS is reached only through the `aws` CLI with the credentials the workflow assumed; the plan
-and the receipt bind every identifier, and the approval comment names the plan digest.
+One approved run = one CloudFormation change set `app-<run>` on the stack this repository owns: the task definition gets the
+published image and the service gets `DesiredCount` (1 serves, 0 parks the service). ECS performs the rolling update
+(surge to two tasks, the old task drained once the new one is healthy) and its deployment circuit breaker rolls a failed
+revision back by itself; manual rollback is a new run with the previous tag. The run then verifies the running task, the
+log window, service discovery or target health, and watches the public probe for the observation window. AWS is reached
+only through the `aws` CLI with the credentials the workflow assumed; the plan and the receipt bind every identifier, and
+the approval comment names the image tag.
 """
 import argparse
 import hashlib
@@ -24,22 +27,24 @@ import owner_approval as owner
 import release_version as versions
 
 WORKFLOW = '.github/workflows/deploy-dev.yml'
-SCHEMA_CONFIG = 'lookahead-app-deploy-config/v1'
-SCHEMA_PLAN = 'app-deploy-plan/v1'
+# `01 · Full` (release.yml) and `03 · Publish` (publish.yml) call deploy-dev.yml after the image is published; a reusable-workflow
+# call keeps the caller's workflow ref, run path and event (push or dispatch).
+DEPLOY_WORKFLOWS = (WORKFLOW, '.github/workflows/release.yml', '.github/workflows/publish.yml')
+SCHEMA_CONFIG = 'lookahead-app-deploy-config/v2'
+SCHEMA_PLAN = 'app-deploy-plan/v2'
 SCHEMA_RECEIPT = 'app-deploy-approval/v1'
-SCHEMA_RESULT = 'app-deploy-result/v1'
+SCHEMA_RESULT = 'app-deploy-result/v2'
 TERMINAL_OK = {'CREATE_COMPLETE', 'UPDATE_COMPLETE'}
-# A stack that can take the next change set. ROLLBACK_COMPLETE (a failed first CREATE) is excluded on purpose: CloudFormation
-# only accepts deletion there, and this tool never deletes (see README, manual recovery). REVIEW_IN_PROGRESS is an aborted
-# CREATE change set and is planned as a fresh CREATE.
-UPDATABLE = TERMINAL_OK | {'UPDATE_ROLLBACK_COMPLETE', 'IMPORT_COMPLETE'}
-REVIEW = 'REVIEW_IN_PROGRESS'
 TERMINAL_BAD = {'CREATE_FAILED', 'ROLLBACK_COMPLETE', 'ROLLBACK_FAILED', 'UPDATE_ROLLBACK_COMPLETE', 'UPDATE_ROLLBACK_FAILED',
                 'UPDATE_FAILED', 'DELETE_FAILED', 'IMPORT_ROLLBACK_COMPLETE'}
+# A stack that can take the next change set. ROLLBACK_COMPLETE (a failed first CREATE) is excluded on purpose: CloudFormation
+# only accepts deletion there, and this tool never deletes (see README). REVIEW_IN_PROGRESS is an aborted CREATE change set.
+UPDATABLE = TERMINAL_OK | {'UPDATE_ROLLBACK_COMPLETE', 'IMPORT_COMPLETE'}
+REVIEW = 'REVIEW_IN_PROGRESS'
 NO_CHANGES = "didn't contain changes"
 CONFIG_KEYS = {'schema', 'app', 'service', 'account', 'region', 'imageRepository', 'deployRoleArn', 'cloudFormationRoleArn',
-               'sessionPrefix', 'cluster', 'clusterName', 'logGroup', 'namespaceName', 'slots', 'flip', 'coupling',
-               'observationMinutes', 'probeUrl', 'parameters', 'slotParameters', 'logFailurePatterns'}
+               'sessionPrefix', 'cluster', 'clusterName', 'stack', 'logGroup', 'namespaceName', 'discovery', 'targetGroupArn',
+               'observationMinutes', 'probeUrl', 'parameters', 'logFailurePatterns'}
 require = owner.require
 digest = owner.digest
 
@@ -66,7 +71,7 @@ def write(path, value):
 def aws(args, run=None):
     """One bounded AWS CLI call; JSON out; stderr is not echoed (it can quote request bodies)."""
     result = (run or subprocess.run)(['aws', *args, '--region', 'us-east-2', '--output', 'json', '--no-cli-pager',
-                  '--cli-connect-timeout', '10', '--cli-read-timeout', '25'], capture_output=True, text=True, timeout=40)
+                                      '--cli-connect-timeout', '10', '--cli-read-timeout', '25'], capture_output=True, text=True, timeout=40)
     if result.returncode != 0:
         raise RuntimeError('aws ' + ' '.join(args[:2]) + ' failed: ' + (result.stderr or '').strip()[:300])
     return json.loads(result.stdout or 'null', object_pairs_hook=owner.unique) if result.stdout.strip() else None
@@ -89,19 +94,13 @@ def tolerant(call, *args, absent):
 def loadConfig(root):
     config = readJson(Path(root) / 'deployment/dev/deploy-config.json')
     require(config.get('schema') == SCHEMA_CONFIG and set(config) == CONFIG_KEYS, 'Exact deploy configuration required')
-    require(set(config['slots']) == {'blue', 'green'} and all('stack' in s for s in config['slots'].values()), 'Both slots with stack names required')
-    flip = config['flip']
-    require(flip.get('mode') in ('alias', 'listener'), 'Flip mode alias or listener required')
-    if flip['mode'] == 'alias':
-        require({'serviceName', 'serviceId', 'instanceId', 'hostnameSuffix'} <= set(flip)
-                and all({'discoveryService', 'discoveryServiceArn'} <= set(s) for s in config['slots'].values()), 'Alias flip needs the Cloud Map names')
-        coupling = config.get('coupling') or {}
-        require(not coupling.get('listenerStack') or 'gatewayServicePrefix' in coupling, 'Phase 1 coupling needs the Gateway service prefix')
-    else:
-        require('listenerStack' in flip and all('targetGroupArn' in s for s in config['slots'].values()),
-                'Listener flip needs the listener stack and both target groups')
     require(re.fullmatch('[0-9]{12}', config['account']) and config['region'] == 'us-east-2', 'DEV account and region required')
+    require(re.fullmatch(r'lookahead-dev-[a-z]+', config['stack']), 'Single-service stack name required')
     require(isinstance(config['observationMinutes'], int) and 1 <= config['observationMinutes'] <= 60, 'Observation window 1..60 minutes')
+    discovery, group = config['discovery'], config['targetGroupArn']
+    require((discovery is None) != (group is None), 'Exactly one of discovery (Web, Domain) or targetGroupArn (Gateway) is required')
+    if discovery is not None:
+        require({'serviceName', 'serviceId', 'serviceArn'} <= set(discovery), 'Discovery needs serviceName, serviceId and serviceArn')
     return config
 
 
@@ -111,29 +110,30 @@ def loadTemplate(root):
     require(len(text) <= 51200, 'Template must fit the CloudFormation inline body limit')
     template = json.loads(text, object_pairs_hook=owner.unique)
     params = template.get('Parameters', {})
-    require({'Slot', 'ApplicationImage', 'DesiredCount'} <= set(params) and set(template.get('Resources', {})) <= {'Task', 'Service'},
-            'Slot template with Slot, ApplicationImage, DesiredCount and only Task/Service resources required')
+    require({'ApplicationImage', 'DesiredCount'} <= set(params) and 'Slot' not in params and set(template.get('Resources', {})) <= {'Task', 'Service'},
+            'Single-service template with ApplicationImage and DesiredCount and only Task/Service resources required')
     return text, template
 
 
 def provenance(env, get=owner.api):
-    """A fresh owner dispatch of `04 · Deploy DEV` on main, bound to the frozen release-source record of this run."""
+    """A fresh owner run on main of `04 · Deploy DEV`, or of `01 · Full` / `03 · Publish` calling it after publication, bound to
+    the frozen release-source record of this run."""
     repository = env.get('GITHUB_REPOSITORY')
     require(repository in owner.PUBLISHERS, 'Unknown application repository')
     app = owner.PUBLISHERS[repository][1]
-    expected = {'GITHUB_ACTOR': owner.OWNER, 'GITHUB_TRIGGERING_ACTOR': owner.OWNER, 'GITHUB_REF': 'refs/heads/main',
-                'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_EVENT_NAME': 'workflow_dispatch',
-                'GITHUB_WORKFLOW_REF': repository + '/' + WORKFLOW + '@refs/heads/main'}
-    require(all(env.get(k) == v for k, v in expected.items()), 'Fresh owner dispatch of the deploy workflow from main required')
+    event = env.get('GITHUB_EVENT_NAME')
+    expected = {'GITHUB_ACTOR': owner.OWNER, 'GITHUB_TRIGGERING_ACTOR': owner.OWNER, 'GITHUB_REF': 'refs/heads/main', 'GITHUB_RUN_ATTEMPT': '1'}
+    workflow = next((w for w in DEPLOY_WORKFLOWS if env.get('GITHUB_WORKFLOW_REF') == repository + '/' + w + '@refs/heads/main'), None)
+    require(all(env.get(k) == v for k, v in expected.items()) and event in versions.EVENTS and workflow is not None,
+            'Fresh owner run of the deploy workflow (or of 01 · Full / 03 · Publish calling it) from main required')
     sha, runId = env.get('GITHUB_SHA', ''), env.get('GITHUB_RUN_ID', '')
     require(re.fullmatch('[a-f0-9]{40}', sha) and re.fullmatch('[1-9][0-9]*', runId), 'Exact source/run required')
     metadata = get(repository, '')
     require(metadata.get('full_name') == repository and metadata.get('owner', {}).get('login') == owner.OWNER
             and str(metadata.get('id')) == env.get('GITHUB_REPOSITORY_ID'), 'Repository identity changed')
-    versions.mainBinding('workflow_dispatch', sha, get(repository, 'commits/main').get('sha', ''), lambda path: get(repository, path))
+    versions.mainBinding(event, sha, get(repository, 'commits/main').get('sha', ''), lambda path: get(repository, path))
     run = get(repository, 'actions/runs/' + runId)
-    fields = {'id': int(runId), 'path': WORKFLOW, 'head_sha': sha, 'head_branch': 'main', 'event': 'workflow_dispatch',
-              'run_attempt': 1, 'status': 'in_progress'}
+    fields = {'id': int(runId), 'path': workflow, 'head_sha': sha, 'head_branch': 'main', 'event': event, 'run_attempt': 1, 'status': 'in_progress'}
     require(all(run.get(k) == v for k, v in fields.items())
             and all(run.get(k, {}).get('login') == owner.OWNER for k in ('actor', 'triggering_actor')), 'Run provenance changed')
     record = owner.releaseRecord(env)
@@ -141,14 +141,18 @@ def provenance(env, get=owner.api):
             'Release-source record belongs to another workflow run')
     release = versions.recheck(record, lambda path: get(repository, path), sha, app)
     require(env.get('RELEASE_VERSION') == release['releaseVersion'], 'Dispatched release tag differs from resolved record')
-    return {**{k: release[k] for k in versions.FIELDS}, 'repository': repository, 'sourceSha': release['sourceSha'],
-            'workflowSha': sha, 'runId': runId}
+    return {**{k: release[k] for k in versions.FIELDS}, 'repository': repository, 'sourceSha': release['sourceSha'], 'workflowSha': sha, 'runId': runId}
+
+
+def desiredCount(env):
+    value = str(env.get('DEPLOY_DESIRED_COUNT', '1')).strip() or '1'
+    require(value in ('0', '1'), 'DEPLOY_DESIRED_COUNT must be 1 (serve) or 0 (park)')
+    return int(value)
 
 
 def publishedImage(call, config, imageTag):
     """The immutable ECR tag written by `01 · Full` is the only way a digest enters a deploy."""
-    rows = call('ecr', 'batch-get-image', '--repository-name', config['imageRepository'].split('/', 1)[1],
-                '--image-ids', 'imageTag=' + imageTag)
+    rows = call('ecr', 'batch-get-image', '--repository-name', config['imageRepository'].split('/', 1)[1], '--image-ids', 'imageTag=' + imageTag)
     images = rows.get('images') or []
     require(len(images) == 1 and not rows.get('failures'), 'Published image ' + imageTag + ' not found in ECR; run 01 · Full first')
     found = images[0]['imageId'].get('imageDigest', '')
@@ -161,35 +165,24 @@ def stackState(call, name):
     if not found or not found.get('Stacks'):
         return None
     stack = found['Stacks'][0]
-    parameters = {row['ParameterKey']: row.get('ParameterValue') for row in stack.get('Parameters', [])}
-    return {'status': stack.get('StackStatus'), 'stackId': stack.get('StackId'), 'parameters': parameters}
+    return {'status': stack.get('StackStatus'), 'stackId': stack.get('StackId'),
+            'parameters': {row['ParameterKey']: row.get('ParameterValue') for row in stack.get('Parameters', [])}}
 
 
-def activeSlot(call, config):
-    """Which slot serves today: the alias CNAME (Web, Domain) or the listener stack's ActiveSlot (Gateway)."""
-    flip = config['flip']
-    if flip['mode'] == 'alias':
-        require(re.fullmatch('srv-[a-z0-9]+', flip.get('serviceId', '')), 'Alias Cloud Map service is not configured yet (Infra step I1)')
-        found = tolerant(call, 'servicediscovery', 'get-instance', '--service-id', flip['serviceId'], '--instance-id', flip['instanceId'],
-                         absent=('InstanceNotFound', 'ResourceNotFoundException'))
-        cname = ((found or {}).get('Instance') or {}).get('Attributes', {}).get('AWS_INSTANCE_CNAME', '')
-        match = re.fullmatch(re.escape(config['service'] + '-') + '(blue|green)' + re.escape(flip['hostnameSuffix']) + r'\.?', cname)
-        return match.group(1) if match else None
-    listener = stackState(call, flip['listenerStack'])
-    require(listener is not None and listener['status'] in UPDATABLE, 'Listener stack ' + flip['listenerStack'] + ' must exist and be updatable')
-    return listener['parameters'].get('ActiveSlot')
+def parameters(config, image, count):
+    rendered = dict(config['parameters'])
+    rendered.update({'ApplicationImage': image, 'DesiredCount': str(count)})
+    if config['discovery'] is not None:
+        rendered['DiscoveryServiceArn'] = config['discovery']['serviceArn']
+    if config['targetGroupArn'] is not None:
+        rendered['TargetGroupArn'] = config['targetGroupArn']
+    for key, value in rendered.items():
+        require(not str(value).startswith('PENDING-'), 'Deploy configuration still carries a placeholder for ' + key + ' (foundation step pending)')
+    return rendered
 
 
-def slotParameters(config, slot, image, desiredCount):
-    row = config['slots'][slot]
-    parameters = dict(config['parameters'])
-    parameters.update({key: row[source] for key, source in config['slotParameters'].items()})
-    parameters.update({'Slot': slot, 'ApplicationImage': image, 'DesiredCount': str(desiredCount)})
-    return parameters
-
-
-def serviceCounts(call, config, slot):
-    rows = call('ecs', 'describe-services', '--cluster', config['cluster'], '--services', config['slots'][slot]['stack'])
+def serviceCounts(call, config):
+    rows = call('ecs', 'describe-services', '--cluster', config['cluster'], '--services', config['stack'])
     service = next((s for s in rows.get('services', []) if s.get('status') == 'ACTIVE'), None)
     if service is None:
         return None
@@ -198,47 +191,15 @@ def serviceCounts(call, config, slot):
             'rolloutState': primary.get('rolloutState'), 'taskDefinition': primary.get('taskDefinition')}
 
 
-def gatewayServes(call, config, slot):
-    """Phase 1 only (Web, Domain): True when the listener points at `slot` and a Gateway task actually runs there."""
-    coupling = config.get('coupling') or {}
-    if not coupling.get('listenerStack') or config['flip']['mode'] != 'alias':
-        return False
-    state = stackState(call, coupling['listenerStack'])
-    if not state or state['parameters'].get('ActiveSlot') != slot:
-        return False
-    rows = call('ecs', 'describe-services', '--cluster', config['cluster'], '--services', coupling['gatewayServicePrefix'] + slot)
-    return any(s.get('status') == 'ACTIVE' and s.get('runningCount', 0) >= 1 for s in rows.get('services', []))
-
-
-def couplingCheck(call, config, candidate):
-    """Phase 1 information only: the Gateway reaches web-<slot> and domain-<slot> by its own slot name until phase 2. Every
-    application deploys independently (user decision 2026-11-01), so a sibling that is not running is reported in the plan and
-    the approval issue, never a refusal; the owner decides."""
-    coupling = config.get('coupling') or {}
-    checked, notRunning = [], []
-    for prefix in coupling.get('requiresSameSlot', []):
-        rows = call('ecs', 'describe-services', '--cluster', config['cluster'], '--services', prefix + candidate)
-        service = next((s for s in rows.get('services', []) if s.get('status') == 'ACTIVE'), {})
-        checked.append(prefix + candidate)
-        if service.get('runningCount', 0) < 1:
-            notRunning.append(prefix + candidate)
-    return {'checkedServices': checked, 'notRunning': notRunning}
-
-
-def resourceRows(config, candidate, previous, candidateExists, candidateUpToDate, flip):
-    rows = [{'action': 'Modify' if candidateExists else 'Create', 'type': 'AWS::CloudFormation::Stack', 'consoleName': config['slots'][candidate]['stack'],
-             'note': ('already holds this image at DesiredCount 1 (an earlier run stopped before the flip); no candidate change set, verification only' if candidateUpToDate
-                      else 'change set app-<run>-candidate: new task definition revision with the published image, DesiredCount 1')},
-            {'action': 'Modify', 'type': 'AWS::ECS::Service', 'consoleName': config['slots'][candidate]['stack'], 'note': 'one Fargate task serves slot ' + candidate}]
-    if flip['mode'] == 'alias':
-        rows.append({'action': 'Modify', 'type': 'AWS::ServiceDiscovery::Instance', 'consoleName': flip['serviceName'] + '.' + config['namespaceName'] + ' → ' + flip['instanceId'],
-                     'note': 'CNAME to ' + config['service'] + '-' + candidate + flip['hostnameSuffix'] + ' after the candidate is verified'})
-    else:
-        rows.append({'action': 'Modify', 'type': 'AWS::CloudFormation::Stack', 'consoleName': flip['listenerStack'],
-                     'note': 'change set app-<run>-flip: ActiveSlot=' + candidate + '; listener 443 forwards to target group ' + candidate})
-    if previous:
-        rows.append({'action': 'Modify', 'type': 'AWS::CloudFormation::Stack', 'consoleName': config['slots'][previous]['stack'],
-                     'note': 'change set app-<run>-retire after ' + str(config['observationMinutes']) + ' minutes: DesiredCount 0; the stack and task definition stay'})
+def resourceRows(config, state, count, current):
+    first = state is None
+    rows = [{'action': 'Create' if first else 'Modify', 'type': 'AWS::CloudFormation::Stack', 'consoleName': config['stack'],
+             'note': 'change set app-<run>: ' + ('first creation of the stack' if first else 'new task definition revision and DesiredCount ' + str(count))},
+            {'action': 'Create' if first else 'Modify', 'type': 'AWS::ECS::Service', 'consoleName': config['stack'],
+             'note': ('one task serves after an ECS rolling update (surge to two, old task drained once the new one is healthy)' if count == 1
+                      else 'service parked at zero tasks; the task definition and stack stay')}]
+    if current and current.get('ApplicationImage') and current.get('DesiredCount') == '1':
+        rows[1]['note'] += '; currently serving ' + current['ApplicationImage'].rsplit('@', 1)[-1][:19] + '…'
     return rows
 
 
@@ -246,37 +207,24 @@ def plan(env, call, root, get=owner.api, now=None):
     release = provenance(env, get)
     config, (templateText, _) = loadConfig(root), loadTemplate(root)
     require(release['app'] == config['app'], 'Configuration belongs to another application')
+    count = desiredCount(env)
     image = publishedImage(call, config, release['imageTag'])
-    active = activeSlot(call, config)
-    states = {slot: stackState(call, config['slots'][slot]['stack']) for slot in ('blue', 'green')}
-    for slot, state in states.items():
-        require(state is None or state['status'] in UPDATABLE or state['status'] == REVIEW,
-                'Slot stack ' + config['slots'][slot]['stack'] + ' is not updatable: ' + str(state and state['status']) + ' (manual recovery, see README)')
-    candidate = 'green' if active == 'blue' else 'blue'
-    # Only a slot whose stack still exists can be retired; an alias left pointing at a deleted stack has nothing to scale down.
-    previous = active if active in ('blue', 'green') and active != candidate and states[active] is not None else None
-    coupling = couplingCheck(call, config, candidate)
-    # phase 1: the Gateway reaches <app>-<its own slot>; never rebuild the slot a running Gateway is using
-    require(not gatewayServes(call, config, candidate), 'Slot ' + candidate + ' is serving the Gateway (phase 1 coupling); move the Gateway first')
-    candidateState = states[candidate]
-    candidateExists = candidateState is not None and candidateState['status'] != REVIEW
-    candidateUpToDate = bool(candidateExists and candidateState['parameters'].get('ApplicationImage') == image and candidateState['parameters'].get('DesiredCount') == '1')
-    result = {'schema': SCHEMA_PLAN, **release, 'image': image, 'account': config['account'], 'region': config['region'],
+    state = stackState(call, config['stack'])
+    require(state is None or state['status'] in UPDATABLE or state['status'] == REVIEW,
+            'Stack ' + config['stack'] + ' is not updatable: ' + str(state and state['status']) + ' (manual recovery, see README)')
+    exists = state is not None and state['status'] != REVIEW
+    current = state['parameters'] if exists else {}
+    rendered = parameters(config, image, count)
+    unchanged = exists and all(current.get(k) == v for k, v in rendered.items())
+    result = {'schema': SCHEMA_PLAN, **release, 'image': image, 'desiredCount': count, 'account': config['account'], 'region': config['region'],
               'deployRoleArn': config['deployRoleArn'], 'cloudFormationRoleArn': config['cloudFormationRoleArn'],
-              'sessionName': config['sessionPrefix'] + '-' + release['runId'] + '-1',
-              'activeSlot': active, 'candidateSlot': candidate, 'previousSlot': previous,
-              'candidateStack': config['slots'][candidate]['stack'], 'candidateStackExists': candidateExists, 'candidateUpToDate': candidateUpToDate,
-              'previousStack': config['slots'][previous]['stack'] if previous else None,
-              'previousParameters': sorted(states[previous]['parameters']) if previous else [],
-              'previousDesiredCount': states[previous]['parameters'].get('DesiredCount') if previous else None,
-              'changeSets': {'candidate': 'app-' + release['runId'] + '-candidate', 'flip': 'app-' + release['runId'] + '-flip',
-                             'retire': 'app-' + release['runId'] + '-retire', 'rollback': 'app-' + release['runId'] + '-rollback'},
-              'parameters': slotParameters(config, candidate, image, 1), 'flip': dict(config['flip']), 'coupling': coupling,
+              'sessionName': config['sessionPrefix'] + '-' + release['runId'] + '-1', 'stack': config['stack'], 'stackExists': exists,
+              'unchanged': unchanged, 'changeSet': 'app-' + release['runId'], 'parameters': rendered,
+              'currentImage': current.get('ApplicationImage'), 'currentDesiredCount': current.get('DesiredCount'),
               'observationMinutes': config['observationMinutes'], 'probeUrl': config['probeUrl'],
               'templateSha256': hashlib.sha256(templateText.encode()).hexdigest(),
               'configSha256': hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest(),
-              'resources': resourceRows(config, candidate, previous, candidateExists, candidateUpToDate, config['flip']),
-              'plannedAt': utc(now).isoformat()}
+              'resources': resourceRows(config, state if exists else None, count, current), 'plannedAt': utc(now).isoformat()}
     result['planDigest'] = digest({k: v for k, v in result.items() if k != 'planDigest'})
     return result
 
@@ -291,51 +239,52 @@ def validatePlan(planned, env, root, get=owner.api):
     require(re.fullmatch('sha256:[a-f0-9]{64}', planned.get('image', '').rsplit('@', 1)[-1]), 'Image digest required')
 
 
-def aliasTarget(planned):
-    return planned['flip']['serviceName'] + '-' + planned['candidateSlot'] + planned['flip']['hostnameSuffix']
-
-
 def approvalCommand(planned):
+    # The comment names the image version as ECR shows it (user decision 2026-10-28); the plan digest binds the exact plan
+    # through the issue body and the receipt.
     return 'APPROVE DEPLOY ' + planned['imageTag']
 
 
 def headline(planned):
-    return {'env': 'DEV', 'action': 'Deploy ' + planned['app'], 'subject': planned['imageTag'] + ' to ' + planned['candidateSlot'],
-            'change': ('alias → ' + planned['candidateSlot'] if planned['flip']['mode'] == 'alias' else 'listener ActiveSlot → ' + planned['candidateSlot'])
-                      + (', ' + planned['previousSlot'] + ' → 0 after ' + str(planned['observationMinutes']) + ' min' if planned['previousSlot'] else ', first slot')}
+    action = 'Deploy ' + planned['app'] if planned['desiredCount'] == 1 else 'Park ' + planned['app']
+    change = ('rolling update of ' + planned['stack'] if planned['stackExists'] else 'first start of ' + planned['stack']) if planned['desiredCount'] == 1 \
+        else planned['stack'] + ' to zero tasks'
+    return {'env': 'DEV', 'action': action, 'subject': planned['imageTag'], 'change': change}
 
 
 def gist(planned):
     t = issueTemplate.text
-    steps = ['1. Recheck the tag, the plan digest, the template and the configuration; then assume `' + t(planned['deployRoleArn']) + '` as session `' + t(planned['sessionName']) + '` (at most 60 minutes; every wait budget inside the run sums below that).',
-             '2. Change set `' + t(planned['changeSets']['candidate']) + '` on stack `' + t(planned['candidateStack']) + '`: task definition with image `' + t(planned['image'].rsplit('@', 1)[-1][:19]) + '…`, DesiredCount 1; the preview must match this plan before it is executed.',
-             '3. Wait until the ECS rollout is COMPLETED, the task is HEALTHY, service discovery lists it and the log window is clean; on any failure the candidate is set back to DesiredCount 0 and nothing is flipped.',
-             '4. Flip: ' + ('upsert Cloud Map instance `' + t(planned['flip']['instanceId']) + '` in service `' + t(planned['flip']['serviceName']) + '` to `' + t(aliasTarget(planned)) + '`.' if planned['flip']['mode'] == 'alias'
-                            else 'change set `' + t(planned['changeSets']['flip']) + '` on `' + t(planned['flip']['listenerStack']) + '` with ActiveSlot=' + t(planned['candidateSlot']) + '.'),
-             '5. Observe for ' + str(planned['observationMinutes']) + ' minutes (service, task health, public probe); then '
-             + ('change set `' + t(planned['changeSets']['retire']) + '` sets `' + t(planned['previousStack']) + '` to DesiredCount 0. The stack, service and task definition stay.' if planned['previousStack'] else 'there is no previous slot to retire.')]
-    return ('**Business change:** the published ' + t(planned['app']) + ' image `' + t(planned['imageTag']) + '` starts serving DEV from slot `'
-            + t(planned['candidateSlot']) + '`; the previous slot is scaled to zero, never deleted. No IAM, network, database or secret changes.\n\n'
-            + '\n'.join(steps) + '\n\nRollback is a new run of this workflow with the previous tag. Approval expires 40 minutes after this issue is created.')
+    serving = ('1. Recheck the tag, the plan digest, the template and the configuration; then assume `' + t(planned['deployRoleArn']) + '` as session `'
+               + t(planned['sessionName']) + '` (at most 60 minutes).',
+               '2. Change set `' + t(planned['changeSet']) + '` on stack `' + t(planned['stack']) + '`: task definition with image `'
+               + t(planned['image'].rsplit('@', 1)[-1][:19]) + '…`, DesiredCount ' + str(planned['desiredCount']) + '; the preview must match this plan before it is executed.',
+               '3. ECS performs the rolling update: the new task starts beside the old one and the old one is drained once the new one is healthy; '
+               'if the new revision never becomes healthy the deployment circuit breaker rolls the service back to the previous revision and this run fails.',
+               '4. Verify: task HEALTHY, log window clean, ' + ('service discovery lists the task' if planned['parameters'].get('DiscoveryServiceArn') else 'target group healthy')
+               + ', then watch the public probe for ' + str(planned['observationMinutes']) + ' minutes.')
+    parked = ('1. Recheck the tag, the plan digest, the template and the configuration; then assume `' + t(planned['deployRoleArn']) + '` as session `' + t(planned['sessionName']) + '`.',
+              '2. Change set `' + t(planned['changeSet']) + '` on stack `' + t(planned['stack']) + '`: DesiredCount 0. The stack, service and task definition stay; a later run with DesiredCount 1 starts it again.')
+    head = ('**Business change:** the published ' + t(planned['app']) + ' image `' + t(planned['imageTag']) + '` serves DEV after an ECS rolling update of `' + t(planned['stack']) + '`.'
+            if planned['desiredCount'] == 1 else '**Business change:** the DEV ' + t(planned['app']) + ' service `' + t(planned['stack']) + '` is parked at zero tasks (scheduled scale-down); nothing is deleted.')
+    return head + ' No IAM, network, database or secret changes.\n\n' + '\n'.join(serving if planned['desiredCount'] == 1 else parked) \
+        + '\n\nRollback is a new run of this workflow with the previous tag. Approval expires 40 minutes after this issue is created.'
 
 
 def body(planned, receipt):
-    fields = ('releaseVersion', 'imageTag', 'image', 'sourceSha', 'workflowSha', 'candidateStack', 'previousStack', 'sessionName', 'repository', 'account', 'region')
+    fields = ('releaseVersion', 'imageTag', 'image', 'desiredCount', 'sourceSha', 'workflowSha', 'stack', 'currentImage', 'currentDesiredCount', 'sessionName', 'repository', 'account', 'region')
     shown = [('**' + key + '**', owner.commitLink(planned, planned[key]) if key in ('sourceSha', 'workflowSha') else '`' + issueTemplate.text(str(planned[key])) + '`')
-             for key in fields if planned.get(key)]
+             for key in fields if planned.get(key) is not None]
     return issueTemplate.render(
         headline=headline(planned), gist=gist(planned), resources=planned['resources'],
-        overview='**Deploy the published DEV image to the idle slot**\n\nAuthorize the three change sets described above, in order, inside this run. '
-            'Without approval nothing changes in AWS.',
+        overview='**Deploy the published DEV image**\n\nAuthorize the one change set described above inside this run. Without approval nothing changes in AWS.',
         scope='### Deploy\n\n' + issueTemplate.table(('Field', 'Value'), shown),
         validation=[('Release tag ' + issueTemplate.text(planned['releaseVersion']), 'resolved to source commit ' + owner.commitLink(planned, planned['sourceSha'])),
                     ('Image', 'ECR tag `' + issueTemplate.text(planned['imageTag']) + '` read back as `' + issueTemplate.text(planned['image'].rsplit('@', 1)[-1]) + '`'),
                     ('Template and configuration', '`' + planned['templateSha256'][:16] + '…` / `' + planned['configSha256'][:16] + '…` rechecked before execution'),
-                    ('Siblings in slot ' + planned['candidateSlot'], ('not running: ' + ', '.join(planned['coupling']['notRunning']) + ' (requests through this slot fail until they run)')
-                     if planned['coupling'].get('notRunning') else ('running: ' + ', '.join(planned['coupling']['checkedServices']) if planned['coupling'].get('checkedServices') else 'none required'))],
+                    ('Change', 'no-op (stack already at this image and count)' if planned['unchanged'] else 'rolling update' if planned['stackExists'] else 'first creation')],
         evidence='Review the plan artifact of this run before approving.',
-        risks='A failed candidate is scaled back to zero and the alias or listener is not flipped. A failed retire leaves four tasks running until the next run. '
-            'This is owner approval enforced by workflow code, not independent review.',
+        risks='A new revision that never becomes healthy is rolled back by the ECS circuit breaker and this run fails; the previous revision keeps serving. '
+            'Old and new tasks overlap for the discovery TTL and the load-balancer drain. This is owner approval enforced by workflow code, not independent review.',
         repository=planned['repository'], runId=planned['runId'], owner=owner.OWNER, expires=receipt['expiresAt'], created=receipt.get('createdAt'),
         permissionDeadline='The deploy session lasts at most 60 minutes; IAM is not changed.',
         command=approvalCommand(planned), payload=planned)
@@ -362,8 +311,6 @@ def decision(planned, receipt, env, root, get=owner.api, now=None):
         if comment.get('created_at') != comment.get('updated_at'):
             continue
         when = owner.timestamp(comment['created_at'])
-        # The comment names the image version as ECR shows it (user decision 2026-10-28, applied to deploys 2026-11-01);
-        # the plan digest binds the exact plan through the issue body and the receipt.
         if created <= when <= now and when < expires and command == approvalCommand(planned):
             selected = comment['id']
     return selected
@@ -410,165 +357,108 @@ class Deployer:
         self.note('identity', arn=expected)
 
     def waitFor(self, label, check, seconds, every=15):
-        for attempt in range(max(1, seconds // every)):
+        for _ in range(max(1, seconds // every)):
             state = check()
             if state is not None:
                 return state
             self.sleep(every)
         raise ValueError(label + ' did not complete within ' + str(seconds) + ' seconds')
 
-    def changeSet(self, stack, name, parameters, *, create=False, templateBody=None):
-        """With a template body (this repository's slot stacks) the parameters are complete and the stack tag is set; with the
-        previous template every other parameter of that stack keeps its value and tags are left alone (never on an Infra stack)."""
-        rows = [{'ParameterKey': k, 'ParameterValue': str(v)} for k, v in parameters.items()]
-        args = ['cloudformation', 'create-change-set', '--stack-name', stack, '--change-set-name', name,
-                '--change-set-type', 'CREATE' if create else 'UPDATE', '--role-arn', self.plan['cloudFormationRoleArn']]
-        if templateBody:
-            args += ['--template-body', templateBody, '--tags', json.dumps([{'Key': 'LookAheadEnvironment', 'Value': 'dev'}])]
-        else:
-            current = stackState(self.call, stack)
-            require(current is not None and current['status'] in UPDATABLE, 'Stack ' + stack + ' must exist and be updatable')
-            rows += [{'ParameterKey': k, 'UsePreviousValue': True} for k in sorted(current['parameters']) if k not in parameters]
-            args += ['--use-previous-template']
-        args += ['--parameters', json.dumps(rows)]
+    def changeSet(self):
+        p = self.plan
+        rows = [{'ParameterKey': k, 'ParameterValue': str(v)} for k, v in p['parameters'].items()]
+        args = ['cloudformation', 'create-change-set', '--stack-name', p['stack'], '--change-set-name', p['changeSet'],
+                '--change-set-type', 'UPDATE' if p['stackExists'] else 'CREATE', '--role-arn', p['cloudFormationRoleArn'],
+                '--template-body', self.template, '--tags', json.dumps([{'Key': 'LookAheadEnvironment', 'Value': 'dev'}]), '--parameters', json.dumps(rows)]
         created = self.call(*args)
-        described = self.waitFor('change set ' + name, lambda: self.describeChangeSet(stack, name), 120, 10)
+        described = self.waitFor('change set ' + p['changeSet'], self.describeChangeSet, 120, 10)
         if described['Status'] == 'FAILED':
-            require(NO_CHANGES in described.get('StatusReason', ''), 'Change set ' + name + ' failed: ' + described.get('StatusReason', '')[:200])
-            self.note('change-set-empty', stack=stack, name=name)
+            require(NO_CHANGES in described.get('StatusReason', ''), 'Change set ' + p['changeSet'] + ' failed: ' + described.get('StatusReason', '')[:200])
+            self.note('change-set-empty', stack=p['stack'], name=p['changeSet'])
             return None
         changes = [{'logical': c['ResourceChange'].get('LogicalResourceId'), 'action': c['ResourceChange'].get('Action'),
                     'type': c['ResourceChange'].get('ResourceType'), 'replacement': c['ResourceChange'].get('Replacement')}
                    for c in described.get('Changes', []) if c.get('Type') == 'Resource']
-        self.note('change-set', stack=stack, name=name, id=created.get('Id'), changes=changes)
+        # A task definition revision is a replacement by nature; the service is updated in place (the rolling update).
+        require(changes and all(c['logical'] in ('Task', 'Service') and (c['logical'] == 'Task' or c['replacement'] != 'True') for c in changes),
+                'Change set preview differs from the approved plan: ' + json.dumps(changes))
+        self.note('change-set', stack=p['stack'], name=p['changeSet'], id=created.get('Id'), changes=changes)
         return changes
 
-    def describeChangeSet(self, stack, name):
-        described = self.call('cloudformation', 'describe-change-set', '--stack-name', stack, '--change-set-name', name)
+    def describeChangeSet(self):
+        described = self.call('cloudformation', 'describe-change-set', '--stack-name', self.plan['stack'], '--change-set-name', self.plan['changeSet'])
         return described if described.get('Status') in ('CREATE_COMPLETE', 'FAILED') else None
 
-    def execute(self, stack, name):
-        self.call('cloudformation', 'execute-change-set', '--stack-name', stack, '--change-set-name', name)
-        state = self.waitFor('stack ' + stack, lambda: self.stackStatus(stack), 600)
-        require(state in TERMINAL_OK, 'Stack ' + stack + ' ended in ' + str(state))
-        self.note('executed', stack=stack, name=name, status=state)
+    def execute(self):
+        p = self.plan
+        self.call('cloudformation', 'execute-change-set', '--stack-name', p['stack'], '--change-set-name', p['changeSet'])
+        state = self.waitFor('stack ' + p['stack'], self.stackStatus, 1200)
+        require(state in TERMINAL_OK, 'Stack ' + p['stack'] + ' ended in ' + str(state) + ' (ECS rolled the service back to the previous revision if the new one never became healthy)')
+        self.note('executed', stack=p['stack'], name=p['changeSet'], status=state)
 
-    def stackStatus(self, stack):
-        state = stackState(self.call, stack)
+    def stackStatus(self):
+        state = stackState(self.call, self.plan['stack'])
         status = state['status'] if state else None
         return status if status in TERMINAL_OK | TERMINAL_BAD else None
 
-    def expectChanges(self, changes, allowed):
-        """`allowed` maps logical id → whether replacement is acceptable (a task definition revision is a replacement; a service never is)."""
-        require(changes is not None, 'Change set produced no changes; the stack already matches, re-plan')
-        require(bool(changes) and all(c['logical'] in allowed and (allowed[c['logical']] or c['replacement'] != 'True') for c in changes),
-                'Change set preview differs from the approved plan: ' + json.dumps(changes))
-
-    def candidate(self):
-        p = self.plan
-        if p.get('candidateUpToDate'):
-            self.note('candidate-unchanged', stack=p['candidateStack'], reason='already holds the approved image at DesiredCount 1')
-            return
-        changes = self.changeSet(p['candidateStack'], p['changeSets']['candidate'], p['parameters'], create=not p['candidateStackExists'], templateBody=self.template)
-        self.expectChanges(changes, {'Task': True, 'Service': False})
-        self.execute(p['candidateStack'], p['changeSets']['candidate'])
-
-    def rollbackCandidate(self, reason):
-        p = self.plan
-        self.note('rollback-start', reason=reason[:300])
-        changes = self.changeSet(p['candidateStack'], p['changeSets']['rollback'], {'DesiredCount': 0})
-        if changes:
-            self.execute(p['candidateStack'], p['changeSets']['rollback'])
-        self.note('rollback-done')
-
-    def verifyCandidate(self):
-        p, slot, cfg = self.plan, self.plan['candidateSlot'], self.config
-        counts = self.waitFor('ECS rollout of ' + p['candidateStack'],
-                              lambda: (lambda c: c if c and c['rolloutState'] == 'COMPLETED' and c['running'] == 1 and c['desired'] == 1 else None)(serviceCounts(self.call, cfg, slot)),
-                              300)
-        arns = self.call('ecs', 'list-tasks', '--cluster', cfg['cluster'], '--service-name', p['candidateStack'], '--desired-status', 'RUNNING').get('taskArns', [])
+    def verifyServing(self):
+        p, cfg = self.plan, self.config
+        counts = self.waitFor('ECS rollout of ' + p['stack'],
+                              lambda: (lambda c: c if c and c['rolloutState'] == 'COMPLETED' and c['running'] == 1 and c['desired'] == 1 else None)(serviceCounts(self.call, cfg)), 300)
+        arns = self.call('ecs', 'list-tasks', '--cluster', cfg['cluster'], '--service-name', p['stack'], '--desired-status', 'RUNNING').get('taskArns', [])
         require(len(arns) == 1, 'Exactly one running task expected')
         task = self.waitFor('task health', lambda: (lambda t: t if t.get('healthStatus') == 'HEALTHY' else None)(
             self.call('ecs', 'describe-tasks', '--cluster', cfg['cluster'], '--tasks', arns[0])['tasks'][0]), 180)
-        require(task.get('taskDefinitionArn', '').split('/')[-1].startswith(p['candidateStack'] + ':'), 'Task belongs to another family')
+        require(task.get('taskDefinitionArn', '').split('/')[-1].startswith(p['stack'] + ':'), 'Task belongs to another family')
+        require(p['image'].rsplit('@', 1)[-1] in json.dumps(self.call('ecs', 'describe-task-definition', '--task-definition', task['taskDefinitionArn'])),
+                'Running task definition does not carry the approved image')
         startedAt = owner.timestamp(task['startedAt']) if task.get('startedAt') else self.now() - timedelta(minutes=10)
         taskId = arns[0].rsplit('/', 1)[-1]
         pattern = ' '.join('?"' + word + '"' for word in cfg['logFailurePatterns'])
         events = self.call('logs', 'filter-log-events', '--log-group-name', cfg['logGroup'], '--log-stream-name-prefix', cfg['service'] + '/' + cfg['service'] + '/' + taskId,
                            '--start-time', str(int(startedAt.timestamp() * 1000)), '--filter-pattern', pattern).get('events', [])
-        require(not events, 'Candidate log window contains failure markers: ' + (events[0].get('message', '')[:200] if events else ''))
-        # The slot service's registered instances (ECS registers the task's address); health is proven by the task itself above.
-        # list-instances is scoped to the slot service, unlike the namespace-wide discover-instances (deploy run 41274299122).
-        discovered = None
-        if p['flip']['mode'] == 'alias':  # Gateway slots are behind the load balancer and have no Cloud Map service (run 41316978288)
-            discovered = self.call('servicediscovery', 'list-instances', '--service-id', cfg['slots'][slot]['discoveryServiceArn'].rsplit('/', 1)[-1]).get('Instances', [])
-            require(len(discovered) >= 1, 'Service discovery lists no ' + cfg['slots'][slot]['discoveryService'] + ' instance')
+        require(not events, 'Log window contains failure markers: ' + (events[0].get('message', '')[:200] if events else ''))
+        registered = None
+        if cfg['discovery'] is not None:
+            registered = len(self.call('servicediscovery', 'list-instances', '--service-id', cfg['discovery']['serviceId']).get('Instances', []))
+            require(registered >= 1, 'Service discovery lists no ' + cfg['discovery']['serviceName'] + ' instance')
         targets = None
-        if p['flip']['mode'] == 'listener':
-            group = cfg['slots'][slot]['targetGroupArn']
+        if cfg['targetGroupArn'] is not None:
             targets = self.waitFor('target health', lambda: (lambda rows: rows if rows and all(r['TargetHealth']['State'] == 'healthy' for r in rows) else None)(
-                self.call('elbv2', 'describe-target-health', '--target-group-arn', group).get('TargetHealthDescriptions', [])), 180)
-        self.note('candidate-verified', task=arns[0], counts=counts, discovered=None if discovered is None else len(discovered), targets=None if targets is None else len(targets))
+                self.call('elbv2', 'describe-target-health', '--target-group-arn', cfg['targetGroupArn']).get('TargetHealthDescriptions', [])), 180)
+        self.note('verified', task=arns[0], counts=counts, discovered=registered, targets=None if targets is None else len(targets))
 
-    def flip(self):
-        p, cfg, flip = self.plan, self.config, self.plan['flip']
-        if flip['mode'] == 'alias':
-            target = aliasTarget(p)
-            operation = self.call('servicediscovery', 'register-instance', '--service-id', flip['serviceId'], '--instance-id', flip['instanceId'],
-                                  '--attributes', 'AWS_INSTANCE_CNAME=' + target).get('OperationId')
-            status = self.waitFor('alias operation', lambda: (lambda s: s if s in ('SUCCESS', 'FAIL') else None)(
-                self.call('servicediscovery', 'get-operation', '--operation-id', operation)['Operation']['Status']), 180, 5)
-            require(status == 'SUCCESS', 'Alias update failed')
-            self.note('flipped', mode='alias', cname=target, operation=operation)
-            return
-        changes = self.changeSet(flip['listenerStack'], p['changeSets']['flip'], {'ActiveSlot': p['candidateSlot']})
-        require(changes is not None and all(c['replacement'] != 'True' for c in changes), 'Listener flip must not replace resources')
-        self.execute(flip['listenerStack'], p['changeSets']['flip'])
-        self.note('flipped', mode='listener', activeSlot=p['candidateSlot'])
+    def verifyParked(self):
+        counts = self.waitFor('ECS scale-in of ' + self.plan['stack'],
+                              lambda: (lambda c: c if c and c['running'] == 0 and c['desired'] == 0 else None)(serviceCounts(self.call, self.config)), 300)
+        self.note('parked', counts=counts)
 
     def observe(self):
         p, cfg = self.plan, self.config
         rounds = p['observationMinutes']
         for minute in range(rounds):
-            counts = serviceCounts(self.call, cfg, p['candidateSlot'])
-            require(counts and counts['running'] == 1 and counts['rolloutState'] == 'COMPLETED', 'Candidate stopped serving during observation')
+            counts = serviceCounts(self.call, cfg)
+            require(counts and counts['running'] == 1 and counts['rolloutState'] == 'COMPLETED', 'Service stopped serving during observation')
             status = self.fetch(p['probeUrl'])
             require(status == 200, 'Public probe returned ' + str(status) + ' during observation')
             if minute < rounds - 1:
                 self.sleep(60)
         self.note('observed', minutes=rounds)
 
-    def retire(self):
-        p, cfg = self.plan, self.config
-        if not p['previousStack']:
-            self.note('retire-skipped', reason='no previous slot')
-            return
-        if gatewayServes(self.call, cfg, p['previousSlot']):
-            self.note('retire-skipped', reason='Gateway still serves from slot ' + p['previousSlot'] + ' (phase 1 coupling); two tasks stay until the Gateway moves')
-            return
-        if p.get('previousDesiredCount') == '0':
-            self.note('retire-skipped', reason='previous slot already at DesiredCount 0')
-            return
-        changes = self.changeSet(p['previousStack'], p['changeSets']['retire'], {'DesiredCount': 0})
-        if changes:
-            self.expectChanges(changes, {'Service': False})
-            self.execute(p['previousStack'], p['changeSets']['retire'])
-        self.note('retired', stack=p['previousStack'])
-
     def run(self):
         outcome = {'schema': SCHEMA_RESULT, 'runId': self.plan['runId'], 'planDigest': self.plan['planDigest'], 'app': self.plan['app'],
-                   'releaseVersion': self.plan['releaseVersion'], 'image': self.plan['image'], 'candidateSlot': self.plan['candidateSlot']}
+                   'releaseVersion': self.plan['releaseVersion'], 'image': self.plan['image'], 'desiredCount': self.plan['desiredCount'], 'stack': self.plan['stack']}
         try:
             self.identity()
-            self.candidate()
-            try:
-                self.verifyCandidate()
-            except Exception as error:  # the candidate never served: scale it back, keep the previous slot untouched
-                self.rollbackCandidate(str(error))
-                raise
-            self.flip()
-            self.observe()
-            self.retire()
+            if self.plan['unchanged']:
+                self.note('unchanged', stack=self.plan['stack'])
+            elif self.changeSet() is not None:
+                self.execute()
+            if self.plan['desiredCount'] == 1:
+                self.verifyServing()
+                self.observe()
+            else:
+                self.verifyParked()
             outcome['outcome'] = 'success'
         except Exception as error:
             outcome.update({'outcome': 'failure', 'error': str(error)[:500]})
@@ -611,8 +501,8 @@ def main(argv=None, env=None, call=None, get=owner.api, sleep=time.sleep, fetch=
         require(bool(args.output), '--output required')
         result = plan(env, call, args.root, get)
         write(args.output, result)
-        output(env, candidate_slot=result['candidateSlot'], plan_digest=result['planDigest'])
-        print(json.dumps({k: result[k] for k in ('releaseVersion', 'image', 'candidateSlot', 'previousSlot', 'planDigest')}, sort_keys=True))
+        output(env, plan_digest=result['planDigest'], desired_count=result['desiredCount'])
+        print(json.dumps({k: result[k] for k in ('releaseVersion', 'image', 'desiredCount', 'stackExists', 'unchanged', 'planDigest')}, sort_keys=True))
         return result
     require(bool(args.plan and args.receipt), '--plan and --receipt required')
     planned = readJson(args.plan)
@@ -635,7 +525,7 @@ def main(argv=None, env=None, call=None, get=owner.api, sleep=time.sleep, fetch=
             write(args.output, deployer.outcome)
         except OSError as error:  # the deploy outcome matters more than the receipt file
             print('result not written: ' + str(error)[:200])
-        print(json.dumps({k: deployer.outcome.get(k) for k in ('outcome', 'candidateSlot', 'error')}, sort_keys=True))
+        print(json.dumps({k: deployer.outcome.get(k) for k in ('outcome', 'desiredCount', 'error')}, sort_keys=True))
 
 
 if __name__ == '__main__':
