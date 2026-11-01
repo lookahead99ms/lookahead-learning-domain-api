@@ -105,9 +105,11 @@ Environment `dev` allowing exactly the `main` branch and **without** required re
 issue is the approval; a reviewer rule would add GitHub's deployment pop-up on top of it).
 Repository variables: `RELEASE_ON_MERGE` (`false` pauses merge-driven publication),
 `DEV_PUBLISH_ROLE_ARN` and `DEV_DEPLOY_ROLE_ARN` (optional overrides of `lookahead-dev-deploy`).
+
 No cross-repository secret: the deploy workflows read no other repository (the six-role IAM check is
 an Infra concern and runs in Infra workflows only) and the Gateway contract check runs against the
 copy committed in this repository (user decisions 2026-11-01). Actions allow-list:
+
 GitHub-owned plus the pinned `aws-actions/configure-aws-credentials`. Issues enabled. The IAM deploy
 trust must admit the sessions `<app>-deploy-plan-*` and `<app>-deploy-*` (DLV-968 IAM transition).
 
