@@ -83,8 +83,9 @@ class FakeAws:
             return {'OperationId': 'op-1'}
         if key == 'servicediscovery get-operation':
             return {'Operation': {'Status': self.operation}}
-        if key == 'servicediscovery discover-instances':
-            return {'Instances': [{'InstanceId': 'i'}] * self.discovered}
+        if key == 'servicediscovery list-instances':
+            assert opts['--service-id'].startswith('srv-'), opts
+            return {'Instances': [{'Id': 'i'}] * self.discovered}
         if key == 'ecs describe-services':
             counts = self.services.get(opts['--services'])
             if counts is None:
@@ -185,7 +186,7 @@ class DeployFixture(unittest.TestCase):
         self.aws.candidate = result['candidateSlot']
         stamp = self.now.replace(microsecond=0).isoformat()
         # the fake owner answers the deploy command, not the image command, once the digest is known
-        self.github.comment = lambda: {'id': 7, 'user': {'login': owner.OWNER}, 'body': 'APPROVE DEPLOY ' + result['planDigest'], 'created_at': stamp, 'updated_at': stamp}
+        self.github.comment = lambda: {'id': 7, 'user': {'login': owner.OWNER}, 'body': 'APPROVE DEPLOY ' + result['imageTag'], 'created_at': stamp, 'updated_at': stamp}
         return result
 
     def approved(self, planned):
@@ -292,7 +293,7 @@ class ApprovalTests(DeployFixture):
         receipt = self.approved(planned)
         self.assertEqual((m.SCHEMA_RECEIPT, planned['planDigest'], 3, 7), (receipt['schema'], receipt['planDigest'], receipt['issue'], receipt['commentId']))
         issue = self.github.data['issues/3']
-        self.assertIn('APPROVE DEPLOY ' + planned['planDigest'], issue['body'])
+        self.assertIn('APPROVE DEPLOY ' + planned['imageTag'], issue['body']); self.assertIn(planned['planDigest'], issue['body'])
         self.assertIn('lookahead-dev-web-blue', issue['body'])
         self.assertTrue(issue['title'].startswith('DEV: Deploy ' + self.app + ' ' + planned['imageTag'] + ' to blue'))
         m.verify(planned, receipt, self.env, self.root, self.get, now=self.now)
@@ -469,7 +470,7 @@ class TransportAndCliTests(DeployFixture):
         planned = m.main(['plan', '--root', str(self.root), '--output', str(out / 'plan.json')], env, call=self.aws, get=self.get)
         self.aws.candidate = planned['candidateSlot']
         stamp = self.now.replace(microsecond=0).isoformat()
-        self.github.comment = lambda: {'id': 7, 'user': {'login': owner.OWNER}, 'body': 'APPROVE DEPLOY ' + planned['planDigest'], 'created_at': stamp, 'updated_at': stamp}
+        self.github.comment = lambda: {'id': 7, 'user': {'login': owner.OWNER}, 'body': 'APPROVE DEPLOY ' + planned['imageTag'], 'created_at': stamp, 'updated_at': stamp}
         self.assertIn('candidate_slot=blue', (out / 'github-output').read_text())
         with self.assertRaises(FileExistsError):
             m.main(['plan', '--root', str(self.root), '--output', str(out / 'plan.json')], env, call=self.aws, get=self.get)

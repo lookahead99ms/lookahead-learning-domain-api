@@ -66,7 +66,7 @@ secret ARNs and version ids, Cloud Map names, the flip mode, the observation win
    candidate, renders the parameters and the resource preview, and writes `plan.json` with its
    digest (artifact `deploy-plan`).
 3. **Approve DEV deploy** (`approve-deploy`): no credentials; `deploy.py approve` opens the owner
-   issue bound to that plan: `APPROVE DEPLOY <plan digest>` within 40 minutes, `REJECT` stops.
+   issue bound to that plan: `APPROVE DEPLOY <image tag>` (for example `domain-v2026.11.01.03.00`) within 40 minutes, `REJECT` stops; the plan digest is in the issue body and the receipt.
 4. **Deploy to DEV** (`deploy-dev`, environment `dev`): `deploy.py verify` rechecks the approval,
    the plan digest, the template and the configuration before OIDC; the deploy session
    `<app>-deploy-<run>-1` (60 minutes) runs `deploy.py execute`,
@@ -105,9 +105,9 @@ Environment `dev` allowing exactly the `main` branch and **without** required re
 issue is the approval; a reviewer rule would add GitHub's deployment pop-up on top of it).
 Repository variables: `RELEASE_ON_MERGE` (`false` pauses merge-driven publication),
 `DEV_PUBLISH_ROLE_ARN` and `DEV_DEPLOY_ROLE_ARN` (optional overrides of `lookahead-dev-deploy`).
-Secret `CROSS_REPO_READ_TOKEN` (read-only on the Gateway repository) only for the consumer-contract
-fetch in CI; the deploy workflows read no other repository (the six-role IAM check is an Infra
-concern and runs in Infra workflows only, user decision 2026-11-01). Actions allow-list:
+No cross-repository secret: the deploy workflows read no other repository (the six-role IAM check is
+an Infra concern and runs in Infra workflows only) and the Gateway contract check runs against the
+copy committed in this repository (user decisions 2026-11-01). Actions allow-list:
 GitHub-owned plus the pinned `aws-actions/configure-aws-credentials`. Issues enabled. The IAM deploy
 trust must admit the sessions `<app>-deploy-plan-*` and `<app>-deploy-*` (DLV-968 IAM transition).
 

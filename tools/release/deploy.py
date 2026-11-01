@@ -290,6 +290,10 @@ def aliasTarget(planned):
     return planned['flip']['serviceName'] + '-' + planned['candidateSlot'] + planned['flip']['hostnameSuffix']
 
 
+def approvalCommand(planned):
+    return 'APPROVE DEPLOY ' + planned['imageTag']
+
+
 def headline(planned):
     return {'env': 'DEV', 'action': 'Deploy ' + planned['app'], 'subject': planned['imageTag'] + ' to ' + planned['candidateSlot'],
             'change': ('alias → ' + planned['candidateSlot'] if planned['flip']['mode'] == 'alias' else 'listener ActiveSlot → ' + planned['candidateSlot'])
@@ -328,7 +332,7 @@ def body(planned, receipt):
             'This is owner approval enforced by workflow code, not independent review.',
         repository=planned['repository'], runId=planned['runId'], owner=owner.OWNER, expires=receipt['expiresAt'], created=receipt.get('createdAt'),
         permissionDeadline='The deploy session lasts at most 60 minutes; IAM is not changed.',
-        command='APPROVE DEPLOY ' + planned['planDigest'], payload=planned)
+        command=approvalCommand(planned), payload=planned)
 
 
 def decision(planned, receipt, env, root, get=owner.api, now=None):
@@ -352,7 +356,9 @@ def decision(planned, receipt, env, root, get=owner.api, now=None):
         if comment.get('created_at') != comment.get('updated_at'):
             continue
         when = owner.timestamp(comment['created_at'])
-        if created <= when <= now and when < expires and command == 'APPROVE DEPLOY ' + planned['planDigest']:
+        # The comment names the image version as ECR shows it (user decision 2026-10-28, applied to deploys 2026-11-01);
+        # the plan digest binds the exact plan through the issue body and the receipt.
+        if created <= when <= now and when < expires and command == approvalCommand(planned):
             selected = comment['id']
     return selected
 
@@ -485,9 +491,10 @@ class Deployer:
         events = self.call('logs', 'filter-log-events', '--log-group-name', cfg['logGroup'], '--log-stream-name-prefix', cfg['service'] + '/' + cfg['service'] + '/' + taskId,
                            '--start-time', str(int(startedAt.timestamp() * 1000)), '--filter-pattern', pattern).get('events', [])
         require(not events, 'Candidate log window contains failure markers: ' + (events[0].get('message', '')[:200] if events else ''))
-        discovered = self.call('servicediscovery', 'discover-instances', '--namespace-name', cfg['namespaceName'],
-                               '--service-name', cfg['slots'][slot]['discoveryService'], '--health-status', 'HEALTHY').get('Instances', []) if p['flip']['mode'] == 'alias' else None
-        require(discovered is None or len(discovered) >= 1, 'Service discovery lists no healthy ' + cfg['slots'][slot]['discoveryService'] + ' instance')
+        # The slot service's registered instances (ECS registers the task's address); health is proven by the task itself above.
+        # list-instances is scoped to the slot service, unlike the namespace-wide discover-instances (deploy run 41274299122).
+        discovered = self.call('servicediscovery', 'list-instances', '--service-id', cfg['slots'][slot]['discoveryServiceArn'].rsplit('/', 1)[-1]).get('Instances', []) if p['flip']['mode'] == 'alias' else None
+        require(discovered is None or len(discovered) >= 1, 'Service discovery lists no ' + cfg['slots'][slot]['discoveryService'] + ' instance')
         targets = None
         if p['flip']['mode'] == 'listener':
             group = cfg['slots'][slot]['targetGroupArn']
