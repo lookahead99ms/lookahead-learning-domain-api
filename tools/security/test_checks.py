@@ -269,7 +269,7 @@ class SecurityGateTests(unittest.TestCase):
 
     def test_source_scan_disables_external_scanner_overrides(self):
         report={'Results':[{'Class':'config','Target':'Dockerfile','MisconfSummary':{'Successes':1}}]}
-        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run') as execute, patch.object(checks,'read',return_value=report), patch.dict(checks.os.environ,{'TRIVY_IGNORE_UNFIXED':'true','TRIVY_CONFIG':'untrusted.yml'}):
+        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run') as execute, patch.object(checks,'read',return_value=report), patch.object(checks,'load_misconfiguration_exceptions',return_value={}), patch.dict(checks.os.environ,{'TRIVY_IGNORE_UNFIXED':'true','TRIVY_CONFIG':'untrusted.yml'}):
             checks.scan('config')
             command=execute.call_args.args[0]
             self.assertIn('--ignorefile',command)
@@ -314,12 +314,77 @@ class SecurityGateTests(unittest.TestCase):
             checks.scan('image','fixture:1')
             self.assertEqual('CVE-2026-111497 exp:2026-11-05\n',(Path(directory)/'scanner-config'/'ignore').read_text())
         config={'Results':[{'Class':'config','Target':'Dockerfile','MisconfSummary':{'Successes':1}}]}
-        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run'), patch.object(checks,'read',return_value=config), patch.object(checks,'load_vulnerability_exceptions',side_effect=AssertionError('source scans must not read the policy')):
+        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run'), patch.object(checks,'read',return_value=config), patch.object(checks,'load_vulnerability_exceptions',side_effect=AssertionError('source scans must not read the policy')), patch.object(checks,'load_misconfiguration_exceptions',return_value={}):
             checks.scan('config')
             self.assertEqual('',(Path(directory)/'scanner-config'/'ignore').read_text())
 
     def test_repository_carries_no_vulnerability_exception_after_the_temurin_repin(self):
         # DLV-968: the 2026-10-31 eclipse-temurin noble rebuild ships libbrotli1 1.1.0-2ubuntu0.1, so the CVE-2026-111497 entry is gone.
         self.assertEqual({},dict(checks.load_vulnerability_exceptions()))
+
+    def test_misconfiguration_exceptions_are_exact_expiring_and_bound_to_an_existing_target(self):
+        # DLV-968: a trivy check that is a false positive on one named file may be carried for a bounded time; nothing else is ignored.
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); (root/'deployment/dev').mkdir(parents=True); (root/'deployment/dev/service.template.json').write_text('{}')
+            policy=root/'misconfiguration-exceptions.json'
+            item={'checkId':'AVD-AWS-0035','target':'deployment/dev/service.template.json','expiresAt':'2027-01-31','ticket':'DLV-968','rationale':'Reviewed synthetic fixture.'}
+            policy.write_text(checks.json.dumps({'version':1,'exceptions':[item]}))
+            loaded=checks.load_misconfiguration_exceptions(policy,date(2027,1,31),root)
+            self.assertEqual([('AVD-AWS-0035','deployment/dev/service.template.json')],list(loaded))
+            self.assertEqual('DLV-968',loaded[('AVD-AWS-0035','deployment/dev/service.template.json')]['ticket'])
+            with self.assertRaisesRegex(ValueError,'^Expired misconfiguration exception$'):checks.load_misconfiguration_exceptions(policy,date(2027,2,1),root)
+            for bad,reason in [(dict(item,checkId='AWS-0035'),'^Invalid misconfiguration exception identifier$'),(dict(item,checkId='CVE-2026-111497'),'^Invalid misconfiguration exception identifier$'),
+                               (dict(item,expiresAt='soon'),'^Invalid misconfiguration exception expiry$'),({k:v for k,v in item.items() if k!='rationale'},'^Incomplete misconfiguration exception$'),
+                               (dict(item,rationale='  '),'^Incomplete misconfiguration exception$'),(dict(item,note='unreviewed'),'^Unexpected misconfiguration exception key$'),
+                               (dict(item,target='deployment/dev/missing.template.json'),'^Misconfiguration exception target is missing$'),(dict(item,target='deployment/dev'),'^Misconfiguration exception target is missing$'),
+                               (dict(item,target=str(root/'deployment/dev/service.template.json')),'^Misconfiguration exception target must be repository-relative$'),
+                               (dict(item,target='../service.template.json'),'^Misconfiguration exception target must be repository-relative$'),(dict(item,ticket='dlv-968'),'^Invalid misconfiguration exception ticket$')]:
+                policy.write_text(checks.json.dumps({'version':1,'exceptions':[bad]}))
+                with self.subTest(reason=reason), self.assertRaisesRegex(ValueError,reason) as failure:checks.load_misconfiguration_exceptions(policy,date(2026,11,1),root)
+                self.assertIn(str(failure.exception),checks.failure_message(failure.exception))
+            policy.write_text(checks.json.dumps({'version':1,'exceptions':[item,item]}))
+            with self.assertRaisesRegex(ValueError,'^Duplicate misconfiguration exception$'):checks.load_misconfiguration_exceptions(policy,date(2026,11,1),root)
+            policy.write_text(checks.json.dumps({'version':2,'exceptions':[item]}))
+            with self.assertRaisesRegex(ValueError,'^Invalid misconfiguration exception contract$'):checks.load_misconfiguration_exceptions(policy,date(2026,11,1),root)
+            self.assertEqual({},checks.load_misconfiguration_exceptions(root/'missing.json',date(2026,11,1),root))
+
+    def test_config_scan_writes_reviewed_check_ignores_and_proves_each_was_exercised(self):
+        exception={('AVD-AWS-0035','deployment/dev/service.template.json'):{'expiresAt':'2027-01-31','ticket':'DLV-968'}}
+        suppressed={'Results':[{'Class':'config','Target':'Dockerfile','MisconfSummary':{'Successes':27,'Failures':0}},
+                               {'Class':'config','Target':'deployment/dev/service.template.json','MisconfSummary':{'Successes':26,'Failures':0},
+                                'ExperimentalModifiedFindings':[{'Type':'misconfiguration','Status':'ignored','Source':'ignore','Finding':{'ID':'AWS-0035','Severity':'HIGH'}}]}]}
+        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run') as execute, patch.object(checks,'read',return_value=suppressed), patch.object(checks,'load_misconfiguration_exceptions',return_value=exception), patch('builtins.print') as printed:
+            checks.scan('config')
+            self.assertEqual('AVD-AWS-0035 exp:2027-01-31\n',(Path(directory)/'scanner-config'/'ignore').read_text())
+            command=execute.call_args.args[0]
+            self.assertIn('--show-suppressed',command); self.assertIn('--ignorefile',command)
+            summary=checks.json.loads(printed.call_args.args[0])
+            self.assertEqual(['AVD-AWS-0035'],summary['ignoredChecks']); self.assertEqual([],summary['ignoredAdvisories']); self.assertEqual(0,summary['countsRequiringAction']['misconfigurations'])
+        prefixed=copy.deepcopy(suppressed); prefixed['Results'][1]['ExperimentalModifiedFindings'][0]['Finding']={'ID':'AVD-AWS-0035','AVDID':'AVD-AWS-0035','Severity':'HIGH'}
+        self.assertEqual({('AVD-AWS-0035','deployment/dev/service.template.json')},checks.ignored_misconfigurations(prefixed))
+        unexercised={'Results':[{'Class':'config','Target':'deployment/dev/service.template.json','MisconfSummary':{'Successes':27,'Failures':0}}]}
+        elsewhere=copy.deepcopy(suppressed); elsewhere['Results'][1]['Target']='deployment/dev/other.template.json'
+        for report,reason in [(unexercised,'^Misconfiguration exception is stale or was not exercised$'),(elsewhere,'^Misconfiguration ignored without a reviewed exception$')]:
+            with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run'), patch.object(checks,'read',return_value=report), patch.object(checks,'load_misconfiguration_exceptions',return_value=exception), patch('builtins.print') as printed:
+                with self.subTest(reason=reason), self.assertRaisesRegex(ValueError,reason):checks.scan('config')
+                self.assertEqual(['AVD-AWS-0035'],checks.json.loads(printed.call_args.args[0])['ignoredChecks'])
+        # A reviewed exception never hides a HIGH finding that trivy still reports, and image scans never read the misconfiguration policy.
+        still_failing=copy.deepcopy(suppressed); still_failing['Results'][1]['MisconfSummary']['Failures']=1; still_failing['Results'][1]['Misconfigurations']=[{'ID':'AWS-0034','Severity':'HIGH'}]
+        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run'), patch.object(checks,'read',return_value=still_failing), patch.object(checks,'load_misconfiguration_exceptions',return_value=exception), patch('builtins.print'):
+            with self.assertRaisesRegex(ValueError,'^Security findings require review$'):checks.scan('config')
+        image={'Metadata':{'OS':{'Family':'ubuntu'}},'Results':[{'Class':'os-pkgs','Packages':[{'Name':'fixture','Version':'1'}]}]}
+        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run'), patch.object(checks,'read',return_value=image), patch.object(checks,'load_vulnerability_exceptions',return_value={}), patch.object(checks,'load_misconfiguration_exceptions',side_effect=AssertionError('image scans must not read the policy')), patch('builtins.print') as printed:
+            checks.scan('image','fixture:1')
+            self.assertEqual('',(Path(directory)/'scanner-config'/'ignore').read_text()); self.assertEqual([],checks.json.loads(printed.call_args.args[0])['ignoredChecks'])
+
+    def test_repository_misconfiguration_exception_is_current_and_covers_only_the_slot_template_efs_check(self):
+        # DLV-968: AVD-AWS-0035 fires on every ECS volume without EFSVolumeConfiguration; the slot template only mounts Fargate ephemeral volumes.
+        exceptions=checks.load_misconfiguration_exceptions()
+        self.assertEqual([('AVD-AWS-0035','deployment/dev/service.template.json')],list(exceptions))
+        entry=exceptions[('AVD-AWS-0035','deployment/dev/service.template.json')]
+        self.assertEqual('DLV-968',entry['ticket']); self.assertIn('EFSVolumeConfiguration',entry['rationale'])
+        volumes=[volume for resource in checks.read(checks.ROOT/'deployment/dev/service.template.json')['Resources'].values()
+                 if resource.get('Type')=='AWS::ECS::TaskDefinition' for volume in resource['Properties'].get('Volumes',[])]
+        self.assertTrue(volumes); self.assertFalse(any('EFSVolumeConfiguration' in volume for volume in volumes))
 
 if __name__=='__main__':unittest.main()

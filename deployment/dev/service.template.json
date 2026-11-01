@@ -1,0 +1,393 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "DLV-968: one DEV domain slot owned by the domain repository: ECS task definition lookahead-dev-domain-<Slot> and ECS service lookahead-dev-domain-<Slot> on the existing cluster, network, log group, credentials and IAM roles; nothing else is created.",
+  "Metadata": {
+    "Owner": "lookahead99ms/lookahead-learning-domain-api",
+    "Ticket": "DLV-968",
+    "Resources": [
+      "AWS::ECS::TaskDefinition lookahead-dev-domain-<Slot>",
+      "AWS::ECS::Service lookahead-dev-domain-<Slot>"
+    ],
+    "Deploy": "tools/release/deploy.py renders change sets app-<run>-candidate / -retire against this template; DesiredCount is 1 for the serving or candidate slot and 0 for the retired slot",
+    "PublicationMode": "live: the newest complete release under live/ in the publication bucket (DLV-968 T9)"
+  },
+  "Parameters": {
+    "Slot": {
+      "Type": "String",
+      "AllowedValues": [
+        "blue",
+        "green"
+      ]
+    },
+    "Cluster": {
+      "Type": "String"
+    },
+    "ApplicationSubnets": {
+      "Type": "List<AWS::EC2::Subnet::Id>"
+    },
+    "ServiceSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup::Id"
+    },
+    "ApplicationImage": {
+      "Type": "String",
+      "AllowedPattern": "[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9/_-]+@sha256:[a-f0-9]{64}"
+    },
+    "TaskRoleArn": {
+      "Type": "String",
+      "AllowedPattern": "arn:aws:iam::[0-9]{12}:role/[a-zA-Z0-9+=,.@_/-]+"
+    },
+    "ExecutionRoleArn": {
+      "Type": "String",
+      "AllowedPattern": "arn:aws:iam::[0-9]{12}:role/[a-zA-Z0-9+=,.@_/-]+"
+    },
+    "TlsSecretArn": {
+      "Type": "String",
+      "AllowedPattern": "arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[a-zA-Z0-9/_+=.@-]+"
+    },
+    "TlsVersion": {
+      "Type": "String",
+      "MinLength": 32,
+      "MaxLength": 64,
+      "AllowedPattern": "[a-zA-Z0-9-]+"
+    },
+    "DiscoveryServiceArn": {
+      "Type": "String",
+      "AllowedPattern": "arn:aws:servicediscovery:[a-z0-9-]+:[0-9]{12}:service/srv-[a-z0-9]+"
+    },
+    "LogGroupName": {
+      "Type": "String"
+    },
+    "DomainAppSecretArn": {
+      "Type": "String",
+      "AllowedPattern": "arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[a-zA-Z0-9/_+=.@-]+"
+    },
+    "DomainAppVersion": {
+      "Type": "String",
+      "MinLength": 32,
+      "MaxLength": 64,
+      "AllowedPattern": "[a-zA-Z0-9-]+"
+    },
+    "DomainGatewaySecretArn": {
+      "Type": "String",
+      "AllowedPattern": "arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[a-zA-Z0-9/_+=.@-]+"
+    },
+    "DomainGatewayVersion": {
+      "Type": "String",
+      "MinLength": 32,
+      "MaxLength": 64,
+      "AllowedPattern": "[a-zA-Z0-9-]+"
+    },
+    "ApplicationClientId": {
+      "Type": "String"
+    },
+    "ApplicationIssuer": {
+      "Type": "String"
+    },
+    "ScopePrefix": {
+      "Type": "String"
+    },
+    "DatabaseAddress": {
+      "Type": "String"
+    },
+    "PublicationBucket": {
+      "Type": "String"
+    },
+    "DesiredCount": {
+      "Type": "Number",
+      "AllowedValues": [
+        0,
+        1
+      ],
+      "Default": 0
+    }
+  },
+  "Resources": {
+    "Task": {
+      "Type": "AWS::ECS::TaskDefinition",
+      "Properties": {
+        "Family": {
+          "Fn::Sub": "lookahead-dev-domain-${Slot}"
+        },
+        "RequiresCompatibilities": [
+          "FARGATE"
+        ],
+        "NetworkMode": "awsvpc",
+        "Cpu": "512",
+        "Memory": "1024",
+        "RuntimePlatform": {
+          "OperatingSystemFamily": "LINUX",
+          "CpuArchitecture": "X86_64"
+        },
+        "TaskRoleArn": {
+          "Ref": "TaskRoleArn"
+        },
+        "ExecutionRoleArn": {
+          "Ref": "ExecutionRoleArn"
+        },
+        "Volumes": [
+          {
+            "Name": "applicationTmp"
+          }
+        ],
+        "ContainerDefinitions": [
+          {
+            "Name": "domain",
+            "Image": {
+              "Ref": "ApplicationImage"
+            },
+            "User": "10001:10001",
+            "ReadonlyRootFilesystem": true,
+            "LinuxParameters": {
+              "Capabilities": {
+                "Drop": [
+                  "ALL"
+                ]
+              }
+            },
+            "StopTimeout": 30,
+            "LogConfiguration": {
+              "LogDriver": "awslogs",
+              "Options": {
+                "awslogs-group": {
+                  "Ref": "LogGroupName"
+                },
+                "awslogs-region": {
+                  "Ref": "AWS::Region"
+                },
+                "awslogs-stream-prefix": "domain",
+                "mode": "non-blocking",
+                "max-buffer-size": "4m"
+              }
+            },
+            "Essential": true,
+            "StartTimeout": 120,
+            "PortMappings": [
+              {
+                "ContainerPort": 8443,
+                "Protocol": "tcp"
+              }
+            ],
+            "MountPoints": [
+              {
+                "SourceVolume": "applicationTmp",
+                "ContainerPath": "/tmp",
+                "ReadOnly": false
+              }
+            ],
+            "Secrets": [
+              {
+                "Name": "LOOKAHEAD_TLS_SCHEMA",
+                "ValueFrom": {
+                  "Fn::Sub": "${TlsSecretArn}:schema::${TlsVersion}"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_TLS_SERVER_CERTIFICATE",
+                "ValueFrom": {
+                  "Fn::Sub": "${TlsSecretArn}:serverCertificate::${TlsVersion}"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_TLS_SERVER_KEY",
+                "ValueFrom": {
+                  "Fn::Sub": "${TlsSecretArn}:serverKey::${TlsVersion}"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_TLS_TRUST",
+                "ValueFrom": {
+                  "Fn::Sub": "${TlsSecretArn}:trust::${TlsVersion}"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_DOMAIN_DB_PASSWORD",
+                "ValueFrom": {
+                  "Fn::Sub": "${DomainAppSecretArn}:password::${DomainAppVersion}"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_DOMAIN_GATEWAY_SECRET",
+                "ValueFrom": {
+                  "Fn::Sub": "${DomainGatewaySecretArn}:::${DomainGatewayVersion}"
+                }
+              }
+            ],
+            "Environment": [
+              {
+                "Name": "LOOKAHEAD_ENVIRONMENT",
+                "Value": "dev"
+              },
+              {
+                "Name": "LOOKAHEAD_RUNTIME_MODE",
+                "Value": "lower-cost-dev"
+              },
+              {
+                "Name": "LOOKAHEAD_TLS_SERVER_NAME",
+                "Value": {
+                  "Fn::Sub": "domain-${Slot}.lookahead-dev.internal"
+                }
+              },
+              {
+                "Name": "SPRING_PROFILES_ACTIVE",
+                "Value": "lower-cost-dev"
+              },
+              {
+                "Name": "JAVA_TOOL_OPTIONS",
+                "Value": "-Djava.security.properties=/opt/lookahead/dns.security -Djdk.httpclient.keepalive.timeout=30 -Djdk.httpclient.disableRetryConnect=true"
+              },
+              {
+                "Name": "AWS_REGION",
+                "Value": {
+                  "Ref": "AWS::Region"
+                }
+              },
+              {
+                "Name": "APP_OAUTH_CLIENT_ID",
+                "Value": {
+                  "Ref": "ApplicationClientId"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_COGNITO_ISSUER",
+                "Value": {
+                  "Ref": "ApplicationIssuer"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_COGNITO_SCOPE_PREFIX",
+                "Value": {
+                  "Ref": "ScopePrefix"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_DOMAIN_JDBC_URL",
+                "Value": {
+                  "Fn::Sub": "jdbc:postgresql://${DatabaseAddress}:5432/lookahead_platform?sslmode=verify-full&sslrootcert=/opt/lookahead/trust/rds-global-bundle.pem"
+                }
+              },
+              {
+                "Name": "SPRING_DATASOURCE_USERNAME",
+                "Value": "lookahead_platform_app"
+              },
+              {
+                "Name": "LOOKAHEAD_AWS_ACCOUNT_ID",
+                "Value": {
+                  "Ref": "AWS::AccountId"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_PUBLICATION_BUCKET",
+                "Value": {
+                  "Ref": "PublicationBucket"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_PUBLICATION_DIRECTORY",
+                "Value": "/tmp/lookahead-publications"
+              },
+              {
+                "Name": "LOOKAHEAD_DOMAIN_SEED_ENABLED",
+                "Value": "false"
+              },
+              {
+                "Name": "LOOKAHEAD_DOMAIN_AUTHOR_ENABLED",
+                "Value": "false"
+              }
+            ],
+            "HealthCheck": {
+              "Command": [
+                "CMD",
+                "java",
+                "-Xms16m",
+                "-Xmx64m",
+                "-cp",
+                "/opt/lookahead/health",
+                "com.lookahead.domain.health.ContainerHealthcheck"
+              ],
+              "Interval": 15,
+              "Timeout": 5,
+              "Retries": 3,
+              "StartPeriod": 60
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "LookAheadEnvironment",
+            "Value": "dev"
+          }
+        ]
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "Service": {
+      "Type": "AWS::ECS::Service",
+      "Properties": {
+        "ServiceName": {
+          "Fn::Sub": "lookahead-dev-domain-${Slot}"
+        },
+        "Cluster": {
+          "Ref": "Cluster"
+        },
+        "TaskDefinition": {
+          "Ref": "Task"
+        },
+        "DesiredCount": {
+          "Ref": "DesiredCount"
+        },
+        "LaunchType": "FARGATE",
+        "PlatformVersion": "1.4.0",
+        "EnableExecuteCommand": false,
+        "DeploymentConfiguration": {
+          "MinimumHealthyPercent": 100,
+          "MaximumPercent": 200,
+          "DeploymentCircuitBreaker": {
+            "Enable": true,
+            "Rollback": false
+          }
+        },
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "AssignPublicIp": "ENABLED",
+            "Subnets": {
+              "Ref": "ApplicationSubnets"
+            },
+            "SecurityGroups": [
+              {
+                "Ref": "ServiceSecurityGroup"
+              }
+            ]
+          }
+        },
+        "ServiceRegistries": [
+          {
+            "RegistryArn": {
+              "Ref": "DiscoveryServiceArn"
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "LookAheadEnvironment",
+            "Value": "dev"
+          }
+        ]
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    }
+  },
+  "Outputs": {
+    "ServiceArn": {
+      "Value": {
+        "Ref": "Service"
+      }
+    },
+    "TaskDefinitionArn": {
+      "Value": {
+        "Ref": "Task"
+      }
+    }
+  }
+}

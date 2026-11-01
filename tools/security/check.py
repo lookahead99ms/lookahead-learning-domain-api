@@ -20,6 +20,7 @@ OUT = ROOT / '.codex-scratch/security'
 PINS = Path(__file__).with_name('tools.json')
 SAST_EXCEPTIONS = Path(__file__).with_name('sast-exceptions.json')
 VULNERABILITY_EXCEPTIONS = Path(__file__).with_name('vulnerability-exceptions.json')
+MISCONFIGURATION_EXCEPTIONS = Path(__file__).with_name('misconfiguration-exceptions.json')
 
 
 # Only trusted constant reasons may reach public CI logs. Never echo exception
@@ -27,17 +28,28 @@ VULNERABILITY_EXCEPTIONS = Path(__file__).with_name('vulnerability-exceptions.js
 SAFE_SAST_FAILURES = frozenset({
     'CodeQL report missing runs',
     'Duplicate SAST exception',
+    'Duplicate misconfiguration exception',
     'Duplicate vulnerability exception',
     'Expired SAST exception',
+    'Expired misconfiguration exception',
     'Expired vulnerability exception',
     'Incomplete SAST exception',
+    'Incomplete misconfiguration exception',
     'Incomplete vulnerability exception',
     'Invalid SAST exception contract',
     'Invalid SAST exception expiry',
     'Invalid SAST security severity',
+    'Invalid misconfiguration exception contract',
+    'Invalid misconfiguration exception expiry',
+    'Invalid misconfiguration exception identifier',
+    'Invalid misconfiguration exception ticket',
     'Invalid vulnerability exception contract',
     'Invalid vulnerability exception expiry',
     'Invalid vulnerability exception identifier',
+    'Misconfiguration exception is stale or was not exercised',
+    'Misconfiguration exception target is missing',
+    'Misconfiguration exception target must be repository-relative',
+    'Misconfiguration ignored without a reviewed exception',
     'SAST exception file must be repository-relative',
     'SAST exception is stale or was not exercised',
     'SAST exception source changed or is missing',
@@ -50,6 +62,7 @@ SAFE_SAST_FAILURES = frozenset({
     'SAST result inventory absent',
     'SAST rule inventory absent',
     'Unexpected SAST producer',
+    'Unexpected misconfiguration exception key',
     'Unknown SAST result rule',
 })
 
@@ -192,7 +205,11 @@ def scan(kind, target=None, require_java=False):
     controlled.mkdir(parents=True, exist_ok=True)
     (controlled / 'trivy.yaml').write_text('{}\n')
     exceptions = load_vulnerability_exceptions() if kind in ('image', 'sbom') else {}
-    (controlled / 'ignore').write_text(''.join(identifier + ' exp:' + item['expiresAt'] + '\n' for identifier, item in sorted(exceptions.items())))
+    checks = load_misconfiguration_exceptions() if kind == 'config' else {}
+    # Plain .trivyignore lines: one advisory or check ID with its expiry; trivy accepts AVD-prefixed check IDs here.
+    ignored = {identifier + ' exp:' + item['expiresAt'] for identifier, item in exceptions.items()}
+    ignored.update(check + ' exp:' + item['expiresAt'] for (check, _), item in checks.items())
+    (controlled / 'ignore').write_text(''.join(line + '\n' for line in sorted(ignored)))
     clean_env = {k: v for k, v in os.environ.items() if not k.startswith('TRIVY_')}
     common = ['--config', str(controlled / 'trivy.yaml'), '--ignorefile', str(controlled / 'ignore'), '--format', 'json', '--output', str(report), '--exit-code', '0', '--timeout', '15m', '--quiet']
     if kind == 'sbom':
@@ -200,11 +217,17 @@ def scan(kind, target=None, require_java=False):
     elif kind == 'image':
         args = ['image', '--scanners', 'vuln', '--list-all-pkgs', *common, target]
     else:
-        args = ['fs', '--scanners', 'misconfig,secret', '--skip-dirs', '.git,.codex-scratch,build,target', *common, '.']
+        # --show-suppressed keeps the ignored checks visible under ExperimentalModifiedFindings so each exception can be
+        # proven exercised; without it the pinned trivy drops them from Misconfigurations and MisconfSummary silently.
+        args = ['fs', '--scanners', 'misconfig,secret', '--show-suppressed', '--skip-dirs', '.git,.codex-scratch,build,target', *common, '.']
     run([trivy, *args], env=clean_env)
-    counts = trivy_gate(read(report), kind, require_java)
+    document = read(report)
+    counts = trivy_gate(document, kind, require_java)
     # Never print secret matches, source excerpts or raw reports into public logs.
-    print(json.dumps({'scan': kind, 'countsRequiringAction': counts, 'ignoredAdvisories': sorted(exceptions)}))
+    print(json.dumps({'scan': kind, 'countsRequiringAction': counts, 'ignoredAdvisories': sorted(exceptions),
+                      'ignoredChecks': sorted({check for check, _ in checks})}))
+    if kind == 'config':
+        require_all_misconfiguration_exceptions_used(document, checks)
     if any(counts.values()):
         raise ValueError('Security findings require review')
 
@@ -245,6 +268,76 @@ def load_vulnerability_exceptions(path=VULNERABILITY_EXCEPTIONS, today=None):
             raise ValueError('Duplicate vulnerability exception')
         accepted[item['vulnerabilityId']] = item
     return accepted
+
+
+def load_misconfiguration_exceptions(path=MISCONFIGURATION_EXCEPTIONS, today=None, root=ROOT):
+    """Reviewed, expiring ignores for trivy misconfiguration checks that are false positives on one named file (DLV-968).
+    Each entry names one check and one repository file; the config scan drops that check until expiresAt and then proves
+    the suppression was exercised on exactly that file. Image, SBOM and secret handling never read this file."""
+    if not Path(path).exists():
+        return {}
+    document = read(path)
+    if document.get('version') != 1 or not isinstance(document.get('exceptions'), list):
+        raise ValueError('Invalid misconfiguration exception contract')
+    today = today or date.today()
+    accepted = {}
+    for item in document['exceptions']:
+        required = ('checkId', 'target', 'expiresAt', 'ticket', 'rationale')
+        if not isinstance(item, dict) or not all(isinstance(item.get(field), str) and item[field].strip() for field in required):
+            raise ValueError('Incomplete misconfiguration exception')
+        if set(item) - set(required):
+            raise ValueError('Unexpected misconfiguration exception key')
+        if not re.fullmatch(r'AVD-[A-Z0-9]+-[0-9]{4}', item['checkId']):
+            raise ValueError('Invalid misconfiguration exception identifier')
+        if not re.fullmatch(r'[A-Z][A-Z0-9]{1,9}-[0-9]{1,6}', item['ticket']):
+            raise ValueError('Invalid misconfiguration exception ticket')
+        relative = Path(item['target'])
+        if relative.is_absolute() or '..' in relative.parts or not relative.parts:
+            raise ValueError('Misconfiguration exception target must be repository-relative')
+        try:
+            expiry = date.fromisoformat(item['expiresAt'])
+        except ValueError as error:
+            raise ValueError('Invalid misconfiguration exception expiry') from error
+        if expiry < today:
+            raise ValueError('Expired misconfiguration exception')
+        if not (root / relative).is_file():
+            raise ValueError('Misconfiguration exception target is missing')
+        key = (item['checkId'], relative.as_posix())
+        if key in accepted:
+            raise ValueError('Duplicate misconfiguration exception')
+        accepted[key] = item
+    return accepted
+
+
+def ignored_misconfigurations(document):
+    """(checkId, target) pairs that trivy suppressed through the controlled ignore file. The pinned trivy (0.74.0) exposes them
+    only with --show-suppressed, as Results[].ExperimentalModifiedFindings entries of Type 'misconfiguration' and Status
+    'ignored'; their Finding.ID omits the AVD- prefix (AWS-0035) while AVDID, when present, carries it."""
+    ignored = set()
+    for result in document.get('Results') or []:
+        if not isinstance(result, dict):
+            continue
+        for item in result.get('ExperimentalModifiedFindings') or []:
+            if not isinstance(item, dict) or item.get('Type') != 'misconfiguration' or item.get('Status') != 'ignored':
+                continue
+            finding = item.get('Finding') if isinstance(item.get('Finding'), dict) else {}
+            identifier = finding.get('AVDID') or finding.get('ID')
+            if not isinstance(identifier, str) or not identifier:
+                identifier = 'unrecognized'
+            elif not identifier.startswith('AVD-'):
+                identifier = 'AVD-' + identifier
+            ignored.add((identifier, result.get('Target')))
+    return ignored
+
+
+def require_all_misconfiguration_exceptions_used(document, exceptions):
+    # The plain ignore format has no path scope, so the report must show each ignored check landed only on its reviewed
+    # file, and every reviewed entry must still be needed; either mismatch fails closed.
+    ignored = ignored_misconfigurations(document)
+    if ignored - set(exceptions):
+        raise ValueError('Misconfiguration ignored without a reviewed exception')
+    if set(exceptions) - ignored:
+        raise ValueError('Misconfiguration exception is stale or was not exercised')
 
 
 def load_sast_exceptions(path=SAST_EXCEPTIONS, root=ROOT, today=None):
