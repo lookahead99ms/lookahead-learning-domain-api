@@ -410,8 +410,12 @@ class Deployer:
         task = self.waitFor('task health', lambda: (lambda t: t if t.get('healthStatus') == 'HEALTHY' else None)(
             self.call('ecs', 'describe-tasks', '--cluster', cfg['cluster'], '--tasks', arns[0])['tasks'][0]), 180)
         require(task.get('taskDefinitionArn', '').split('/')[-1].startswith(p['stack'] + ':'), 'Task belongs to another family')
-        require(p['image'].rsplit('@', 1)[-1] in json.dumps(self.call('ecs', 'describe-task-definition', '--task-definition', task['taskDefinitionArn'])),
-                'Running task definition does not carry the approved image')
+        # The running container reports the digest it was pulled from (`describe-tasks`, granted to deploy sessions);
+        # `describe-task-definition` is outside the deploy session's allow-list in the Infra bundle and is not needed.
+        container = next((c for c in task.get('containers', []) if c.get('name') == cfg['service']), None)
+        digest = p['image'].rsplit('@', 1)[-1]
+        require(container is not None and digest in (str(container.get('imageDigest', '')) + ' ' + str(container.get('image', ''))),
+                'Running task does not carry the approved image')
         startedAt = owner.timestamp(task['startedAt']) if task.get('startedAt') else self.now() - timedelta(minutes=10)
         taskId = arns[0].rsplit('/', 1)[-1]
         pattern = ' '.join('?"' + word + '"' for word in cfg['logFailurePatterns'])
