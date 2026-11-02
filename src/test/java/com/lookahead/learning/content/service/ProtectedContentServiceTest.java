@@ -192,6 +192,33 @@ class ProtectedContentServiceTest {
         assertThat(policy.contentGrants(Set.of())).isEmpty();
         assertThat(policy.contentGrants(Set.copyOf(BUNDLE_SCOPES))).isEmpty();
     }
+    /** DLV-968: Content publishes owner/staff documents as pro assets scoped staff:documents with no content IDs. */
+    @Test void staffDocumentsOpenForTheStaffScopeOnlyAndNeverUnlockLessons() throws Exception {
+        var entry=asset("/content/staff/handbook.json","pro",List.of());
+        entry.put("scopes",List.of("staff:documents"));entry.put("scopeMatch","any");
+        var policy=policy(List.of(entry));var service=new ProtectedContentService(policy,accounts);
+        assertThat(policy.find("/content/staff/handbook.json").orElseThrow().scopes()).containsExactly("staff:documents");
+        denied(()->service.read("/content/staff/handbook.json",null),401,"AUTHENTICATION_REQUIRED");
+        when(accounts.isEnabled(learner.accountId())).thenReturn(true);
+        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.copyOf(BUNDLE_SCOPES));
+        denied(()->service.read("/content/staff/handbook.json",learner),403,"CONTENT_SCOPE_REQUIRED");
+        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("staff:documents"));
+        assertThat(service.read("/content/staff/handbook.json",learner).bytes()).isNotEmpty();
+        // The staff scope grants no lesson: no content IDs come from it, and it is no course grant for other assets.
+        assertThat(policy.contentGrants(Set.of("staff:documents"))).isEmpty();
+        assertThat(policy().contentGrants(Set.of("staff:documents"))).containsExactlyInAnyOrder("free-lesson","public-lesson");
+        var courses=new ProtectedContentService(policy(),accounts);
+        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("staff:documents"));
+        denied(()->courses.read("/content/pro.json",learner),403,"CONTENT_SCOPE_REQUIRED");
+    }
+    @Test void staffAssetsCannotCarryContentIdsAndUnknownScopePrefixesStayInvalid() throws Exception {
+        var withIds=asset("/content/staff/notes.json","pro",List.of("staff-lesson"));withIds.put("scopes",List.of("staff:documents"));
+        assertThatThrownBy(()->policy(List.of(withIds))).isInstanceOf(IllegalStateException.class).hasRootCauseMessage("Staff assets cannot grant curriculum access");
+        var mixed=asset("/content/staff/mixed.json","pro",List.of("mixed-lesson"));mixed.put("scopes",List.of("learn:sample-course","staff:documents"));
+        assertThatThrownBy(()->policy(List.of(mixed))).isInstanceOf(IllegalStateException.class).hasRootCauseMessage("Staff assets cannot grant curriculum access");
+        var unknown=asset("/content/staff/other.json","pro",List.of());unknown.put("scopes",List.of("owner:documents"));
+        assertThatThrownBy(()->policy(List.of(unknown))).isInstanceOf(IllegalStateException.class).hasRootCauseMessage("Invalid course scope");
+    }
     @Test void allScopeProAssetsStillRequireNonemptyScopes() throws Exception {
         var entry=asset("/content/bundle.json","pro",List.of("bundle-lesson"));
         entry.put("scopeMatch","all");entry.put("scopes",List.of());

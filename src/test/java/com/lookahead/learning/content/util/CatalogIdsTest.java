@@ -52,6 +52,23 @@ class CatalogIdsTest {
         assertThat(CatalogIds.normalize(List.of("look-ahead:a", "blaze:a", "learn:b"))).containsExactly("blaze:a", "learn:b");
     }
 
+    /** DLV-968: staff documents use the scope staff:documents; it is a valid protected scope and never a course. */
+    @Test void staffScopeIsAValidProtectedScopeButNeverACurriculumGrant() {
+        assertThat(CatalogIds.STAFF_DOCUMENTS_SCOPE).isEqualTo("staff:documents").matches(CatalogIds.SCOPE_PATTERN);
+        assertThat("staff:x-1").matches(CatalogIds.SCOPE_PATTERN);
+        assertThat("staff:Documents").doesNotMatch(CatalogIds.SCOPE_PATTERN);
+        assertThat("staff").doesNotMatch(CatalogIds.SCOPE_PATTERN);
+        assertThat(CatalogIds.normalize("staff:documents")).isEqualTo("staff:documents");
+        assertThat(CatalogIds.isLegacy("staff:documents")).isFalse();
+        assertThat(CatalogIds.isCurriculumGrant("staff:documents")).isFalse();
+        assertThat(CatalogIds.isCurriculumGrant(null)).isFalse();
+        for (String grant : List.of("learn:core-java", "grow:api-design", "blaze:system-design", "content:learn:core-java:intro"))
+            assertThat(CatalogIds.isCurriculumGrant(grant)).as(grant).isTrue();
+        assertThat(CatalogIds.curriculumGrants(List.of("staff:documents", "learn:core-java", "content:x", "staff:other", "blaze:a")))
+                .containsExactly("learn:core-java", "content:x", "blaze:a");
+        assertThat(CatalogIds.curriculumGrants(List.of("staff:documents"))).isEmpty();
+    }
+
     @Test void rewritesKeysAndIdentifiersButNeverProse() {
         JsonNode legacy = mapper.readTree("""
             {"config":{"topicIds":["look-ahead:system-design","learn:core-java"],"familiarity":{"look-ahead:system-design":"new"}},

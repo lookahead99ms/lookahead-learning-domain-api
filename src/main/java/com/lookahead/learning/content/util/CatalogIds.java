@@ -33,8 +33,15 @@ public final class CatalogIds {
     public static final String LEGACY_CATALOG = "look-ahead";
     /** Topic {@code path} values a saved plan may carry. */
     public static final Set<String> PATHS = Set.of("learn", "grow", CATALOG);
-    /** A course scope or topic ID after normalization, for example {@code blaze:system-design}. */
-    public static final String SCOPE_PATTERN = "(?:learn|grow|" + CATALOG + "):[a-z0-9-]+";
+    /**
+     * DLV-968: staff documents are published as protected assets whose scope is {@code staff:documents}.
+     * A staff scope is a valid protected-content scope but never a curriculum grant: it unlocks no course,
+     * no lesson and no plan, and it never appears in a learner's course list or membership summary.
+     */
+    public static final String STAFF_PREFIX = "staff:";
+    public static final String STAFF_DOCUMENTS_SCOPE = STAFF_PREFIX + "documents";
+    /** A protected-content scope after normalization: a course such as {@code blaze:system-design} or a staff scope. */
+    public static final String SCOPE_PATTERN = "(?:learn|grow|" + CATALOG + "|staff):[a-z0-9-]+";
 
     private static final Pattern ID_TOKEN = Pattern.compile("(^|:)look-ahead(?=:|$)");
     private static final Pattern ROUTE = Pattern.compile("^/look-ahead(?=$|[/?#])");
@@ -51,6 +58,18 @@ public final class CatalogIds {
 
     public static boolean isLegacy(String value) {
         return value != null && !value.equals(normalize(value));
+    }
+
+    /** False for a staff scope; true for every course, topic or {@code content:} grant. */
+    public static boolean isCurriculumGrant(String value) {
+        return value != null && !value.startsWith(STAFF_PREFIX);
+    }
+
+    /** The grants that count as curriculum access: staff scopes are dropped, order is kept. */
+    public static Set<String> curriculumGrants(Collection<String> grants) {
+        Set<String> result = new LinkedHashSet<>();
+        for (String grant : grants) if (isCurriculumGrant(grant)) result.add(grant);
+        return result;
     }
 
     /** Normalizes every member; a legacy ID and its new form collapse into one member. */

@@ -45,7 +45,9 @@ public class FreePlanAllowance {
     }
 
     public boolean freeAccount(UUID owner) {
-        return accounts.findTopicGrants(owner).stream().noneMatch(grant -> !grant.startsWith("content:"));
+        // DLV-968: the staff documents scope is not course access; an admin without courses is still a free account.
+        return com.lookahead.learning.content.util.CatalogIds.curriculumGrants(accounts.findTopicGrants(owner)).stream()
+                .noneMatch(grant -> !grant.startsWith("content:"));
     }
 
     public boolean freeContent(Set<String> contentIds) {

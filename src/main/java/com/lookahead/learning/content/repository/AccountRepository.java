@@ -37,7 +37,16 @@ public class AccountRepository {
             var assignment=staff.forAccount(subject);
             if(assignment!=null) {
                 result.addAll(assignment.topicGrants());
-                if(assignment.fullCurriculum()||com.lookahead.domain.access.StaffPermissions.forRoles(false, assignment.roles()).fullCurriculum())result.addAll(catalog.allTopicIds());
+                var permissions=com.lookahead.domain.access.StaffPermissions.forRoles(false, assignment.roles());
+                if(assignment.fullCurriculum()||permissions.fullCurriculum())result.addAll(catalog.allTopicIds());
+                // DLV-968: admin, co-author and reviewer read the staff documents (/content/staff/...); a tester or plain user does not.
+                if(permissions.previewDocuments())result.add(com.lookahead.learning.content.util.CatalogIds.STAFF_DOCUMENTS_SCOPE);
+            }
+            // DLV-968 (2026-11-02): the owner (cloud author capability) holds the whole curriculum, as People and access already states;
+            // without this the owner saw "Full curriculum" there and "Unlock this premium content" on every paid lesson.
+            if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM cloud_accounts WHERE account_id=? AND author_access AND enabled)",Boolean.class,subject))) {
+                result.addAll(catalog.allTopicIds());
+                result.add(com.lookahead.learning.content.util.CatalogIds.STAFF_DOCUMENTS_SCOPE);
             }
         }
         if(memberships!=null)result.addAll(memberships.topics(subject));

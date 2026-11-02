@@ -33,6 +33,16 @@ class FreePlanAllowanceTest {
         when(jdbc.queryForObject(contains("free_plan_creations"), eq(Integer.class), eq(owner))).thenReturn(0);
     }
 
+    /** DLV-968: staff:documents is not course access; a course grant or purchased topic still ends the free allowance. */
+    @Test void staffDocumentsScopeKeepsAnAccountFreeButAnyCourseGrantDoesNot() {
+        when(accounts.findTopicGrants(owner)).thenReturn(Set.of("staff:documents", "content:lesson-free"));
+        assertThat(allowance.freeAccount(owner)).isTrue();
+        assertThat(allowance.beforeCreate(owner, Set.of("lesson-free"))).isTrue();
+        when(accounts.findTopicGrants(owner)).thenReturn(Set.of("staff:documents", "learn:core-java"));
+        assertThat(allowance.freeAccount(owner)).isFalse();
+        assertThat(allowance.beforeCreate(owner, Set.of("lesson-paid"))).isFalse();
+    }
+
     @Test void freeCreationRequiresFreeContentAndTwoAvailableActiveSlots() {
         assertThat(allowance.beforeCreate(owner, Set.of("lesson-free"))).isTrue();
         assertThatThrownBy(() -> allowance.beforeCreate(owner, Set.of("lesson-paid")))

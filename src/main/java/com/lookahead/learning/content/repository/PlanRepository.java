@@ -43,7 +43,8 @@ public class PlanRepository {
         // DLV-931: grants are read in their blaze form even if an old tool wrote a look-ahead ID.
         var result=new HashSet<>(com.lookahead.learning.content.util.CatalogIds.normalize(jdbc.queryForList(
                 "SELECT topic_id FROM account_grants WHERE account_id=? AND (valid_until IS NULL OR valid_until > now())", String.class, account)));
-        if(accounts!=null)result.addAll(accounts.findTopicGrants(account));
+        // DLV-968: a staff scope never authorizes plan content.
+        if(accounts!=null)result.addAll(com.lookahead.learning.content.util.CatalogIds.curriculumGrants(accounts.findTopicGrants(account)));
         else if(memberships!=null)result.addAll(memberships.topics(account));
         if(publication!=null && com.lookahead.learning.content.repository.AccountRepository.currentIdentityEnabled(account))
             publication.contentGrants(Set.copyOf(result)).forEach(id->result.add("content:"+id));

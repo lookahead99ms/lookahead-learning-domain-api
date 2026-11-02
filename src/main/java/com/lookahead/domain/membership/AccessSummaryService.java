@@ -55,7 +55,7 @@ public class AccessSummaryService {
             }
             labels.add(label);
         }
-        var courses=new TreeSet<>(grants);
+        var courses=new TreeSet<>(com.lookahead.learning.content.util.CatalogIds.curriculumGrants(grants)); // DLV-968: staff scopes are not courses
         if(!courses.isEmpty()) labels.add("Granted · "+String.join(", ",courses));
         if(labels.isEmpty())labels.add("Free");
         return new Summary(String.join(" + ",labels),List.copyOf(labels),List.copyOf(courses));

@@ -134,6 +134,13 @@ class ReadyMadeTemplateMapperTest {
         rejects(source -> ((ObjectNode) source.path("references").get(0)).putArray("route").add("https://example.invalid"));
     }
 
+    /** DLV-968: staff:documents is a protected-content scope, not a course a template may select. */
+    @Test void rejectsAStaffScopeAsATemplateCourse() throws Exception {
+        var staff = catalogTemplate("staff");
+        var failure = assertThrows(IllegalArgumentException.class, () -> mapper.map(staff, rawHash));
+        assertEquals("Invalid course scope", failure.getMessage());
+    }
+
     @Test void legacyLookAheadTemplateIdsAreVerifiedAsPublishedAndProjectedAsBlaze() throws Exception {
         // A template published before DLV-931 still verifies against its own digest, then maps to blaze IDs.
         var legacy = catalogTemplate("look-ahead");
