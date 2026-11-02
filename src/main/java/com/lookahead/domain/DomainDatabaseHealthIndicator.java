@@ -34,6 +34,41 @@ public class DomainDatabaseHealthIndicator implements HealthIndicator {
             WHERE NOT pg_catalog.has_table_privilege(current_user,t.name,p.privilege))
         """.formatted(LegacyStorageNames.RUNTIME_ROLE, LegacyStorageNames.RUNTIME_ROLE,
                 LegacyStorageNames.SUBJECTS_TABLE);
+    /**
+     * DEV/PROD: the cloud sign-in schema and exactly the runtime role's grants on it. Since V17 (DLV-969) the role
+     * creates waiting rows at first contact, admits them for the owner and deletes expired waiting rows, so it holds
+     * INSERT and DELETE on cloud_accounts and UPDATE on the admission columns, and records admission events it can
+     * never change. Identity columns and the operator-only enabled and author_access flags stay out of reach.
+     */
+    public static final String CLOUD_SQL = """
+        SELECT EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='4' AND success)
+          AND EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='17' AND success)
+          AND has_table_privilege(current_user,'public.cloud_accounts','SELECT')
+          AND has_table_privilege(current_user,'public.cloud_accounts','INSERT')
+          AND has_table_privilege(current_user,'public.cloud_accounts','DELETE')
+          AND NOT has_table_privilege(current_user,'public.cloud_accounts','UPDATE')
+          AND NOT has_table_privilege(current_user,'public.cloud_accounts','TRUNCATE')
+          AND has_column_privilege(current_user,'public.cloud_accounts','display_name','UPDATE')
+          AND has_column_privilege(current_user,'public.cloud_accounts','credential_change_pending','UPDATE')
+          AND has_column_privilege(current_user,'public.cloud_accounts','admitted','UPDATE')
+          AND has_column_privilege(current_user,'public.cloud_accounts','admitted_at','UPDATE')
+          AND has_column_privilege(current_user,'public.cloud_accounts','admitted_by','UPDATE')
+          AND has_column_privilege(current_user,'public.cloud_accounts','requested_at','UPDATE')
+          AND has_column_privilege(current_user,'public.cloud_accounts','verified_email','UPDATE')
+          AND NOT has_column_privilege(current_user,'public.cloud_accounts','enabled','UPDATE')
+          AND NOT has_column_privilege(current_user,'public.cloud_accounts','author_access','UPDATE')
+          AND NOT has_column_privilege(current_user,'public.cloud_accounts','issuer','UPDATE')
+          AND NOT has_column_privilege(current_user,'public.cloud_accounts','subject','UPDATE')
+          AND NOT has_column_privilege(current_user,'public.cloud_accounts','account_id','UPDATE')
+          AND has_table_privilege(current_user,'public.cloud_admission_events','SELECT')
+          AND has_table_privilege(current_user,'public.cloud_admission_events','INSERT')
+          AND NOT has_table_privilege(current_user,'public.cloud_admission_events','UPDATE')
+          AND NOT has_table_privilege(current_user,'public.cloud_admission_events','DELETE')
+          AND NOT has_table_privilege(current_user,'public.cloud_admission_events','TRUNCATE')
+          AND NOT EXISTS(SELECT 1 FROM unnest(ARRAY['public.cloud_sign_ins','public.cloud_sign_in_challenges']) t(name)
+            CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE']) p(privilege)
+            WHERE NOT has_table_privilege(current_user,t.name,p.privilege))
+        """;
     private final JdbcTemplate jdbc;
     private final boolean cloud;
     public DomainDatabaseHealthIndicator(JdbcTemplate jdbc) { this.jdbc = jdbc; this.cloud=false; }
@@ -44,24 +79,7 @@ public class DomainDatabaseHealthIndicator implements HealthIndicator {
     @Override public Health health() {
         try {
             Boolean ready = jdbc.queryForObject(HEALTH_SQL, Boolean.class);
-            if(Boolean.TRUE.equals(ready)&&cloud)ready=jdbc.queryForObject("""
-                SELECT EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='4' AND success)
-                  AND has_table_privilege(current_user,'public.cloud_accounts','SELECT')
-                  AND has_column_privilege(current_user,'public.cloud_accounts','display_name','UPDATE')
-                  AND has_column_privilege(current_user,'public.cloud_accounts','credential_change_pending','UPDATE')
-                  AND NOT has_column_privilege(current_user,'public.cloud_accounts','admitted','UPDATE')
-                  AND NOT has_column_privilege(current_user,'public.cloud_accounts','enabled','UPDATE')
-                  AND NOT has_column_privilege(current_user,'public.cloud_accounts','author_access','UPDATE')
-                  AND NOT has_column_privilege(current_user,'public.cloud_accounts','issuer','UPDATE')
-                  AND NOT has_column_privilege(current_user,'public.cloud_accounts','subject','UPDATE')
-                  AND NOT has_column_privilege(current_user,'public.cloud_accounts','account_id','UPDATE')
-                  AND NOT has_table_privilege(current_user,'public.cloud_accounts','INSERT')
-                  AND NOT has_table_privilege(current_user,'public.cloud_accounts','DELETE')
-                  AND NOT has_table_privilege(current_user,'public.cloud_accounts','TRUNCATE')
-                  AND NOT EXISTS(SELECT 1 FROM unnest(ARRAY['public.cloud_sign_ins','public.cloud_sign_in_challenges']) t(name)
-                    CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE']) p(privilege)
-                    WHERE NOT has_table_privilege(current_user,t.name,p.privilege))
-                """,Boolean.class);
+            if(Boolean.TRUE.equals(ready)&&cloud)ready=jdbc.queryForObject(CLOUD_SQL,Boolean.class);
             return Boolean.TRUE.equals(ready) ? Health.up().build() : Health.down().build();
         } catch (Exception error) { return Health.down().build(); }
     }

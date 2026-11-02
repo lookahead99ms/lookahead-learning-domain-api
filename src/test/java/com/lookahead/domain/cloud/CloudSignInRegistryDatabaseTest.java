@@ -238,6 +238,25 @@ class CloudSignInRegistryDatabaseTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE account_id=?",Integer.class,id)).isZero();
         assertThat(events(id,"expire")).isEqualTo(1);
     }
+    /** DLV-969: DEV readiness must accept the V17 grants (it once required the pre-V17 read-only shape and failed every task). */
+    @Test void cloudReadinessAcceptsTheV17RuntimeGrantsAndRejectsDrift(){
+        var tx=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source));
+        // This suite builds the tables in its own schema; the readiness SQL names public, as the deployed database does.
+        jdbc.execute("CREATE TABLE IF NOT EXISTS flyway_schema_history(version text, success boolean)");
+        jdbc.execute("GRANT SELECT ON flyway_schema_history TO lookahead_platform_app");
+        jdbc.update("INSERT INTO flyway_schema_history VALUES ('4',true),('17',true)");
+        String sql=com.lookahead.domain.DomainDatabaseHealthIndicator.CLOUD_SQL.replace("public.",schema+".");
+        java.util.function.Supplier<Boolean> asApp=()->tx.execute(status->{jdbc.execute("SET LOCAL ROLE lookahead_platform_app");
+            return jdbc.queryForObject(sql,Boolean.class);});
+        assertThat(asApp.get()).isTrue();
+        jdbc.execute("GRANT UPDATE(enabled) ON cloud_accounts TO lookahead_platform_app");
+        try { assertThat(asApp.get()).isFalse(); } finally { jdbc.execute("REVOKE UPDATE(enabled) ON cloud_accounts FROM lookahead_platform_app"); }
+        jdbc.execute("REVOKE INSERT ON cloud_accounts FROM lookahead_platform_app");
+        try { assertThat(asApp.get()).isFalse(); } finally { jdbc.execute("GRANT INSERT ON cloud_accounts TO lookahead_platform_app"); }
+        jdbc.execute("GRANT UPDATE ON cloud_admission_events TO lookahead_platform_app");
+        try { assertThat(asApp.get()).isFalse(); } finally { jdbc.execute("REVOKE UPDATE ON cloud_admission_events FROM lookahead_platform_app"); }
+        assertThat(asApp.get()).isTrue();
+    }
     @Test void ownerAdmissionMarksTheRowAssignsRolesAndIsRecordedOnce(){
         var service=admission();UUID ownerId=provision(identity("admitting-owner"));
         var owner=new com.lookahead.learning.content.security.AccountPrincipal(ownerId,"owner","Owner",true,true);
