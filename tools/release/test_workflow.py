@@ -233,6 +233,66 @@ class StageContractTests(unittest.TestCase):
         self.assertEqual(('release-record-${{ needs.release.outputs.release-version }}', 90), (upload['name'], upload['retention-days']))
 
 
+RECOVER_STAGES = ['validate', 'plan-recovery', 'approve-recovery', 'recover-dev', 'record']
+RECOVER_NAMES = {'validate': 'Security gate', 'plan-recovery': 'Plan DEV recovery', 'approve-recovery': 'Approve DEV recovery', 'recover-dev': 'Recover DEV', 'record': 'Record recovery'}
+
+
+class RecoverWorkflowTests(unittest.TestCase):
+    """`05 · Recover DEV` (DLV-969, user decision 2026-11-02): park, deploy, fall back and park again in one approved run, no AWS CLI."""
+
+    def setUp(self):
+        self.wf = load('recover-dev.yml'); self.jobs = self.wf['jobs']
+        self.app = {'web': 'web', 'domain': 'domain', 'gateway-bff': 'gateway'}[APP]
+
+    def test_shape_inputs_and_shared_deploy_concurrency(self):
+        self.assertEqual('05 · Recover DEV', self.wf['name'])
+        self.assertEqual(['workflow_dispatch'], list(self.wf['on']))
+        inputs = self.wf['on']['workflow_dispatch']['inputs']
+        self.assertEqual((True, False, False), (inputs['release_version']['required'], inputs['fallback_release']['required'], inputs['healthy_minutes']['required']))
+        self.assertIn('park it at zero tasks (even while its stack is stuck), deploy the chosen release, fall back to the last release that ran healthy', inputs['release_version']['description'])
+        self.assertEqual(('choice', '15'), (inputs['healthy_minutes']['type'], inputs['healthy_minutes']['default']))
+        self.assertEqual({'contents': 'read'}, self.wf['permissions'])
+        self.assertEqual({'group': 'deploy-dev', 'cancel-in-progress': False}, self.wf['concurrency'])  # never beside a deploy
+        self.assertEqual(RECOVER_STAGES, list(self.jobs))
+        self.assertEqual(RECOVER_NAMES, {k: v['name'] for k, v in self.jobs.items()})
+        self.assertTrue(runs(self.jobs['validate'])[-1].endswith("*/deploy.py,*/recover.py' --fail-under=85"))
+
+    def test_plan_resolves_both_releases_before_the_plan_session(self):
+        plan = self.jobs['plan-recovery']
+        self.assertEqual(('validate', 'dev', {'contents': 'read', 'actions': 'read', 'id-token': 'write'}), (plan['needs'], plan['environment'], plan['permissions']))
+        text = '\n'.join(runs(plan))
+        for part in ('release_version.py resolve --app ' + APP + ' --record "$RUNNER_TEMP/recover-plan/release-source.json"', 'recover.py fallback',
+                     'release_version.py resolve --app ' + APP + ' --record "$RUNNER_TEMP/recover-plan/fallback-source.json"', 'recover.py plan --output'):
+            self.assertIn(part, text)
+        creds = [c['with'] for c in uses(plan, 'aws-actions/configure-aws-credentials@')]
+        self.assertEqual([(self.app + '-deploy-plan-${{ github.run_id }}-1', 900)], [(c['role-session-name'], c['role-duration-seconds']) for c in creds])
+
+    def test_one_approval_then_five_stages_each_in_its_own_session(self):
+        approve, recover = self.jobs['approve-recovery'], self.jobs['recover-dev']
+        self.assertNotIn('environment', approve); self.assertEqual([], uses(approve, 'aws-actions/'))
+        self.assertIn('--match "Recover"', approve['steps'][-1]['run'])
+        self.assertEqual((['plan-recovery', 'approve-recovery'], 'dev'), (recover['needs'], recover['environment']))
+        order = names(recover)
+        first = order.index(next(s['name'] for s in recover['steps'] if str(s.get('uses', '')).startswith('aws-actions/')))
+        self.assertLess(order.index('Recheck the live owner approval before AWS credentials'), first)
+        creds = [(c['with']['role-session-name'], c['with']['role-duration-seconds'], c.get('if')) for c in uses(recover, 'aws-actions/configure-aws-credentials@')]
+        self.assertEqual([(self.app + '-deploy-${{ github.run_id }}-' + str(n), 3600, cond) for n, cond in
+                          ((1, None), (2, "steps.park.outcome == 'success'"), (3, "steps.target.outputs.healthy == 'false'"),
+                           (4, "steps.park-again.outcome == 'success'"), (5, "steps.fallback.outputs.healthy == 'false'"))], creds)
+        stages = [s for s in recover['steps'] if 'recover.py stage' in s.get('run', '')]
+        self.assertEqual(['park', 'target', 'park-again', 'fallback', 'park-final'], [s['id'] for s in stages])
+        summary = next(s for s in recover['steps'] if s.get('id') == 'summary')
+        self.assertEqual('always()', summary['if'])
+        self.assertIn('issue_close.py --stage "Recover DEV"', recover['steps'][-1]['run'])
+        text = json.dumps(self.wf)
+        for forbidden in ('aws ecs', 'aws cloudformation', 'update-service', 'delete-stack', 'docker '):
+            self.assertNotIn(forbidden, text, forbidden)  # every AWS change goes through deploy.py / recover.py
+
+    def test_record_bundles_every_receipt(self):
+        upload = next(s['with'] for s in uses(self.jobs['record'], 'actions/upload-artifact@'))
+        self.assertEqual('recover-record-${{ inputs.release_version }}-${{ github.run_id }}', upload['name'])
+
+
 class DeployWorkflowTests(unittest.TestCase):
     """`04 · Deploy DEV` (DLV-968 decision V): one published tag in, one change set on this repository's single service stack, ECS rolling update."""
 

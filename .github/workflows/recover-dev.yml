@@ -1,0 +1,473 @@
+{
+  "name": "05 \u00b7 Recover DEV",
+  "run-name": "${{ github.workflow }} | ${{ inputs.release_version }} | fallback ${{ inputs.fallback_release || 'last verified' }} | #${{ github.run_number }}",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "release_version": {
+          "description": "Published release tag vyyyy.mm.dd.hh.nn to serve. Recover a DEV service: park it at zero tasks (even while its stack is stuck), deploy the chosen release, fall back to the last release that ran healthy if it does not become healthy, and park it again if nothing does. One owner approval covers the whole sequence; no AWS CLI.",
+          "type": "string",
+          "required": true
+        },
+        "fallback_release": {
+          "description": "Release tag to fall back to if the target does not become healthy; empty = the newest release whose deploy verified healthy on main",
+          "type": "string",
+          "required": false,
+          "default": ""
+        },
+        "healthy_minutes": {
+          "description": "Minutes each serving stage may wait for its stack before it counts as not healthy (5..40)",
+          "type": "choice",
+          "options": [
+            "10",
+            "15",
+            "20",
+            "30"
+          ],
+          "required": false,
+          "default": "15"
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "concurrency": {
+    "group": "deploy-dev",
+    "cancel-in-progress": false
+  },
+  "env": {
+    "DEPLOY_ROLE": "${{ vars.DEV_DEPLOY_ROLE_ARN || 'arn:aws:iam::509614632283:role/lookahead-dev-deploy' }}",
+    "RELEASE_VERSION": "${{ inputs.release_version }}",
+    "FALLBACK_INPUT": "${{ inputs.fallback_release }}",
+    "RECOVER_HEALTHY_MINUTES": "${{ inputs.healthy_minutes || '15' }}"
+  },
+  "jobs": {
+    "validate": {
+      "name": "Security gate",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 15,
+      "permissions": {
+        "contents": "read"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Refuse any run that is not on main",
+          "run": "test \"$GITHUB_REF\" = refs/heads/main"
+        },
+        {
+          "name": "Set up Python for release tooling",
+          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+          "with": {
+            "python-version": "3.14"
+          }
+        },
+        {
+          "name": "Install hash-locked release coverage tooling",
+          "run": "python -m pip install --only-binary=:all: --require-hashes -r tools/release/requirements-coverage.txt"
+        },
+        {
+          "name": "Test the deploy and recovery tooling this run executes and require 85 percent coverage",
+          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py,*/recover.py' --fail-under=85",
+          "env": {
+            "COVERAGE_FILE": "${{ runner.temp }}/release-tooling.coverage"
+          }
+        }
+      ]
+    },
+    "plan-recovery": {
+      "name": "Plan DEV recovery",
+      "needs": "validate",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 20,
+      "environment": "dev",
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "id-token": "write"
+      },
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "AWS_MAX_ATTEMPTS": "1",
+        "AWS_RETRY_MODE": "standard",
+        "AWS_EC2_METADATA_DISABLED": "true"
+      },
+      "outputs": {
+        "plan-digest": "${{ steps.plan.outputs.plan_digest }}",
+        "fallback-release": "${{ steps.plan.outputs.fallback_release }}"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Resolve the target release tag once and freeze its main commit",
+          "run": "mkdir -p \"$RUNNER_TEMP/recover-plan\"\npython3 tools/release/release_version.py resolve --app domain --record \"$RUNNER_TEMP/recover-plan/release-source.json\""
+        },
+        {
+          "name": "Choose the fallback release: the input, or the newest release whose deploy verified healthy on main",
+          "id": "fallback",
+          "run": "python3 tools/release/recover.py fallback"
+        },
+        {
+          "name": "Resolve the fallback release tag once and freeze its main commit",
+          "env": {
+            "RELEASE_VERSION": "${{ steps.fallback.outputs.fallback_release }}"
+          },
+          "run": "python3 tools/release/release_version.py resolve --app domain --record \"$RUNNER_TEMP/recover-plan/fallback-source.json\""
+        },
+        {
+          "name": "Point the release-source records at the runner temp directory",
+          "run": "echo \"RELEASE_SOURCE_RECORD=$RUNNER_TEMP/recover-plan/release-source.json\" >> \"$GITHUB_ENV\"\necho \"FALLBACK_SOURCE_RECORD=$RUNNER_TEMP/recover-plan/fallback-source.json\" >> \"$GITHUB_ENV\""
+        },
+        {
+          "name": "Use short-lived DEV OIDC credentials (domain-deploy-plan)",
+          "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
+          "with": {
+            "aws-region": "us-east-2",
+            "role-to-assume": "${{ env.DEPLOY_ROLE }}",
+            "allowed-account-ids": "509614632283",
+            "role-duration-seconds": 900,
+            "role-session-name": "domain-deploy-plan-${{ github.run_id }}-1",
+            "unset-current-credentials": true,
+            "output-credentials": false,
+            "disable-retry": true
+          }
+        },
+        {
+          "name": "Plan every stage: published digests, stack state, change sets and sessions",
+          "id": "plan",
+          "env": {
+            "FALLBACK_RELEASE_VERSION": "${{ steps.fallback.outputs.fallback_release }}",
+            "FALLBACK_SOURCE": "${{ steps.fallback.outputs.fallback_source }}"
+          },
+          "run": "python3 tools/release/recover.py plan --output \"$RUNNER_TEMP/recover-plan/plan.json\""
+        },
+        {
+          "name": "Retain the recovery plan",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "recover-plan",
+            "path": "${{ runner.temp }}/recover-plan/",
+            "if-no-files-found": "error",
+            "retention-days": 30
+          }
+        }
+      ]
+    },
+    "approve-recovery": {
+      "name": "Approve DEV recovery",
+      "needs": [
+        "plan-recovery"
+      ],
+      "if": "always() && needs.plan-recovery.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 45,
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "issues": "write",
+        "pull-requests": "read"
+      },
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "FALLBACK_RELEASE_VERSION": "${{ needs.plan-recovery.outputs.fallback-release }}"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Set up Python for release tooling",
+          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+          "with": {
+            "python-version": "3.14"
+          }
+        },
+        {
+          "name": "Restore the recovery plan of this run",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "recover-plan",
+            "path": "${{ runner.temp }}/recover-plan"
+          }
+        },
+        {
+          "name": "Point the release-source records at the runner temp directory",
+          "run": "echo \"RELEASE_SOURCE_RECORD=$RUNNER_TEMP/recover-plan/release-source.json\" >> \"$GITHUB_ENV\"\necho \"FALLBACK_SOURCE_RECORD=$RUNNER_TEMP/recover-plan/fallback-source.json\" >> \"$GITHUB_ENV\""
+        },
+        {
+          "name": "Open one approval issue for the whole sequence and wait for the owner comment (40 minutes)",
+          "id": "approve",
+          "run": "python3 tools/release/recover.py approve --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\""
+        },
+        {
+          "name": "Retain the approval receipt",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "recover-approval",
+            "path": "${{ runner.temp }}/recover-approval/",
+            "if-no-files-found": "error",
+            "retention-days": 30
+          }
+        },
+        {
+          "name": "Close the approval issue when approval failed or expired",
+          "if": "failure()",
+          "continue-on-error": true,
+          "run": "python3 tools/release/issue_close.py --stage \"Approve DEV recovery\" --outcome failure --detail \"Rejected, expired or failed; nothing was changed.\" --match \"Recover\""
+        }
+      ]
+    },
+    "recover-dev": {
+      "name": "Recover DEV",
+      "needs": [
+        "plan-recovery",
+        "approve-recovery"
+      ],
+      "if": "always() && needs.approve-recovery.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 240,
+      "environment": "dev",
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "issues": "write",
+        "id-token": "write"
+      },
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "AWS_MAX_ATTEMPTS": "1",
+        "AWS_RETRY_MODE": "standard",
+        "AWS_EC2_METADATA_DISABLED": "true",
+        "FALLBACK_RELEASE_VERSION": "${{ needs.plan-recovery.outputs.fallback-release }}"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Set up Python for release tooling",
+          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+          "with": {
+            "python-version": "3.14"
+          }
+        },
+        {
+          "name": "Restore the recovery plan of this run",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "recover-plan",
+            "path": "${{ runner.temp }}/recover-plan"
+          }
+        },
+        {
+          "name": "Restore the approval receipt",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "recover-approval",
+            "path": "${{ runner.temp }}/recover-approval"
+          }
+        },
+        {
+          "name": "Point the release-source records at the runner temp directory",
+          "run": "echo \"RELEASE_SOURCE_RECORD=$RUNNER_TEMP/recover-plan/release-source.json\" >> \"$GITHUB_ENV\"\necho \"FALLBACK_SOURCE_RECORD=$RUNNER_TEMP/recover-plan/fallback-source.json\" >> \"$GITHUB_ENV\""
+        },
+        {
+          "name": "Recheck the live owner approval before AWS credentials",
+          "run": "python3 tools/release/recover.py verify --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\""
+        },
+        {
+          "name": "Use short-lived DEV OIDC credentials for stage park (domain-deploy-1)",
+          "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
+          "with": {
+            "aws-region": "us-east-2",
+            "role-to-assume": "${{ env.DEPLOY_ROLE }}",
+            "allowed-account-ids": "509614632283",
+            "role-duration-seconds": 3600,
+            "role-session-name": "domain-deploy-${{ github.run_id }}-1",
+            "unset-current-credentials": true,
+            "output-credentials": false,
+            "disable-retry": true
+          }
+        },
+        {
+          "name": "Stage 1 \u00b7 park: DesiredCount 0, directly first when the stack is stuck",
+          "id": "park",
+          "run": "python3 tools/release/recover.py stage --stage park --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\""
+        },
+        {
+          "name": "Use short-lived DEV OIDC credentials for stage target (domain-deploy-2)",
+          "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
+          "with": {
+            "aws-region": "us-east-2",
+            "role-to-assume": "${{ env.DEPLOY_ROLE }}",
+            "allowed-account-ids": "509614632283",
+            "role-duration-seconds": 3600,
+            "role-session-name": "domain-deploy-${{ github.run_id }}-2",
+            "unset-current-credentials": true,
+            "output-credentials": false,
+            "disable-retry": true
+          },
+          "if": "steps.park.outcome == 'success'"
+        },
+        {
+          "name": "Stage 2 \u00b7 target: deploy the chosen release and wait for one healthy task",
+          "id": "target",
+          "run": "python3 tools/release/recover.py stage --stage target --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\"",
+          "if": "steps.park.outcome == 'success'"
+        },
+        {
+          "name": "Use short-lived DEV OIDC credentials for stage park-again (domain-deploy-3)",
+          "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
+          "with": {
+            "aws-region": "us-east-2",
+            "role-to-assume": "${{ env.DEPLOY_ROLE }}",
+            "allowed-account-ids": "509614632283",
+            "role-duration-seconds": 3600,
+            "role-session-name": "domain-deploy-${{ github.run_id }}-3",
+            "unset-current-credentials": true,
+            "output-credentials": false,
+            "disable-retry": true
+          },
+          "if": "steps.target.outputs.healthy == 'false'"
+        },
+        {
+          "name": "Stage 3 \u00b7 park again: only when the target did not serve",
+          "id": "park-again",
+          "run": "python3 tools/release/recover.py stage --stage park-again --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\"",
+          "if": "steps.target.outputs.healthy == 'false'"
+        },
+        {
+          "name": "Use short-lived DEV OIDC credentials for stage fallback (domain-deploy-4)",
+          "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
+          "with": {
+            "aws-region": "us-east-2",
+            "role-to-assume": "${{ env.DEPLOY_ROLE }}",
+            "allowed-account-ids": "509614632283",
+            "role-duration-seconds": 3600,
+            "role-session-name": "domain-deploy-${{ github.run_id }}-4",
+            "unset-current-credentials": true,
+            "output-credentials": false,
+            "disable-retry": true
+          },
+          "if": "steps.park-again.outcome == 'success'"
+        },
+        {
+          "name": "Stage 4 \u00b7 fallback: deploy the fallback release and wait for one healthy task",
+          "id": "fallback",
+          "run": "python3 tools/release/recover.py stage --stage fallback --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\"",
+          "if": "steps.park-again.outcome == 'success'"
+        },
+        {
+          "name": "Use short-lived DEV OIDC credentials for stage park-final (domain-deploy-5)",
+          "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
+          "with": {
+            "aws-region": "us-east-2",
+            "role-to-assume": "${{ env.DEPLOY_ROLE }}",
+            "allowed-account-ids": "509614632283",
+            "role-duration-seconds": 3600,
+            "role-session-name": "domain-deploy-${{ github.run_id }}-5",
+            "unset-current-credentials": true,
+            "output-credentials": false,
+            "disable-retry": true
+          },
+          "if": "steps.fallback.outputs.healthy == 'false'"
+        },
+        {
+          "name": "Stage 5 \u00b7 park at zero tasks: only when the fallback did not serve either",
+          "id": "park-final",
+          "run": "python3 tools/release/recover.py stage --stage park-final --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\"",
+          "if": "steps.fallback.outputs.healthy == 'false'"
+        },
+        {
+          "name": "Summarize every stage; fail unless a release serves",
+          "id": "summary",
+          "if": "always()",
+          "run": "python3 tools/release/recover.py summary --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --dir \"$RUNNER_TEMP/recover-result\""
+        },
+        {
+          "name": "Retain the stage results whatever the outcome",
+          "if": "always()",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "recover-result",
+            "path": "${{ runner.temp }}/recover-result/",
+            "if-no-files-found": "warn",
+            "retention-days": 90
+          }
+        },
+        {
+          "name": "Close the approval issue with the recovery outcome",
+          "if": "always()",
+          "continue-on-error": true,
+          "env": {
+            "OUTCOME": "${{ steps.summary.outcome }}"
+          },
+          "run": "detail=\"Recovery to $RELEASE_VERSION ended with outcome $OUTCOME; the run summary and the recover-result artifact list every stage.\"\npython3 tools/release/issue_close.py --stage \"Recover DEV\" --outcome \"$OUTCOME\" --detail \"$detail\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\""
+        }
+      ]
+    },
+    "record": {
+      "name": "Record recovery",
+      "needs": [
+        "plan-recovery",
+        "approve-recovery",
+        "recover-dev"
+      ],
+      "if": "always() && needs.plan-recovery.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "permissions": {
+        "contents": "read",
+        "actions": "read"
+      },
+      "steps": [
+        {
+          "name": "Restore every receipt this run produced (absent stages stay absent)",
+          "continue-on-error": true,
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "pattern": "{recover-plan,recover-approval,recover-result}",
+            "path": "${{ runner.temp }}/recover-record",
+            "merge-multiple": false
+          }
+        },
+        {
+          "name": "Retain one record per recovery run",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "recover-record-${{ inputs.release_version }}-${{ github.run_id }}",
+            "path": "${{ runner.temp }}/recover-record/",
+            "if-no-files-found": "error",
+            "retention-days": 90
+          }
+        }
+      ]
+    }
+  }
+}
