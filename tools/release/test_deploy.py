@@ -27,7 +27,7 @@ CONFIG = {
     'sessionPrefix': 'web-deploy', 'cluster': 'arn:aws:ecs:us-east-2:509614632283:cluster/lookahead-dev-cluster', 'clusterName': 'lookahead-dev-cluster',
     'stack': 'lookahead-dev-web', 'logGroup': '/lookahead/dev/web', 'namespaceName': 'lookahead-dev.internal',
     'discovery': {'serviceName': 'web', 'serviceId': 'srv-web000000000001', 'serviceArn': 'arn:aws:servicediscovery:us-east-2:509614632283:service/srv-web000000000001'},
-    'targetGroupArn': None, 'observationMinutes': 15, 'probeUrl': 'https://dev.devlookahead.com/',
+    'targetGroupArn': None, 'observationMinutes': 15, 'refreshObservationMinutes': 5, 'probeUrl': 'https://dev.devlookahead.com/',
     'parameters': {'Cluster': 'arn:aws:ecs:us-east-2:509614632283:cluster/lookahead-dev-cluster', 'ApplicationSubnets': 'subnet-a,subnet-b', 'ServiceSecurityGroup': 'sg-1',
                    'TaskRoleArn': 'arn:aws:iam::509614632283:role/lookahead-dev-app-task', 'ExecutionRoleArn': 'arn:aws:iam::509614632283:role/lookahead-dev-ecs-execution',
                    'TlsSecretArn': 'arn:aws:secretsmanager:us-east-2:509614632283:secret:lookahead-dev-web-tls-pX1NCN', 'TlsVersion': '98331e44-009a-4d74-a6b5-22124e75c170',
@@ -132,9 +132,9 @@ class FakeAws:
     def serving(self, image='old', count='1'):
         """The stack as a previous deploy left it."""
         params = dict(CONFIG['parameters']); params.update({'ApplicationImage': self.config['imageRepository'] + '@sha256:' + image[0] * 64, 'DesiredCount': count,
-                                                           'DiscoveryServiceArn': self.config['discovery']['serviceArn']} if self.config['discovery'] else
+                                                           'RefreshToken': 'none', 'DiscoveryServiceArn': self.config['discovery']['serviceArn']} if self.config['discovery'] else
                                                           {'ApplicationImage': self.config['imageRepository'] + '@sha256:' + image[0] * 64, 'DesiredCount': count,
-                                                           'TargetGroupArn': self.config['targetGroupArn']})
+                                                           'RefreshToken': 'none', 'TargetGroupArn': self.config['targetGroupArn']})
         self.stack = {'status': 'UPDATE_COMPLETE', 'parameters': params}
         self.service = {'desired': int(count), 'running': int(count), 'rolloutState': 'COMPLETED'}
 
@@ -169,14 +169,15 @@ class DeployFixture(unittest.TestCase):
     def get(self, repository, path, payload=None):
         return self.github.get(repository, path, payload)
 
-    def planned(self, count=None):
+    def planned(self, count=None, answer=None):
         env = dict(self.env)
         if count is not None:
             env['DEPLOY_DESIRED_COUNT'] = count
         result = m.plan(env, self.aws, self.root, self.get, now=self.now)
         stamp = self.now.replace(microsecond=0).isoformat()
-        # the fake owner answers the deploy command, not the image command, once the digest is known
-        self.github.comment = lambda: {'id': 7, 'user': {'login': owner.OWNER}, 'body': 'APPROVE DEPLOY ' + result['imageTag'], 'created_at': stamp, 'updated_at': stamp}
+        # the fake owner answers the plan's primary command (DEPLOY, or REFRESH for a duplicate image) unless a mode is named
+        command = m.approvalCommands(result)[answer or result['choices'][0]]
+        self.github.comment = lambda: {'id': 7, 'user': {'login': owner.OWNER}, 'body': command, 'created_at': stamp, 'updated_at': stamp}
         return result
 
     def approved(self, planned):
@@ -184,7 +185,9 @@ class DeployFixture(unittest.TestCase):
 
     def deployer(self, planned, **kw):
         template = (self.root / 'deployment/dev/service.template.json').read_text()
-        return m.Deployer(planned, m.loadConfig(self.root), template, self.aws, sleep=lambda s: None, now=self.clock, fetch=kw.get('fetch', lambda url: 200))
+        self.logged = []
+        return m.Deployer(planned, m.loadConfig(self.root), template, self.aws, sleep=lambda s: None, now=self.clock, fetch=kw.get('fetch', lambda url: 200),
+                          mode=kw.get('mode', planned['choices'][0]), log=lambda line, **_: self.logged.append(line))
 
 
 class PlanTests(DeployFixture):
@@ -193,7 +196,7 @@ class PlanTests(DeployFixture):
         self.assertEqual(('lookahead-dev-web', False, False, 1, 'app-12', None, None), (planned['stack'], planned['stackExists'], planned['unchanged'], planned['desiredCount'],
                                                                                         planned['changeSet'], planned['currentImage'], planned['currentDesiredCount']))
         self.assertEqual(self.config['imageRepository'] + '@' + DIGEST, planned['image'])
-        self.assertEqual({'ApplicationImage': planned['image'], 'DesiredCount': '1', 'DiscoveryServiceArn': self.config['discovery']['serviceArn'], **CONFIG['parameters']}, planned['parameters'])
+        self.assertEqual({'ApplicationImage': planned['image'], 'DesiredCount': '1', 'RefreshToken': 'none', 'DiscoveryServiceArn': self.config['discovery']['serviceArn'], **CONFIG['parameters']}, planned['parameters'])
         self.assertEqual([('Create', 'AWS::CloudFormation::Stack'), ('Create', 'AWS::ECS::Service')], [(r['action'], r['type']) for r in planned['resources']])
         self.assertEqual('web-deploy-12-1', planned['sessionName'])
         self.assertEqual(planned['planDigest'], m.digest({k: v for k, v in planned.items() if k != 'planDigest'}))
@@ -284,7 +287,7 @@ class ApprovalTests(DeployFixture):
     def test_approve_opens_an_issue_naming_the_image_tag_and_returns_the_owner_comment(self):
         planned = self.planned()
         receipt = self.approved(planned)
-        self.assertEqual((7, planned['planDigest'], 'app-deploy-approval/v1'), (receipt['commentId'], receipt['planDigest'], receipt['schema']))
+        self.assertEqual((7, planned['planDigest'], 'app-deploy-approval/v2', 'deploy'), (receipt['commentId'], receipt['planDigest'], receipt['schema'], receipt['mode']))
         issue = self.github.data['issues/3']
         self.assertIn('APPROVE DEPLOY ' + planned['imageTag'], issue['body'])
         self.assertIn('Deploy ' + APP, issue['title'])
@@ -351,10 +354,29 @@ class ExecuteTests(DeployFixture):
         self.assertEqual(('UPDATE',), tuple(c[c.index('--change-set-type') + 1] for c in self.aws.ops('cloudformation', 'create-change-set')))
         self.assertEqual(planned['image'], self.aws.stack['parameters']['ApplicationImage'])
 
-    def test_unchanged_plan_touches_nothing_but_still_verifies_the_service(self):
+    def test_duplicate_image_verify_touches_nothing_and_skips_the_observation(self):
         self.aws.serving('b')
-        outcome = self.deployer(self.planned()).run()
-        self.assertEqual(['identity', 'unchanged', 'verified', 'observed'], [s['step'] for s in outcome['steps']])
+        planned = self.planned()
+        self.assertEqual((True, ['refresh', 'verify']), (planned['unchanged'], planned['choices']))
+        outcome = self.deployer(planned, mode='verify').run()
+        self.assertEqual((['identity', 'unchanged', 'verified'], 'verify'), ([s['step'] for s in outcome['steps']], outcome['mode']))
+        self.assertEqual([], self.aws.ops('cloudformation', 'create-change-set'))
+        self.assertTrue(any(line.startswith('verified: ') for line in self.logged), self.logged)
+
+    def test_duplicate_image_refresh_registers_a_new_revision_on_the_same_image_and_observes_briefly(self):
+        self.aws.serving('b')
+        planned = self.planned()
+        outcome = self.deployer(planned, mode='refresh').run()
+        self.assertEqual(['identity', 'refresh', 'change-set', 'executed', 'verified', 'observed'], [s['step'] for s in outcome['steps']])
+        self.assertEqual(('run-' + self.run, planned['image'], 5), (self.aws.stack['parameters']['RefreshToken'], self.aws.stack['parameters']['ApplicationImage'], outcome['steps'][-1]['minutes']))
+        self.assertEqual([('Task', 'Modify', 'True'), ('Service', 'Modify', 'False')], [(c['logical'], c['action'], c['replacement']) for c in outcome['steps'][2]['changes']])
+        self.assertEqual(5, sum(1 for line in self.logged if line.startswith('observation ')))
+
+    def test_a_mode_the_plan_does_not_offer_is_refused_before_any_aws_call(self):
+        planned = self.planned()
+        deployer = self.deployer(planned, mode='refresh')
+        with self.assertRaisesRegex(ValueError, 'not one this plan offers'):
+            deployer.run()
         self.assertEqual([], self.aws.ops('cloudformation', 'create-change-set'))
 
     def test_parking_scales_the_service_to_zero_without_a_probe(self):

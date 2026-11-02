@@ -72,10 +72,18 @@ scheduled scale-down from 2026-11-05). `01 · Full` always passes `1`.
    plan`, which reads the digest back from the immutable ECR tag, describes the stack (absent,
    updatable, or refused), renders the parameters and the resource preview, records the image and
    count currently serving, and writes `plan.json` with its digest (artifact `deploy-plan`). A plan
-   whose image and count already match the stack is recorded as `unchanged`.
+   whose image and count already match the stack is recorded as `unchanged` (a duplicate image) and offers
+   `refresh` and `verify` instead of `deploy` (`verify` only when the duplicate is a parked service).
 3. **Approve DEV deploy** (`approve-deploy`): no credentials; `deploy.py approve` opens the owner
    issue bound to that plan: `APPROVE DEPLOY <image tag>` (for example `web-v2026.11.01.14.00`)
-   within 40 minutes, `REJECT` stops; the plan digest is in the issue body and the receipt.
+   within 40 minutes, `REJECT` stops; the plan digest is in the issue body and the receipt. For a
+   **duplicate image** the issue title and first line carry a warning, the window is **5 minutes**, and
+   the answers are `APPROVE REFRESH <image tag>` (restart on the same image: the change set sets the
+   template parameter `RefreshToken` to `run-<run id>`, CloudFormation registers a new task definition
+   revision and ECS performs the rolling update; the new task re-reads its configuration and, for Domain,
+   the content release in S3), `APPROVE VERIFY <image tag>` (no AWS change, verification only, no
+   observation) or `REJECT`; no answer closes the issue with nothing done (user decision 2026-11-02).
+   The receipt records the chosen mode and the deploy job executes only that mode.
 4. **Deploy to DEV** (`deploy-dev`, environment `dev`): `deploy.py verify` rechecks the approval,
    the plan digest, the template and the configuration before OIDC; the deploy session
    `<app>-deploy-<run>-1` (60 minutes) runs `deploy.py execute`: one change set `app-<run>`
@@ -84,7 +92,9 @@ scheduled scale-down from 2026-11-05). `01 · Full` always passes `1`.
    one `HEALTHY` task whose container reports the approved image digest (`describe-tasks`; the deploy
    session is denied `DescribeTaskDefinition` by the Infra bundle and does not need it), a clean log window, service discovery listing
    the task (Web, Domain) or healthy target health (GW-BFF), and the observation window (service,
-   task and public probe every minute). For `desired_count` 0 it waits until the service runs zero
+   task and public probe every minute: 15 minutes after a deploy, `refreshObservationMinutes`, 5, after
+   a refresh, none after a verify). Each recorded step and each observation round prints one line to
+   the job log, so the long waits are visible. For `desired_count` 0 it waits until the service runs zero
    tasks. A stack that ends in a rollback state fails the run; the previous revision keeps serving.
    The result is retained whatever happened (`deploy-result`) and the approval issue is closed with
    the outcome.
