@@ -1,0 +1,67 @@
+package com.lookahead.domain.access;
+
+import com.lookahead.domain.cloud.CloudAdmissionCleanup;
+import com.lookahead.learning.content.exception.AccountFailure;
+import com.lookahead.learning.content.security.AccountPrincipal;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.UUID;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.ObjectMapper;
+
+/** DLV-969: the owner admits accounts that signed in but have no access yet. Roles go through the staff assignment. */
+@Service
+public class AccountAdmissionService {
+    public record Waiting(UUID accountId,String username,String displayName,String email,Instant requestedAt,Instant expiresAt) {}
+    public record WaitingList(List<Waiting> waiting,long expiryHours) {}
+    public record Request(String accountId,List<String> roles) {}
+    public record Admitted(UUID accountId,String username,String displayName,Instant admittedAt,List<String> roles) {}
+    private record Row(UUID accountId,String username,String displayName,String issuer,String subject,boolean admitted) {}
+    private final JdbcTemplate jdbc;
+    private final StaffAccessService access;
+    private final StaffAccessRepository staff;
+    private final ObjectMapper mapper;
+    public AccountAdmissionService(JdbcTemplate jdbc,StaffAccessService access,StaffAccessRepository staff,ObjectMapper mapper){this.jdbc=jdbc;this.access=access;this.staff=staff;this.mapper=mapper;}
+
+    public WaitingList waiting(AccountPrincipal actor) {
+        access.requireOwner(actor);
+        var rows=jdbc.query("SELECT account_id,username,display_name,verified_email,requested_at FROM cloud_accounts WHERE NOT admitted ORDER BY requested_at,account_id",(r,i)->{
+            Instant requested=r.getTimestamp("requested_at").toInstant();
+            return new Waiting(r.getObject("account_id",UUID.class),r.getString("username"),r.getString("display_name"),r.getString("verified_email"),requested,requested.plus(CloudAdmissionCleanup.WAITING_EXPIRY));
+        });
+        return new WaitingList(rows,CloudAdmissionCleanup.WAITING_EXPIRY.toHours());
+    }
+
+    @Transactional
+    public Admitted admit(AccountPrincipal actor,Request request) {
+        access.requireOwner(actor);
+        if(request==null||request.roles()==null||!StaffPermissions.ROLES.containsAll(request.roles()))throw invalid();
+        UUID accountId=accountId(request.accountId());
+        var roles=List.copyOf(new TreeSet<>(request.roles()));
+        var rows=jdbc.query("SELECT account_id,username,display_name,issuer,subject,admitted FROM cloud_accounts WHERE account_id=? FOR UPDATE",
+            (r,i)->new Row(r.getObject("account_id",UUID.class),r.getString("username"),r.getString("display_name"),r.getString("issuer"),r.getString("subject"),r.getBoolean("admitted")),accountId);
+        if(rows.isEmpty())throw new AccountFailure(404,"ACCOUNT_NOT_FOUND","No account with that id is waiting.");
+        Row row=rows.getFirst();
+        if(row.admitted)throw new AccountFailure(409,"ACCOUNT_ALREADY_ADMITTED","This account was already admitted.");
+        Instant admittedAt=jdbc.queryForObject("UPDATE cloud_accounts SET admitted=true,admitted_at=clock_timestamp(),admitted_by=? WHERE account_id=? RETURNING admitted_at",Timestamp.class,actor.accountId(),accountId).toInstant();
+        if(!roles.isEmpty()){
+            var existing=staff.forAccount(accountId);
+            access.save(actor,existing==null
+                ? new StaffAccessService.Change(UUID.randomUUID(),accountId,null,Set.copyOf(roles),Set.of(),false,0)
+                : new StaffAccessService.Change(existing.id(),accountId,null,Set.copyOf(roles),existing.topicGrants(),existing.fullCurriculum(),existing.revision()));
+        }
+        jdbc.update("INSERT INTO cloud_admission_events(id,account_id,issuer,subject,actor_id,action,roles) VALUES(?,?,?,?,?,'admit',?::jsonb)",
+            UUID.randomUUID(),accountId,row.issuer,row.subject,actor.accountId(),mapper.writeValueAsString(roles));
+        return new Admitted(accountId,row.username,row.displayName,admittedAt,roles);
+    }
+    private static UUID accountId(String value) {
+        try {if(value==null)throw invalid();UUID id=UUID.fromString(value);if(!id.toString().equals(value))throw invalid();return id;}
+        catch(IllegalArgumentException malformed){throw invalid();}
+    }
+    private static AccountFailure invalid(){return new AccountFailure(422,"INVALID_ADMISSION","Check the account id and roles.");}
+}

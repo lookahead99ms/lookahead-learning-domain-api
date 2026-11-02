@@ -42,7 +42,7 @@ public class AdminAccountDirectory {
             boolean eligible=!owner&&!test;
             return new Row(account.accountId(),account.username(),account.displayName(),account.email(),roles,test,full,summary,
                 eligible&&(privileged||purchases||grants||!"Free".equals(summary.label())),
-                eligible&&localPolicy.enabled()&&!privileged&&!purchases&&!grants&&"Free".equals(summary.label()));
+                eligible&&localPolicy.local()&&!privileged&&!purchases&&!grants&&"Free".equals(summary.label()));
         }).toList();
         return new Page(rows,source.page(),source.hasNext());
     }

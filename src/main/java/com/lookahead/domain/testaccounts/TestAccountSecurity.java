@@ -23,7 +23,7 @@ public class TestAccountSecurity {
     SecurityFilterChain testAccountSecurityChain(HttpSecurity http, Environment environment, TestAccountPolicy policy) throws Exception {
         String secret = environment.getProperty("app.test-accounts.operator-secret", "");
         if (environment.getProperty("app.test-accounts.enabled", Boolean.class, false)) {
-            policy.requireEnabled();
+            policy.requireLocal();
             if (secret.length() < 32 || secret.equals(environment.getProperty("app.identity.verifier-secret"))
                     || secret.equals(environment.getProperty("app.oauth.client-secret")))
                 throw new IllegalStateException("Test account maintenance requires a separate operator secret.");
@@ -31,7 +31,7 @@ public class TestAccountSecurity {
         byte[] expected = secret.getBytes(StandardCharsets.UTF_8);
         var provider = new AuthenticationProvider() {
             @Override public Authentication authenticate(Authentication request) {
-                try { policy.requireEnabled(); }
+                try { policy.requireLocal(); }
                 catch (com.lookahead.learning.content.exception.AccountFailure disabled) {
                     throw new BadCredentialsException("Test account maintenance is disabled");
                 }

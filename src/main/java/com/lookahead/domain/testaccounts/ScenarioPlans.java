@@ -33,7 +33,7 @@ public class ScenarioPlans {
         this.hashes=hashes;this.json=json;this.policy=policy;this.customPath=customPath;
     }
     public void populate(UUID owner,LearnerScenario scenario,Instant now){
-        policy.requireEnabled();
+        policy.requireLocal();
         if(scenario.planKind()==LearnerScenario.PlanKind.NONE)return;
         if(scenario.planKind()==LearnerScenario.PlanKind.CUSTOM){
             JsonNode input=custom(scenario.number()==9||scenario.number()==18?"customGrow":"customLearn");

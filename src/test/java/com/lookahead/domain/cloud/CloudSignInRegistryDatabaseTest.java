@@ -8,7 +8,11 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.*;
+import com.lookahead.domain.access.AccountAdmissionService;
+import com.lookahead.domain.access.StaffAccessRepository;
+import com.lookahead.domain.access.StaffAccessService;
 import static org.assertj.core.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 @EnabledIfEnvironmentVariable(named="CLOUD_AUTH_TEST_DATABASE_URL",matches=".+")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -24,8 +28,12 @@ class CloudSignInRegistryDatabaseTest {
         if(admin.queryForObject("SELECT count(*) FROM pg_roles WHERE rolname='lookahead_platform_app'",Integer.class)==0)admin.execute("CREATE ROLE lookahead_platform_app NOLOGIN");
         source=new DriverManagerDataSource(url+"?currentSchema="+schema,"postgres",password);jdbc=new JdbcTemplate(source);
         jdbc.execute("GRANT USAGE ON SCHEMA "+schema+" TO lookahead_platform_app");
-        jdbc.execute("CREATE TABLE platform_subjects(id uuid PRIMARY KEY)");jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V4__cloud_identity_and_sign_ins.sql")));
+        jdbc.execute("CREATE TABLE platform_subjects(id uuid PRIMARY KEY)");jdbc.execute("GRANT SELECT,INSERT,UPDATE,DELETE ON platform_subjects TO lookahead_platform_app");
+        jdbc.execute("CREATE FUNCTION reject_author_review_mutation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'append-only'; END; $$");
+        jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V4__cloud_identity_and_sign_ins.sql")));
+        jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V6__staff_access.sql")));
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V7__cloud_account_preferences.sql")));
+        jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V17__dev_access_admission.sql")));
         registry=service();
     }
     CloudSignInRegistry service(){return new CloudSignInRegistry(jdbc,new DataSourceTransactionManager(source));}
@@ -113,11 +121,20 @@ class CloudSignInRegistryDatabaseTest {
         assertThatThrownBy(()->registry.admit(a,p)).isInstanceOf(RuntimeException.class);assertThat(registry.inventory(fresh,p).entries()).hasSize(1);
         registry.terminate(fresh,p);assertThatThrownBy(()->service().authenticate(fresh,p)).isInstanceOf(RuntimeException.class);
     }
-    @Test void applicationRoleCannotElevateAdmissionOrAuthor(){
-        assertThat(jdbc.queryForObject("SELECT has_table_privilege('lookahead_platform_app','cloud_accounts','INSERT')",Boolean.class)).isFalse();
+    @Test void applicationRoleCannotElevateEnabledOrAuthor(){
         assertThat(jdbc.queryForObject("SELECT has_column_privilege('lookahead_platform_app','cloud_accounts','enabled','UPDATE')",Boolean.class)).isFalse();
-        assertThat(jdbc.queryForObject("SELECT has_column_privilege('lookahead_platform_app','cloud_accounts','admitted','UPDATE')",Boolean.class)).isFalse();
         assertThat(jdbc.queryForObject("SELECT has_column_privilege('lookahead_platform_app','cloud_accounts','author_access','UPDATE')",Boolean.class)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT has_column_privilege('lookahead_platform_app','cloud_accounts','issuer','UPDATE')",Boolean.class)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT has_column_privilege('lookahead_platform_app','cloud_accounts','subject','UPDATE')",Boolean.class)).isFalse();
+    }
+    /** V17 (DLV-969): the application records first contacts, admits waiting rows and removes expired ones; nothing more. */
+    @Test void applicationRoleHoldsExactlyTheAdmissionGrants(){
+        for(String privilege:List.of("SELECT","INSERT","DELETE"))assertThat(jdbc.queryForObject("SELECT has_table_privilege('lookahead_platform_app','cloud_accounts',?)",Boolean.class,privilege)).as(privilege).isTrue();
+        for(String column:List.of("admitted","admitted_at","admitted_by","requested_at","verified_email","username","display_name","credential_change_pending"))
+            assertThat(jdbc.queryForObject("SELECT has_column_privilege('lookahead_platform_app','cloud_accounts',?,'UPDATE')",Boolean.class,column)).as(column).isTrue();
+        assertThat(jdbc.queryForObject("SELECT has_table_privilege('lookahead_platform_app','cloud_accounts','UPDATE')",Boolean.class)).isFalse();
+        for(String privilege:List.of("SELECT","INSERT"))assertThat(jdbc.queryForObject("SELECT has_table_privilege('lookahead_platform_app','cloud_admission_events',?)",Boolean.class,privilege)).as(privilege).isTrue();
+        for(String privilege:List.of("UPDATE","DELETE","TRUNCATE"))assertThat(jdbc.queryForObject("SELECT has_table_privilege('lookahead_platform_app','cloud_admission_events',?)",Boolean.class,privilege)).as(privilege).isFalse();
     }
     @Test void explicitAdministrationKeepsStableIdentityAndDisableNeverRevivesOldSessions(){
         var tx=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source));
@@ -148,8 +165,140 @@ class CloudSignInRegistryDatabaseTest {
             registry.terminate(identity,proof);return null;
         });
         assertThatThrownBy(()->registry.authenticate(identity,proof)).isInstanceOf(RuntimeException.class);
-        assertThatThrownBy(()->tx.execute(status->{jdbc.execute("SET LOCAL ROLE lookahead_platform_app");jdbc.update("UPDATE cloud_accounts SET admitted=true WHERE issuer=? AND subject=?",issuer,identity.subject());return null;}))
+        assertThatThrownBy(()->tx.execute(status->{jdbc.execute("SET LOCAL ROLE lookahead_platform_app");jdbc.update("UPDATE cloud_accounts SET author_access=true WHERE issuer=? AND subject=?",issuer,identity.subject());return null;}))
             .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(()->tx.execute(status->{jdbc.execute("SET LOCAL ROLE lookahead_platform_app");jdbc.update("UPDATE cloud_accounts SET enabled=false WHERE issuer=? AND subject=?",issuer,identity.subject());return null;}))
+            .isInstanceOf(org.springframework.dao.DataAccessException.class);
+    }
+    // ---- DLV-969: first contact, owner admission and the 48-hour cleanup ----
+    CognitoIdentity contact(String subject,String email){return new CognitoIdentity(issuer,subject,UUID.randomUUID().toString(),subject+"@example.invalid","Waiting "+subject,Instant.now(),email);}
+    static void failsWith(org.assertj.core.api.ThrowableAssert.ThrowingCallable call,int status,String code){
+        assertThatThrownBy(call).isInstanceOfSatisfying(com.lookahead.learning.content.exception.AccountFailure.class,f->{assertThat(f.status()).isEqualTo(status);assertThat(f.code()).isEqualTo(code);});
+    }
+    UUID firstContact(CognitoIdentity identity){
+        failsWith(()->service().admit(identity,proof()),403,"ACCOUNT_ADMISSION_REQUIRED");
+        return jdbc.queryForObject("SELECT account_id FROM cloud_accounts WHERE issuer=? AND subject=?",UUID.class,identity.issuer(),identity.subject());
+    }
+    int events(UUID account,String action){return jdbc.queryForObject("SELECT count(*) FROM cloud_admission_events WHERE account_id=? AND action=?",Integer.class,account,action);}
+    AccountAdmissionService admission(){
+        var owner=new com.lookahead.learning.content.security.LocalAuthorAccess(new org.springframework.mock.env.MockEnvironment().withProperty("app.deployment-environment","dev"));
+        var catalog=mock(com.lookahead.learning.content.validator.SnapshotValidator.class);when(catalog.allTopicIds()).thenReturn(Set.of("java"));
+        var staff=new StaffAccessRepository(jdbc,new tools.jackson.databind.ObjectMapper());
+        return new AccountAdmissionService(jdbc,new StaffAccessService(staff,owner,catalog),staff,new tools.jackson.databind.ObjectMapper());
+    }
+    @Test void firstContactRecordsOneWaitingRowUntilTheOwnerAdmitsIt(){
+        var a=contact("first-contact","first-contact@example.invalid");String p=proof();
+        UUID id=firstContact(a);
+        var row=jdbc.queryForMap("SELECT admitted,enabled,author_access,requested_at,admitted_at,admitted_by,verified_email,username,display_name FROM cloud_accounts WHERE account_id=?",id);
+        assertThat(row).containsEntry("admitted",false).containsEntry("enabled",true).containsEntry("author_access",false)
+            .containsEntry("verified_email","first-contact@example.invalid").containsEntry("username",a.username()).containsEntry("display_name",a.displayName());
+        assertThat(row.get("requested_at")).isNotNull();assertThat(row.get("admitted_at")).isNull();assertThat(row.get("admitted_by")).isNull();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM platform_subjects WHERE id=?",Integer.class,id)).isEqualTo(1);
+        assertThat(events(id,"request")).isEqualTo(1);
+        // A later attempt before admission refreshes the claims, never duplicates the row and still answers 403.
+        var renamed=new CognitoIdentity(issuer,a.subject(),UUID.randomUUID().toString(),"renamed@example.invalid","Renamed",Instant.now(),"renamed@example.invalid");
+        failsWith(()->service().admit(renamed,p),403,"ACCOUNT_ADMISSION_REQUIRED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE issuer=? AND subject=?",Integer.class,issuer,a.subject())).isEqualTo(1);
+        assertThat(jdbc.queryForMap("SELECT username,display_name,verified_email FROM cloud_accounts WHERE account_id=?",id)).containsEntry("username","renamed@example.invalid").containsEntry("display_name","Renamed").containsEntry("verified_email","renamed@example.invalid");
+        assertThat(events(id,"request")).isEqualTo(1);
+        // Waiting rows carry no session; other calls do not admit and never create rows.
+        failsWith(()->registry.authenticate(renamed,p),401,"AUTHENTICATION_REQUIRED");
+        var stranger=identity("never-contacted");
+        failsWith(()->registry.authenticate(stranger,proof()),403,"ACCOUNT_ADMISSION_REQUIRED");
+        failsWith(()->registry.inventory(stranger,proof()),403,"ACCOUNT_ADMISSION_REQUIRED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE subject=?",Integer.class,stranger.subject())).isZero();
+        // Disabled rows keep answering 401 even on the sign-in path.
+        jdbc.update("UPDATE cloud_accounts SET enabled=false WHERE account_id=?",id);
+        failsWith(()->service().admit(renamed,p),401,"AUTHENTICATION_REQUIRED");
+        jdbc.update("UPDATE cloud_accounts SET enabled=true,admitted=true WHERE account_id=?",id);
+        assertThat(service().admit(renamed,p).signInId()).isNotNull();
+        var principal=registry.authenticate(renamed,p);
+        assertThat(principal.accountId()).isEqualTo(id);assertThat(principal.verifiedEmail()).isEqualTo("renamed@example.invalid");
+    }
+    @Test void concurrentFirstContactsCreateExactlyOneWaitingRow()throws Exception{
+        var identities=List.of(contact("race-contact",null),contact("race-contact",null),contact("race-contact",null));
+        try(var pool=Executors.newFixedThreadPool(3)){
+            var latch=new CountDownLatch(1);var tasks=new ArrayList<Future<RuntimeException>>();
+            for(var id:identities)tasks.add(pool.submit(()->{latch.await();try{service().admit(id,proof());return null;}catch(RuntimeException expected){return expected;}}));latch.countDown();
+            for(var t:tasks)assertThat(t.get(10,TimeUnit.SECONDS)).isInstanceOfSatisfying(com.lookahead.learning.content.exception.AccountFailure.class,f->assertThat(f.code()).isEqualTo("ACCOUNT_ADMISSION_REQUIRED"));
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE issuer=? AND subject=?",Integer.class,issuer,"race-contact")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_admission_events WHERE subject=? AND action='request'",Integer.class,"race-contact")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT verified_email FROM cloud_accounts WHERE issuer=? AND subject=?",String.class,issuer,"race-contact")).isNull();
+    }
+    @Test void runtimeRoleRecordsFirstContactAndRunsTheCleanupWithTheV17Grants(){
+        var tx=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source));
+        var a=contact("runtime-contact","runtime@example.invalid");
+        tx.execute(status->{jdbc.execute("SET LOCAL ROLE lookahead_platform_app");failsWith(()->registry.admit(a,proof()),403,"ACCOUNT_ADMISSION_REQUIRED");return null;});
+        UUID id=jdbc.queryForObject("SELECT account_id FROM cloud_accounts WHERE issuer=? AND subject=?",UUID.class,issuer,a.subject());
+        assertThat(events(id,"request")).isEqualTo(1);
+        jdbc.update("UPDATE cloud_accounts SET requested_at=clock_timestamp()-interval '49 hours' WHERE account_id=?",id);
+        int removed=tx.execute(status->{jdbc.execute("SET LOCAL ROLE lookahead_platform_app");return new CloudAdmissionCleanup(jdbc,new DataSourceTransactionManager(source)).expire();});
+        assertThat(removed).isGreaterThanOrEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE account_id=?",Integer.class,id)).isZero();
+        assertThat(events(id,"expire")).isEqualTo(1);
+    }
+    @Test void ownerAdmissionMarksTheRowAssignsRolesAndIsRecordedOnce(){
+        var service=admission();UUID ownerId=provision(identity("admitting-owner"));
+        var owner=new com.lookahead.learning.content.security.AccountPrincipal(ownerId,"owner","Owner",true,true);
+        var learner=new com.lookahead.learning.content.security.AccountPrincipal(provision(identity("plain-learner")),"learner","Learner",true,false);
+        UUID waiting=firstContact(contact("to-admit","to-admit@example.invalid"));
+        var listed=service.waiting(owner);
+        assertThat(listed.expiryHours()).isEqualTo(48);
+        var entry=listed.waiting().stream().filter(w->w.accountId().equals(waiting)).findFirst().orElseThrow();
+        assertThat(entry.email()).isEqualTo("to-admit@example.invalid");assertThat(entry.expiresAt()).isEqualTo(entry.requestedAt().plus(CloudAdmissionCleanup.WAITING_EXPIRY));
+        failsWith(()->service.waiting(learner),403,"OWNER_REQUIRED");
+        failsWith(()->service.admit(learner,new AccountAdmissionService.Request(waiting.toString(),List.of())),403,"OWNER_REQUIRED");
+        failsWith(()->service.admit(owner,new AccountAdmissionService.Request(UUID.randomUUID().toString(),List.of())),404,"ACCOUNT_NOT_FOUND");
+        var tx=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source));
+        var admitted=tx.execute(status->service.admit(owner,new AccountAdmissionService.Request(waiting.toString(),List.of("tester","reviewer"))));
+        assertThat(admitted.accountId()).isEqualTo(waiting);assertThat(admitted.roles()).containsExactly("reviewer","tester");assertThat(admitted.admittedAt()).isNotNull();
+        var row=jdbc.queryForMap("SELECT admitted,admitted_at,admitted_by FROM cloud_accounts WHERE account_id=?",waiting);
+        assertThat(row).containsEntry("admitted",true).containsEntry("admitted_by",ownerId);assertThat(row.get("admitted_at")).isNotNull();
+        assertThat(jdbc.queryForObject("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,waiting)).contains("reviewer").contains("tester");
+        assertThat(jdbc.queryForObject("SELECT roles::text FROM cloud_admission_events WHERE account_id=? AND action='admit'",String.class,waiting)).isEqualTo("[\"reviewer\", \"tester\"]");
+        assertThat(jdbc.queryForObject("SELECT actor_id FROM cloud_admission_events WHERE account_id=? AND action='admit'",UUID.class,waiting)).isEqualTo(ownerId);
+        assertThat(service.waiting(owner).waiting()).noneMatch(w->w.accountId().equals(waiting));
+        failsWith(()->tx.execute(status->service.admit(owner,new AccountAdmissionService.Request(waiting.toString(),List.of()))),409,"ACCOUNT_ALREADY_ADMITTED");
+        assertThat(events(waiting,"admit")).isEqualTo(1);
+        // A rejected assignment rolls the admission back as one transaction.
+        UUID second=firstContact(contact("to-admit-rollback",null));
+        var conflicting=new AccountAdmissionService(jdbc,new StaffAccessService(new StaffAccessRepository(jdbc,new tools.jackson.databind.ObjectMapper()),
+            new com.lookahead.learning.content.security.LocalAuthorAccess(new org.springframework.mock.env.MockEnvironment().withProperty("app.deployment-environment","dev")),
+            mock(com.lookahead.learning.content.validator.SnapshotValidator.class)){
+            @Override public StaffAccessRepository.Assignment save(com.lookahead.learning.content.security.AccountPrincipal actor,Change change){throw new com.lookahead.learning.content.exception.AccountFailure(409,"ACCESS_ASSIGNMENT_CONFLICT","synthetic");}
+        },new StaffAccessRepository(jdbc,new tools.jackson.databind.ObjectMapper()),new tools.jackson.databind.ObjectMapper());
+        failsWith(()->tx.execute(status->conflicting.admit(owner,new AccountAdmissionService.Request(second.toString(),List.of("admin")))),409,"ACCESS_ASSIGNMENT_CONFLICT");
+        assertThat(jdbc.queryForObject("SELECT admitted FROM cloud_accounts WHERE account_id=?",Boolean.class,second)).isFalse();
+        assertThat(events(second,"admit")).isZero();
+    }
+    @Test void cleanupRemovesOnlyExpiredWaitingRowsAndAdmittedRowsAreNeverDeleted()throws Exception{
+        UUID expired=firstContact(contact("expired-waiting","expired@example.invalid"));
+        UUID fresh=firstContact(contact("fresh-waiting",null));
+        UUID admitted=provision(identity("admitted-long-ago"));
+        jdbc.update("UPDATE cloud_accounts SET requested_at=clock_timestamp()-interval '3 days' WHERE account_id IN (?,?)",expired,admitted);
+        var cleanup=new CloudAdmissionCleanup(jdbc,new DataSourceTransactionManager(source));
+        // While another connection holds the advisory lock the run does nothing.
+        var held=new CountDownLatch(1);var release=new CountDownLatch(1);
+        try(var pool=Executors.newSingleThreadExecutor()){
+            var holder=pool.submit(()->new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source)).execute(status->{
+                jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?,0))",rs->{},CloudAdmissionCleanup.LOCK);held.countDown();
+                try{release.await(10,TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}return null;}));
+            assertThat(held.await(10,TimeUnit.SECONDS)).isTrue();
+            assertThat(cleanup.expire()).isZero();
+            release.countDown();holder.get(10,TimeUnit.SECONDS);
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE account_id=?",Integer.class,expired)).isEqualTo(1);
+        assertThat(cleanup.expire()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE account_id=?",Integer.class,expired)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM platform_subjects WHERE id=?",Integer.class,expired)).isZero();
+        assertThat(events(expired,"expire")).isEqualTo(1);assertThat(events(expired,"request")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE account_id IN (?,?)",Integer.class,fresh,admitted)).isEqualTo(2);
+        assertThat(cleanup.expire()).isZero();
+        assertThatThrownBy(()->jdbc.update("DELETE FROM cloud_accounts WHERE account_id=?",admitted)).isInstanceOf(org.springframework.dao.DataAccessException.class).hasMessageContaining("never deleted");
+        assertThatThrownBy(()->jdbc.update("DELETE FROM cloud_admission_events WHERE account_id=?",expired)).isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(()->jdbc.update("UPDATE cloud_admission_events SET action='admit' WHERE account_id=?",expired)).isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE account_id=?",Integer.class,admitted)).isEqualTo(1);
     }
     @Test void passwordChangeCommitsRevocationEvenWhenProviderSignOutFails(){
         var a=identity("password-owner");provision(a);String proof=proof();registry.admit(a,proof);

@@ -44,7 +44,7 @@ public class RealAccountMaintenance {
     }
 
     public void deleteLearner(AccountPrincipal actor, UUID id, Confirmation request) {
-        localPolicy.requireEnabled();
+        localPolicy.requireLocal();
         staff.requireOwner(actor);
         requireOther(actor,id);
         if(request==null||!"DELETE".equals(request.confirmation()))throw confirmation();

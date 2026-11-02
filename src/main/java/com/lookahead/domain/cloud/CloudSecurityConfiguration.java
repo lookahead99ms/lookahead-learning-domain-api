@@ -43,6 +43,7 @@ public class CloudSecurityConfiguration {
     }
     @Bean CognitoTokenVerifier cognitoVerifier(CognitoSettings settings,CognitoIdentityProviderClient client){return new CognitoTokenVerifier(settings,client);}
     @Bean CloudSignInRegistry cloudSignIns(JdbcTemplate jdbc,PlatformTransactionManager manager){return new CloudSignInRegistry(jdbc,manager);}
+    @Bean CloudAdmissionCleanup cloudAdmissionCleanup(JdbcTemplate jdbc,PlatformTransactionManager manager){return new CloudAdmissionCleanup(jdbc,manager);}
     @Bean CloudDomainTokenConverter cloudAuthenticationConverter(CognitoTokenVerifier verifier,CloudSignInRegistry registry,HttpServletRequest request){return new CloudDomainTokenConverter(verifier,registry,request);}
     @Bean JwtDecoder cloudDecoder(CognitoSettings settings){
         var client=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).followRedirects(HttpClient.Redirect.NEVER).build();

@@ -13,7 +13,7 @@ import org.springframework.web.client.RestClient;
 
 /** Local-only operator boundary; credentials never reach a browser response. */
 @Component
-public class TestIdentityOperator {
+public class TestIdentityOperator implements TestIdentity {
     private final RestClient client;
     private final String upstream;
     private final String secret;
@@ -27,11 +27,12 @@ public class TestIdentityOperator {
         factory.setReadTimeout(identity.readTimeout());
         client = RestClient.builder().requestFactory(factory).build();
     }
-    void provision(UUID id, String username, String password) {
+    @Override public String provision(UUID id, String username, String password) {
         call("provision", Map.of("accountId", id, "username", username, "password", password));
+        return null;
     }
-    void activate(UUID id, String username) { call("activate", Map.of("accountId", id, "username", username)); }
-    void disable(UUID id, String username) { call("disable", Map.of("accountId", id, "username", username)); }
+    @Override public void activate(UUID id, String username) { call("activate", Map.of("accountId", id, "username", username)); }
+    @Override public void disable(UUID id, String username) { call("disable", Map.of("accountId", id, "username", username)); }
     public void disableReal(UUID id) { call("disable-real", Map.of("accountId", id)); }
     private void call(String operation, Map<String, ?> body) {
         if (client == null || secret.length() < 32) throw unavailable();
@@ -41,7 +42,7 @@ public class TestIdentityOperator {
                     .body(body).retrieve().toBodilessEntity();
         } catch (RuntimeException failure) { throw unavailable(); }
     }
-    private static AccountFailure unavailable() {
+    static AccountFailure unavailable() {
         return new AccountFailure(503, "TEST_IDENTITY_UNAVAILABLE", "Identity did not confirm test-account maintenance. Retry the same action.");
     }
 }

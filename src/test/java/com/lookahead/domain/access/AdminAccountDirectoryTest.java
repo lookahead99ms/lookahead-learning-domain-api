@@ -20,7 +20,7 @@ class AdminAccountDirectoryTest {
  @Test void joinsIdentityWithCurrentDomainRolesAndAccessWithoutWrites() {
   var directory=mock(AccountDirectory.class);var access=mock(StaffAccessService.class);var staff=mock(StaffAccessRepository.class);
   var summaries=mock(AccessSummaryService.class);var jdbc=mock(JdbcTemplate.class);
-  var localPolicy=mock(TestAccountPolicy.class);when(localPolicy.enabled()).thenReturn(true);
+  var localPolicy=mock(TestAccountPolicy.class);when(localPolicy.local()).thenReturn(true);
   var actor=new AccountPrincipal(UUID.randomUUID(),"owner","Owner",true);UUID real=UUID.randomUUID(),admin=UUID.randomUUID();
   when(directory.list("",0)).thenReturn(new AccountDirectory.Page(List.of(new AccountDirectory.Account(actor.accountId(),"owner","Owner",null),new AccountDirectory.Account(real,"real","Real","real@example.test"),new AccountDirectory.Account(admin,"admin","Admin",null)),0,false));
   when(staff.forAccount(admin)).thenReturn(new StaffAccessRepository.Assignment(UUID.randomUUID(),admin,null,Set.of("admin"),Set.of(),false,1));
