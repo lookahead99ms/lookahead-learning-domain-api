@@ -21,6 +21,7 @@
   },
   "targetGroupArn": null,
   "observationMinutes": 15,
+  "refreshObservationMinutes": 5,
   "probeUrl": "https://dev.devlookahead.com/",
   "parameters": {
     "Cluster": "arn:aws:ecs:us-east-2:509614632283:cluster/lookahead-dev-cluster",

@@ -31,8 +31,8 @@ WORKFLOW = '.github/workflows/deploy-dev.yml'
 # call keeps the caller's workflow ref, run path and event (push or dispatch).
 DEPLOY_WORKFLOWS = (WORKFLOW, '.github/workflows/release.yml', '.github/workflows/publish.yml')
 SCHEMA_CONFIG = 'lookahead-app-deploy-config/v2'
-SCHEMA_PLAN = 'app-deploy-plan/v2'
-SCHEMA_RECEIPT = 'app-deploy-approval/v1'
+SCHEMA_PLAN = 'app-deploy-plan/v3'
+SCHEMA_RECEIPT = 'app-deploy-approval/v2'
 SCHEMA_RESULT = 'app-deploy-result/v2'
 TERMINAL_OK = {'CREATE_COMPLETE', 'UPDATE_COMPLETE'}
 TERMINAL_BAD = {'CREATE_FAILED', 'ROLLBACK_COMPLETE', 'ROLLBACK_FAILED', 'UPDATE_ROLLBACK_COMPLETE', 'UPDATE_ROLLBACK_FAILED',
@@ -44,7 +44,7 @@ REVIEW = 'REVIEW_IN_PROGRESS'
 NO_CHANGES = "didn't contain changes"
 CONFIG_KEYS = {'schema', 'app', 'service', 'account', 'region', 'imageRepository', 'deployRoleArn', 'cloudFormationRoleArn',
                'sessionPrefix', 'cluster', 'clusterName', 'stack', 'logGroup', 'namespaceName', 'discovery', 'targetGroupArn',
-               'observationMinutes', 'probeUrl', 'parameters', 'logFailurePatterns'}
+               'observationMinutes', 'refreshObservationMinutes', 'probeUrl', 'parameters', 'logFailurePatterns'}
 require = owner.require
 digest = owner.digest
 
@@ -97,6 +97,7 @@ def loadConfig(root):
     require(re.fullmatch('[0-9]{12}', config['account']) and config['region'] == 'us-east-2', 'DEV account and region required')
     require(re.fullmatch(r'lookahead-dev-[a-z]+', config['stack']), 'Single-service stack name required')
     require(isinstance(config['observationMinutes'], int) and 1 <= config['observationMinutes'] <= 60, 'Observation window 1..60 minutes')
+    require(isinstance(config['refreshObservationMinutes'], int) and 1 <= config['refreshObservationMinutes'] <= 60, 'Refresh observation window 1..60 minutes')
     discovery, group = config['discovery'], config['targetGroupArn']
     require((discovery is None) != (group is None), 'Exactly one of discovery (Web, Domain) or targetGroupArn (Gateway) is required')
     if discovery is not None:
@@ -110,8 +111,8 @@ def loadTemplate(root):
     require(len(text) <= 51200, 'Template must fit the CloudFormation inline body limit')
     template = json.loads(text, object_pairs_hook=owner.unique)
     params = template.get('Parameters', {})
-    require({'ApplicationImage', 'DesiredCount'} <= set(params) and 'Slot' not in params and set(template.get('Resources', {})) <= {'Task', 'Service'},
-            'Single-service template with ApplicationImage and DesiredCount and only Task/Service resources required')
+    require({'ApplicationImage', 'DesiredCount', 'RefreshToken'} <= set(params) and 'Slot' not in params and set(template.get('Resources', {})) <= {'Task', 'Service'},
+            'Single-service template with ApplicationImage, DesiredCount, RefreshToken and only Task/Service resources required')
     return text, template
 
 
@@ -169,9 +170,9 @@ def stackState(call, name):
             'parameters': {row['ParameterKey']: row.get('ParameterValue') for row in stack.get('Parameters', [])}}
 
 
-def parameters(config, image, count):
+def parameters(config, image, count, refresh='none'):
     rendered = dict(config['parameters'])
-    rendered.update({'ApplicationImage': image, 'DesiredCount': str(count)})
+    rendered.update({'ApplicationImage': image, 'DesiredCount': str(count), 'RefreshToken': refresh})
     if config['discovery'] is not None:
         rendered['DiscoveryServiceArn'] = config['discovery']['serviceArn']
     if config['targetGroupArn'] is not None:
@@ -191,8 +192,14 @@ def serviceCounts(call, config):
             'rolloutState': primary.get('rolloutState'), 'taskDefinition': primary.get('taskDefinition')}
 
 
-def resourceRows(config, state, count, current):
+def resourceRows(config, state, count, current, unchanged=False):
     first = state is None
+    if unchanged:
+        return [{'action': 'Modify only on REFRESH', 'type': 'AWS::CloudFormation::Stack', 'consoleName': config['stack'],
+                 'note': 'duplicate image: the stack already runs this image at DesiredCount ' + str(count) + '. APPROVE REFRESH registers a new task definition revision '
+                         '(same image, new refresh token) and ECS restarts the task; APPROVE VERIFY and REJECT change nothing'},
+                {'action': 'Modify only on REFRESH', 'type': 'AWS::ECS::Service', 'consoleName': config['stack'],
+                 'note': 'rolling restart of the one task only on REFRESH (surge to two, old task drained once the new one is healthy)'}]
     rows = [{'action': 'Create' if first else 'Modify', 'type': 'AWS::CloudFormation::Stack', 'consoleName': config['stack'],
              'note': 'change set app-<run>: ' + ('first creation of the stack' if first else 'new task definition revision and DesiredCount ' + str(count))},
             {'action': 'Create' if first else 'Modify', 'type': 'AWS::ECS::Service', 'consoleName': config['stack'],
@@ -214,17 +221,19 @@ def plan(env, call, root, get=owner.api, now=None):
             'Stack ' + config['stack'] + ' is not updatable: ' + str(state and state['status']) + ' (manual recovery, see README)')
     exists = state is not None and state['status'] != REVIEW
     current = state['parameters'] if exists else {}
-    rendered = parameters(config, image, count)
+    rendered = parameters(config, image, count, current.get('RefreshToken', 'none') if exists else 'none')
     unchanged = exists and all(current.get(k) == v for k, v in rendered.items())
+    # A duplicate image offers a restart (refresh) or a verification only; a parked duplicate can only be verified.
+    choices = (['refresh', 'verify'] if count == 1 else ['verify']) if unchanged else ['deploy']
     result = {'schema': SCHEMA_PLAN, **release, 'image': image, 'desiredCount': count, 'account': config['account'], 'region': config['region'],
               'deployRoleArn': config['deployRoleArn'], 'cloudFormationRoleArn': config['cloudFormationRoleArn'],
               'sessionName': config['sessionPrefix'] + '-' + release['runId'] + '-1', 'stack': config['stack'], 'stackExists': exists,
-              'unchanged': unchanged, 'changeSet': 'app-' + release['runId'], 'parameters': rendered,
+              'unchanged': unchanged, 'choices': choices, 'refreshToken': 'run-' + release['runId'], 'changeSet': 'app-' + release['runId'], 'parameters': rendered,
               'currentImage': current.get('ApplicationImage'), 'currentDesiredCount': current.get('DesiredCount'),
-              'observationMinutes': config['observationMinutes'], 'probeUrl': config['probeUrl'],
+              'observationMinutes': config['observationMinutes'], 'refreshObservationMinutes': config['refreshObservationMinutes'], 'probeUrl': config['probeUrl'],
               'templateSha256': hashlib.sha256(templateText.encode()).hexdigest(),
               'configSha256': hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest(),
-              'resources': resourceRows(config, state if exists else None, count, current), 'plannedAt': utc(now).isoformat()}
+              'resources': resourceRows(config, state if exists else None, count, current, unchanged), 'plannedAt': utc(now).isoformat()}
     result['planDigest'] = digest({k: v for k, v in result.items() if k != 'planDigest'})
     return result
 
@@ -239,16 +248,28 @@ def validatePlan(planned, env, root, get=owner.api):
     require(re.fullmatch('sha256:[a-f0-9]{64}', planned.get('image', '').rsplit('@', 1)[-1]), 'Image digest required')
 
 
+def approvalCommands(planned):
+    """One comment per allowed answer: `APPROVE DEPLOY <tag>` for a changed plan; `APPROVE REFRESH <tag>` (restart on the same image)
+    and `APPROVE VERIFY <tag>` (verification only) for a duplicate image (user decision 2026-11-02). The comment names the image
+    version as ECR shows it (user decision 2026-10-28); the plan digest binds the exact plan through the issue body and the receipt."""
+    return {mode: 'APPROVE ' + mode.upper() + ' ' + planned['imageTag'] for mode in planned['choices']}
+
+
 def approvalCommand(planned):
-    # The comment names the image version as ECR shows it (user decision 2026-10-28); the plan digest binds the exact plan
-    # through the issue body and the receipt.
-    return 'APPROVE DEPLOY ' + planned['imageTag']
+    return approvalCommands(planned)[planned['choices'][0]]
+
+
+def approvalWindow(planned):
+    """A duplicate image is usually an accident: five minutes to answer, then the issue closes with nothing done (user decision 2026-11-02)."""
+    return timedelta(minutes=5 if planned['unchanged'] else 40)
 
 
 def headline(planned):
     action = 'Deploy ' + planned['app'] if planned['desiredCount'] == 1 else 'Park ' + planned['app']
     change = ('rolling update of ' + planned['stack'] if planned['stackExists'] else 'first start of ' + planned['stack']) if planned['desiredCount'] == 1 \
         else planned['stack'] + ' to zero tasks'
+    if planned['unchanged']:
+        change = 'DUPLICATE IMAGE, ' + planned['stack'] + ' already runs it: ' + (' or '.join(planned['choices']) + ' or reject')
     return {'env': 'DEV', 'action': action, 'subject': planned['imageTag'], 'change': change}
 
 
@@ -266,6 +287,17 @@ def gist(planned):
               '2. Change set `' + t(planned['changeSet']) + '` on stack `' + t(planned['stack']) + '`: DesiredCount 0. The stack, service and task definition stay; a later run with DesiredCount 1 starts it again.')
     head = ('**Business change:** the published ' + t(planned['app']) + ' image `' + t(planned['imageTag']) + '` serves DEV after an ECS rolling update of `' + t(planned['stack']) + '`.'
             if planned['desiredCount'] == 1 else '**Business change:** the DEV ' + t(planned['app']) + ' service `' + t(planned['stack']) + '` is parked at zero tasks (scheduled scale-down); nothing is deleted.')
+    if planned['unchanged']:
+        commands = approvalCommands(planned)
+        lines = ['**Warning: duplicate image.** `' + t(planned['stack']) + '` already runs `' + t(planned['imageTag']) + '` at DesiredCount ' + str(planned['desiredCount'])
+                 + '. Nothing changes unless you answer within 5 minutes; silence or `REJECT` closes this issue with nothing done.']
+        if 'refresh' in commands:
+            lines.append('- `' + commands['refresh'] + '`: restart on the same image. Change set `' + t(planned['changeSet']) + '` sets the template parameter RefreshToken to `'
+                         + t(planned['refreshToken']) + '`, CloudFormation registers a new task definition revision and ECS performs the rolling update (the new task reads '
+                         'its configuration and, for Domain, the content release in S3 afresh); then verification and a ' + str(planned['refreshObservationMinutes']) + '-minute observation.')
+        lines.append('- `' + commands['verify'] + '`: no AWS change; the tool only verifies that the service runs this image' + (' with one healthy task, a clean log window and its discovery or target registration.' if planned['desiredCount'] == 1 else ' at zero tasks.'))
+        lines.append('- `REJECT`: this was an accident; nothing happens.')
+        return '\n'.join(lines)
     return head + ' No IAM, network, database or secret changes.\n\n' + '\n'.join(serving if planned['desiredCount'] == 1 else parked) \
         + '\n\nRollback is a new run of this workflow with the previous tag. Approval expires 40 minutes after this issue is created.'
 
@@ -276,12 +308,15 @@ def body(planned, receipt):
              for key in fields if planned.get(key) is not None]
     return issueTemplate.render(
         headline=headline(planned), gist=gist(planned), resources=planned['resources'],
-        overview='**Deploy the published DEV image**\n\nAuthorize the one change set described above inside this run. Without approval nothing changes in AWS.',
+        overview=('**Duplicate image: choose refresh, verify or reject**\n\nThe stack already serves this image. `' + approvalCommands(planned)[planned['choices'][0]]
+                  + '` is the primary answer shown below' + ('; `' + approvalCommands(planned)['verify'] + '` verifies without changing AWS' if 'refresh' in planned['choices'] else '')
+                  + '; `REJECT` or no answer within 5 minutes closes this issue with nothing done.') if planned['unchanged'] else
+                 '**Deploy the published DEV image**\n\nAuthorize the one change set described above inside this run. Without approval nothing changes in AWS.',
         scope='### Deploy\n\n' + issueTemplate.table(('Field', 'Value'), shown),
         validation=[('Release tag ' + issueTemplate.text(planned['releaseVersion']), 'resolved to source commit ' + owner.commitLink(planned, planned['sourceSha'])),
                     ('Image', 'ECR tag `' + issueTemplate.text(planned['imageTag']) + '` read back as `' + issueTemplate.text(planned['image'].rsplit('@', 1)[-1]) + '`'),
                     ('Template and configuration', '`' + planned['templateSha256'][:16] + '…` / `' + planned['configSha256'][:16] + '…` rechecked before execution'),
-                    ('Change', 'no-op (stack already at this image and count)' if planned['unchanged'] else 'rolling update' if planned['stackExists'] else 'first creation')],
+                    ('Change', 'duplicate image: no-op unless you answer REFRESH (restart on the same image)' if planned['unchanged'] else 'rolling update' if planned['stackExists'] else 'first creation')],
         evidence='Review the plan artifact of this run before approving.',
         risks='A new revision that never becomes healthy is rolled back by the ECS circuit breaker and this run fails; the previous revision keeps serving. '
             'Old and new tasks overlap for the discovery TTL and the load-balancer drain. This is owner approval enforced by workflow code, not independent review.',
@@ -295,14 +330,14 @@ def decision(planned, receipt, env, root, get=owner.api, now=None):
     now = now or utc()
     created, expires = owner.timestamp(receipt['createdAt']), owner.timestamp(receipt['expiresAt'])
     require(receipt.get('schema') == SCHEMA_RECEIPT and receipt.get('planDigest') == planned['planDigest'] and receipt.get('runId') == planned['runId']
-            and created <= now < expires and timedelta(0) < expires - created <= timedelta(minutes=40), 'Approval expired or binding changed')
+            and created <= now < expires and timedelta(0) < expires - created <= approvalWindow(planned), 'Approval expired or binding changed')
     issue = get(planned['repository'], 'issues/' + str(receipt['issue']))
     require(issue.get('state') == 'open' and not issue.get('pull_request') and issue.get('user', {}).get('login') == 'github-actions[bot]'
             and issue.get('body') == body(planned, receipt), 'Approval issue changed')
     require(created <= owner.timestamp(issue['created_at']) < expires, 'Approval issue creation time outside review window')
     comments = get(planned['repository'], 'issues/' + str(receipt['issue']) + '/comments?per_page=100')
     require(isinstance(comments, list) and len(comments) < 100, 'Incomplete approval comment inventory')
-    selected = None
+    selected, commands = None, {command: mode for mode, command in approvalCommands(planned).items()}
     for comment in comments:
         if comment.get('user', {}).get('login') != owner.OWNER:
             continue
@@ -311,8 +346,8 @@ def decision(planned, receipt, env, root, get=owner.api, now=None):
         if comment.get('created_at') != comment.get('updated_at'):
             continue
         when = owner.timestamp(comment['created_at'])
-        if created <= when <= now and when < expires and command == approvalCommand(planned):
-            selected = comment['id']
+        if created <= when <= now and when < expires and command in commands:
+            selected = (comment['id'], commands[command])
     return selected
 
 
@@ -320,35 +355,43 @@ def approve(planned, env, root, get=owner.api, now=lambda: utc(), sleep=time.sle
     validatePlan(planned, env, root, get)
     start = now().replace(microsecond=0)
     receipt = {'schema': SCHEMA_RECEIPT, 'runId': planned['runId'], 'planDigest': planned['planDigest'],
-               'createdAt': start.isoformat(), 'expiresAt': (start + timedelta(minutes=40)).isoformat()}
+               'createdAt': start.isoformat(), 'expiresAt': (start + approvalWindow(planned)).isoformat()}
     preview = body(planned, receipt)
     require(len(preview) < 60000, 'Approval preview too large')
     issue = get(planned['repository'], 'issues', {'title': issueTemplate.title(headline(planned), planned['runId']), 'body': preview})
     receipt['issue'] = issue['number']
     print('https://github.com/' + planned['repository'] + '/issues/' + str(receipt['issue']), flush=True)
-    for _ in range(120):
+    for _ in range(int(approvalWindow(planned).total_seconds()) // 20):
         selected = decision(planned, receipt, env, root, get, now())
         if selected is not None:
-            return {**receipt, 'commentId': selected}
+            return {**receipt, 'commentId': selected[0], 'mode': selected[1]}
         sleep(20)
     raise TimeoutError('Deploy approval timed out; start a new reviewed run')
 
 
 def verify(planned, receipt, env, root, get=owner.api, now=None):
     selected = decision(planned, receipt, env, root, get, now)
-    require(selected is not None and selected == receipt.get('commentId'), 'Exact live owner approval required')
+    require(selected is not None and selected == (receipt.get('commentId'), receipt.get('mode')), 'Exact live owner approval required')
 
 
 class Deployer:
     """Executes one approved plan; every AWS step is recorded in `self.steps` and written whatever the outcome."""
 
-    def __init__(self, planned, config, templateText, call, sleep=time.sleep, now=None, fetch=None):
+    def __init__(self, planned, config, templateText, call, sleep=time.sleep, now=None, fetch=None, mode='deploy', log=print):
         self.plan, self.config, self.template, self.call = planned, config, templateText, call
-        self.sleep, self.now, self.fetch = sleep, now or (lambda: utc()), fetch or probe
+        self.sleep, self.now, self.fetch, self.mode, self.log = sleep, now or (lambda: utc()), fetch or probe, mode, log
         self.steps = []
 
     def note(self, step, **detail):
         self.steps.append({'step': step, 'at': self.now().isoformat(), **detail})
+        # One line per recorded step in the live job log (the long waits are otherwise silent).
+        self.log(step + ': ' + json.dumps(detail, sort_keys=True, default=str)[:300], flush=True)
+
+    def parameters(self):
+        rendered = dict(self.plan['parameters'])
+        if self.mode == 'refresh':
+            rendered['RefreshToken'] = self.plan['refreshToken']
+        return rendered
 
     def identity(self):
         caller = self.call('sts', 'get-caller-identity')
@@ -366,7 +409,7 @@ class Deployer:
 
     def changeSet(self):
         p = self.plan
-        rows = [{'ParameterKey': k, 'ParameterValue': str(v)} for k, v in p['parameters'].items()]
+        rows = [{'ParameterKey': k, 'ParameterValue': str(v)} for k, v in self.parameters().items()]
         args = ['cloudformation', 'create-change-set', '--stack-name', p['stack'], '--change-set-name', p['changeSet'],
                 '--change-set-type', 'UPDATE' if p['stackExists'] else 'CREATE', '--role-arn', p['cloudFormationRoleArn'],
                 '--template-body', self.template, '--tags', json.dumps([{'Key': 'LookAheadEnvironment', 'Value': 'dev'}]), '--parameters', json.dumps(rows)]
@@ -437,14 +480,15 @@ class Deployer:
                               lambda: (lambda c: c if c and c['running'] == 0 and c['desired'] == 0 else None)(serviceCounts(self.call, self.config)), 300)
         self.note('parked', counts=counts)
 
-    def observe(self):
+    def observe(self, rounds=None):
         p, cfg = self.plan, self.config
-        rounds = p['observationMinutes']
+        rounds = rounds or p['observationMinutes']
         for minute in range(rounds):
             counts = serviceCounts(self.call, cfg)
             require(counts and counts['running'] == 1 and counts['rolloutState'] == 'COMPLETED', 'Service stopped serving during observation')
             status = self.fetch(p['probeUrl'])
             require(status == 200, 'Public probe returned ' + str(status) + ' during observation')
+            self.log('observation ' + str(minute + 1) + '/' + str(rounds) + ': running ' + str(counts['running']) + ', probe ' + str(status), flush=True)
             if minute < rounds - 1:
                 self.sleep(60)
         self.note('observed', minutes=rounds)
@@ -453,14 +497,22 @@ class Deployer:
         outcome = {'schema': SCHEMA_RESULT, 'runId': self.plan['runId'], 'planDigest': self.plan['planDigest'], 'app': self.plan['app'],
                    'releaseVersion': self.plan['releaseVersion'], 'image': self.plan['image'], 'desiredCount': self.plan['desiredCount'], 'stack': self.plan['stack']}
         try:
+            require(self.mode in self.plan['choices'], 'Approved mode ' + str(self.mode) + ' is not one this plan offers')
+            outcome['mode'] = self.mode
             self.identity()
-            if self.plan['unchanged']:
-                self.note('unchanged', stack=self.plan['stack'])
-            elif self.changeSet() is not None:
-                self.execute()
+            if self.mode == 'verify':
+                self.note('unchanged', stack=self.plan['stack'], verifyOnly=True)
+            else:
+                if self.mode == 'refresh':
+                    self.note('refresh', stack=self.plan['stack'], refreshToken=self.plan['refreshToken'])
+                if self.changeSet() is not None:
+                    self.execute()
             if self.plan['desiredCount'] == 1:
                 self.verifyServing()
-                self.observe()
+                if self.mode == 'refresh':
+                    self.observe(self.plan['refreshObservationMinutes'])
+                elif self.mode == 'deploy':
+                    self.observe()
             else:
                 self.verifyParked()
             outcome['outcome'] = 'success'
@@ -521,7 +573,7 @@ def main(argv=None, env=None, call=None, get=owner.api, sleep=time.sleep, fetch=
         return receipt
     require(bool(args.output), '--output required')
     config, (templateText, _) = loadConfig(args.root), loadTemplate(args.root)
-    deployer = Deployer(planned, config, templateText, call, sleep=sleep, fetch=fetch)
+    deployer = Deployer(planned, config, templateText, call, sleep=sleep, fetch=fetch, mode=receipt.get('mode', 'deploy'))
     try:
         return deployer.run()
     finally:
