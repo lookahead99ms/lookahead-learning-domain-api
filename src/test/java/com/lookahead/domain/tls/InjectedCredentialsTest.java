@@ -121,6 +121,23 @@ class InjectedCredentialsTest {
             }
         }
     }
+    @Test void stableServerNameIsAcceptedOnlyWhenTheLeafListsIt() throws Exception {
+        // DLV-968 decision V 2026-11-01: the task definition injects the stable name domain.lookahead-dev.internal; the slot names stay
+        // accepted until the slot stacks are gone. The validator has no allow-list: it accepts exactly the injected name when the leaf
+        // lists it, refuses an unlisted name, and refuses the stable name while the leaf lists only the slot names.
+        var stable="domain.lookahead-dev.internal"; var slots=List.of("domain-blue.lookahead-dev.internal","domain-green.lookahead-dev.internal");
+        leaf("renewed", "/CN="+stable, stable+",DNS:"+String.join(",DNS:",slots), "serverAuth", "3", "server.key");
+        for(String name:List.of(stable,slots.get(0),slots.get(1))) {
+            var values=input();values.put("LOOKAHEAD_TLS_SERVER_CERTIFICATE",text("renewed.pem"));values.put("LOOKAHEAD_TLS_SERVER_NAME",name);
+            assertEquals(text("server.key"),InjectedCredentialValidator.properties(values,"domain").get("spring.ssl.bundle.pem.serving.keystore.private-key"),name);
+        }
+        var unlisted=input();unlisted.put("LOOKAHEAD_TLS_SERVER_CERTIFICATE",text("renewed.pem"));unlisted.put("LOOKAHEAD_TLS_SERVER_NAME","domain-red.lookahead-dev.internal");
+        assertThrows(IllegalStateException.class,()->InjectedCredentialValidator.properties(unlisted,"domain"));
+        leaf("slotsonly", "/CN="+slots.get(0), String.join(",DNS:",slots), "serverAuth", "3", "server.key");
+        var old=input();old.put("LOOKAHEAD_TLS_SERVER_CERTIFICATE",text("slotsonly.pem"));old.put("LOOKAHEAD_TLS_SERVER_NAME",stable);
+        var failure=assertThrows(IllegalStateException.class,()->InjectedCredentialValidator.properties(old,"domain"));
+        assertEquals("Injected credential validation failed; application startup denied",failure.getMessage());assertNull(failure.getCause());
+    }
     @Test void wrongHostnamePurposeKeyAndTrustReject() throws Exception {
         for(var entry:Map.of("LOOKAHEAD_TLS_SERVER_NAME","wrong.example.com","LOOKAHEAD_TLS_SERVER_KEY",text("ca.key"),"LOOKAHEAD_TLS_TRUST",text("server.pem"),"LOOKAHEAD_TLS_SERVER_CERTIFICATE",text("client.pem"),"LOOKAHEAD_TLS_SCHEMA","wrong").entrySet()) {
             var values=input();values.put(entry.getKey(),entry.getValue());

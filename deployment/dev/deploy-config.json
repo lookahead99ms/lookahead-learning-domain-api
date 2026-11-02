@@ -1,5 +1,5 @@
 {
-  "schema": "lookahead-app-deploy-config/v1",
+  "schema": "lookahead-app-deploy-config/v2",
   "app": "domain",
   "service": "domain",
   "account": "509614632283",
@@ -10,33 +10,16 @@
   "sessionPrefix": "domain-deploy",
   "cluster": "arn:aws:ecs:us-east-2:509614632283:cluster/lookahead-dev-cluster",
   "clusterName": "lookahead-dev-cluster",
+  "stack": "lookahead-dev-domain",
   "logGroup": "/lookahead/dev/domain",
   "namespaceName": "lookahead-dev.internal",
-  "slots": {
-    "blue": {
-      "stack": "lookahead-dev-domain-blue",
-      "discoveryService": "domain-blue",
-      "discoveryServiceArn": "arn:aws:servicediscovery:us-east-2:509614632283:service/srv-3rlmn6tryd2odokr"
-    },
-    "green": {
-      "stack": "lookahead-dev-domain-green",
-      "discoveryService": "domain-green",
-      "discoveryServiceArn": "arn:aws:servicediscovery:us-east-2:509614632283:service/srv-5kxx2teofp6ukzhx"
-    }
-  },
-  "flip": {
-    "mode": "alias",
+  "discovery": {
     "serviceName": "domain",
     "serviceId": "srv-kjp3rm76n4xr45ss",
-    "instanceId": "stable",
-    "hostnameSuffix": ".lookahead-dev.internal",
-    "serviceArn": "arn:aws:servicediscovery:us-east-2:509614632283:service/srv-kjp3rm76n4xr45ss"
+    "serviceArn": "arn:aws:servicediscovery:us-east-2:509614632283:service/srv-kjp3rm76n4xr45ss",
+    "note": "Cloud Map A/MULTIVALUE service domain (network change set dlv-968-single-service-discovery-3, 2026-11-01); ECS registers the task."
   },
-  "coupling": {
-    "listenerStack": "lookahead-dev-ingress",
-    "gatewayServicePrefix": "lookahead-dev-gateway-",
-    "note": "Phase 1: the Gateway reaches domain-<its own slot>; a slot a running Gateway uses is never rebuilt, and the previous slot is retired only when no Gateway runs on it (removed in phase 2, DLV-968 T12)."
-  },
+  "targetGroupArn": null,
   "observationMinutes": 15,
   "probeUrl": "https://dev.devlookahead.com/",
   "parameters": {
@@ -47,7 +30,7 @@
     "ServiceSecurityGroup": "sg-0330183f77fd702fd",
     "LogGroupName": "/lookahead/dev/domain",
     "TlsSecretArn": "arn:aws:secretsmanager:us-east-2:509614632283:secret:lookahead-dev-domain-tls-YY5eoq",
-    "TlsVersion": "19cc2d51-6368-45fb-aa2a-32ac91b92fc2",
+    "TlsVersion": "a20be9cf-9e7b-4e80-8be8-ccacd17fa7f2",
     "DomainAppSecretArn": "arn:aws:secretsmanager:us-east-2:509614632283:secret:lookahead-dev-db-app-readwrite-h1nqjO",
     "DomainAppVersion": "cd08e527-0e7d-a97f-87dd-f96dcc82d1ef",
     "DomainGatewaySecretArn": "arn:aws:secretsmanager:us-east-2:509614632283:secret:lookahead-dev-domain-gateway-R7brdT",
@@ -56,10 +39,8 @@
     "ApplicationIssuer": "https://cognito-idp.us-east-2.amazonaws.com/us-east-2_edT1KP4r9",
     "ScopePrefix": "lookahead-dev",
     "DatabaseAddress": "lookahead-dev-db.cxe4k4w40as7.us-east-2.rds.amazonaws.com",
-    "PublicationBucket": "lookahead-assets-dev-use2"
-  },
-  "slotParameters": {
-    "DiscoveryServiceArn": "discoveryServiceArn"
+    "PublicationBucket": "lookahead-assets-dev-use2",
+    "DiscoveryServiceArn": "arn:aws:servicediscovery:us-east-2:509614632283:service/srv-kjp3rm76n4xr45ss"
   },
   "logFailurePatterns": [
     "ERROR",

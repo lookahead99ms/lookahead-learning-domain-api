@@ -3,7 +3,7 @@
 `release.yml` (`01 · Full`) runs on merge push and on dispatch and stops at image publication: Security gate, Release tag,
 Build, Approve ECR publish, Publish to ECR, Record release. `02 · Build` and `03 · Publish` are thin callers that pass
 `action`. `04 · Deploy DEV` (deploy-dev.yml, DLV-968) is its own dispatch-only workflow: Security gate, Plan DEV deploy,
-Approve DEV deploy, Deploy to DEV, Record deploy, driven by `tools/release/deploy.py` against this repository's own slot
+Approve DEV deploy, Deploy to DEV, Record deploy, driven by `tools/release/deploy.py` against this repository's own
 stacks. Identical test in Domain, Web and Gateway/BFF apart from APP.
 """
 import json
@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 # The hosted checkout folder is the repository name (lookahead-learning-web, not web-public): detect the app from the build file.
 APP = 'web' if (ROOT / 'package.json').exists() else 'gateway-bff' if (ROOT / 'build.gradle').exists() else 'domain'
 A = "(inputs.action || 'full')"
-STAGES = ['validate', 'release', 'build', 'approve', 'publish', 'record']
-NAMES = {'validate': 'Security gate', 'release': 'Release tag', 'build': 'Build', 'approve': 'Approve ECR publish', 'publish': 'Publish to ECR', 'record': 'Record release'}
+STAGES = ['validate', 'release', 'build', 'approve', 'publish', 'deploy', 'record']
+NAMES = {'validate': 'Security gate', 'release': 'Release tag', 'build': 'Build', 'approve': 'Approve ECR publish', 'publish': 'Publish to ECR', 'deploy': 'Deploy to DEV (04 · Deploy DEV)', 'record': 'Record release'}
 DEPLOY_STAGES = ['validate', 'plan-dev', 'approve-deploy', 'deploy-dev', 'record']
 DEPLOY_NAMES = {'validate': 'Security gate', 'plan-dev': 'Plan DEV deploy', 'approve-deploy': 'Approve DEV deploy', 'deploy-dev': 'Deploy to DEV', 'record': 'Record deploy'}
 ENTRIES = {'build.yml': ('02 · Build', 'build'), 'publish.yml': ('03 · Publish', 'publish')}
@@ -74,8 +74,13 @@ class StandardShapeTests(unittest.TestCase):
         self.assertFalse((ROOT / '.github/workflows/pipeline.yml').exists())
         self.assertFalse((ROOT / '.github/workflows/release-image.yml').exists())
         text = json.dumps(full)
-        for retired in ('deploy-dev', 'DEV_DEPLOY_ENABLED', 'DEV_DEPLOYMENT_CONFIG_JSON', 'DEV_VERIFY_URL', 'PROD_ENABLED', 'application_workflow', 'inputs.release_version'):
+        for retired in ('DEV_DEPLOY_ENABLED', 'DEV_DEPLOYMENT_CONFIG_JSON', 'DEV_VERIFY_URL', 'PROD_ENABLED', 'application_workflow', 'inputs.release_version'):
             self.assertNotIn(retired, text, retired)
+        # 01 · Full continues into the deploy (user decision 2026-11-01): one run, two approvals, unless FULL_DEPLOYS_DEV is false.
+        deploy = full['jobs']['deploy']
+        self.assertEqual((['release', 'publish'], "always() && needs.publish.result == 'success' && vars.FULL_DEPLOYS_DEV != 'false'"), (deploy['needs'], deploy['if']))
+        self.assertEqual(('./.github/workflows/deploy-dev.yml', {'release_version': '${{ needs.release.outputs.release-version }}', 'desired_count': '1'}, 'inherit'), (deploy['uses'], deploy['with'], deploy['secrets']))
+        self.assertEqual({'contents': 'read', 'actions': 'read', 'issues': 'write', 'pull-requests': 'read', 'id-token': 'write'}, deploy['permissions'])
 
     def test_merge_pause_variable_skips_the_whole_merge_run_but_never_a_dispatch(self):
         # RELEASE_ON_MERGE=false (user 2026-10-31): a merge push leaves every job skipped, so no tag, build, approval wait or ECR push.
@@ -105,6 +110,8 @@ class StandardShapeTests(unittest.TestCase):
                         self.assertIn(step['uses'], PINNED, file + ' ' + name + ': ' + step['uses'])
                 if name not in ('release',):
                     self.assertNotEqual('write', job.get('permissions', {}).get('contents'), (file, name))
+                if name == 'deploy':
+                    continue  # the reusable deploy workflow carries its own environment-bound credential jobs
                 if name not in credentialed:
                     self.assertNotIn('id-token', job.get('permissions', {}), (file, name))
                 else:
@@ -227,7 +234,7 @@ class StageContractTests(unittest.TestCase):
 
 
 class DeployWorkflowTests(unittest.TestCase):
-    """`04 · Deploy DEV` (DLV-968): dispatch only, one published tag in, three change sets on this repository's slot stacks."""
+    """`04 · Deploy DEV` (DLV-968 decision V): one published tag in, one change set on this repository's single service stack, ECS rolling update."""
 
     def setUp(self):
         self.wf = load('deploy-dev.yml'); self.jobs = self.wf['jobs']
@@ -235,9 +242,14 @@ class DeployWorkflowTests(unittest.TestCase):
 
     def test_shape_trigger_and_stage_order(self):
         self.assertEqual('04 · Deploy DEV', self.wf['name'])
-        self.assertEqual(['workflow_dispatch'], list(self.wf['on']))
-        spec = self.wf['on']['workflow_dispatch']['inputs']['release_version']
-        self.assertEqual((True, 'string'), (spec['required'], spec['type']))
+        self.assertEqual(['workflow_dispatch', 'workflow_call'], list(self.wf['on']))
+        for trigger in ('workflow_dispatch', 'workflow_call'):
+            spec = self.wf['on'][trigger]['inputs']['release_version']
+            self.assertEqual((True, 'string'), (spec['required'], spec['type']))
+            count = self.wf['on'][trigger]['inputs']['desired_count']
+            self.assertEqual((False, '1'), (count['required'], count['default']))
+        self.assertEqual(('choice', ['1', '0']), (self.wf['on']['workflow_dispatch']['inputs']['desired_count']['type'], self.wf['on']['workflow_dispatch']['inputs']['desired_count']['options']))
+        self.assertEqual("${{ inputs.desired_count || '1' }}", self.wf['env']['DEPLOY_DESIRED_COUNT'])
         self.assertEqual({'contents': 'read'}, self.wf['permissions'])
         self.assertEqual({'group': 'deploy-dev', 'cancel-in-progress': False}, self.wf['concurrency'])
         self.assertEqual("${{ vars.DEV_DEPLOY_ROLE_ARN || 'arn:aws:iam::509614632283:role/lookahead-dev-deploy' }}", self.wf['env']['DEPLOY_ROLE'])
@@ -256,7 +268,7 @@ class DeployWorkflowTests(unittest.TestCase):
         # deploys read no other repository and need no cross-repository token.
         plan = self.jobs['plan-dev']
         self.assertEqual(('validate', 'dev', {'contents': 'read', 'actions': 'read', 'id-token': 'write'}), (plan['needs'], plan['environment'], plan['permissions']))
-        self.assertEqual({'candidate-slot': '${{ steps.plan.outputs.candidate_slot }}', 'plan-digest': '${{ steps.plan.outputs.plan_digest }}'}, plan['outputs'])
+        self.assertEqual({'desired-count': '${{ steps.plan.outputs.desired_count }}', 'plan-digest': '${{ steps.plan.outputs.plan_digest }}'}, plan['outputs'])
         steps = {s['name']: s for s in plan['steps'] if 'name' in s}
         self.assertIn('release_version.py resolve --app ' + APP + ' --record "$RUNNER_TEMP/deploy-plan/release-source.json"', steps['Resolve the dispatched release tag once and freeze its main commit']['run'])
         creds = [c['with'] for c in uses(plan, 'aws-actions/configure-aws-credentials@')]
@@ -265,7 +277,7 @@ class DeployWorkflowTests(unittest.TestCase):
         order = names(plan)
         oidc = order.index(next(s['name'] for s in plan['steps'] if str(s.get('uses', '')).startswith('aws-actions/')))
         self.assertLess(order.index('Point the release-source record at the runner temp directory'), oidc)
-        self.assertEqual('python3 tools/release/deploy.py plan --output "$RUNNER_TEMP/deploy-plan/plan.json"', steps['Plan the deploy: published digest, idle slot, three change sets, resource preview']['run'])
+        self.assertEqual('python3 tools/release/deploy.py plan --output "$RUNNER_TEMP/deploy-plan/plan.json"', steps['Plan the deploy: published digest, service stack state, DesiredCount, resource preview']['run'])
         text = json.dumps(self.wf)
         for foreign in ('lookahead-learning-infra', 'CROSS_REPO_READ_TOKEN', 'six_role_verify', 'infra-tooling', 'candidate.py infra'):
             self.assertNotIn(foreign, text, foreign)
@@ -288,7 +300,7 @@ class DeployWorkflowTests(unittest.TestCase):
         order = names(deploy)
         oidc = order.index(next(s['name'] for s in deploy['steps'] if str(s.get('uses', '')).startswith('aws-actions/')))
         self.assertLess(order.index('Recheck the deployment approval before AWS credentials'), oidc)
-        self.assertEqual(oidc + 1, order.index('Execute the approved plan: candidate change set, verification, flip, observation, retire'))
+        self.assertEqual(oidc + 1, order.index('Execute the approved plan: change set, ECS rolling update, verification, observation'))
         creds = [c['with'] for c in uses(deploy, 'aws-actions/configure-aws-credentials@')]
         self.assertEqual([('${{ env.DEPLOY_ROLE }}', self.app + '-deploy-${{ github.run_id }}-1', 3600)], [(c['role-to-assume'], c['role-session-name'], c['role-duration-seconds']) for c in creds])
         self.assertEqual([('${{ github.sha }}', None)], [(s['with']['ref'], s['with'].get('path')) for s in uses(deploy, 'actions/checkout@')])
@@ -316,8 +328,12 @@ class DeployWorkflowTests(unittest.TestCase):
         config = json.loads((ROOT / 'deployment/dev/deploy-config.json').read_text())
         template = json.loads((ROOT / 'deployment/dev/service.template.json').read_text())
         self.assertEqual((APP, self.app, self.app + '-deploy'), (config['app'], config['service'], config['sessionPrefix']))
-        self.assertEqual({'lookahead-dev-' + self.app + '-blue', 'lookahead-dev-' + self.app + '-green'}, {s['stack'] for s in config['slots'].values()})
-        self.assertEqual('lookahead-dev-' + self.app + '-${Slot}', template['Resources']['Service']['Properties']['ServiceName']['Fn::Sub'])
+        self.assertEqual(('lookahead-app-deploy-config/v2', 'lookahead-dev-' + self.app), (config['schema'], config['stack']))
+        self.assertEqual('lookahead-dev-' + self.app, template['Resources']['Service']['Properties']['ServiceName'])
+        self.assertEqual('lookahead-dev-' + self.app, template['Resources']['Task']['Properties']['Family'])
+        self.assertNotIn('Slot', template['Parameters'])
+        self.assertEqual({'Enable': True, 'Rollback': True}, template['Resources']['Service']['Properties']['DeploymentConfiguration']['DeploymentCircuitBreaker'])
+        self.assertNotIn('LOOKAHEAD_RELEASE_SLOT', json.dumps(template))
         self.assertEqual({'Ref': 'DesiredCount'}, template['Resources']['Service']['Properties']['DesiredCount'])
         self.assertEqual('Retain', template['Resources']['Service']['DeletionPolicy'])
         self.assertEqual({'Task', 'Service'}, set(template['Resources']))

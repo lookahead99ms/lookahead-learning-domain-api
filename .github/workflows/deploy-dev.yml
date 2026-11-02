@@ -1,13 +1,38 @@
 {
   "name": "04 \u00b7 Deploy DEV",
-  "run-name": "${{ github.workflow }} | ${{ inputs.release_version }} | ${{ github.event_name }} | #${{ github.run_number }}",
+  "run-name": "${{ github.workflow }} | ${{ inputs.release_version }} | desired ${{ inputs.desired_count || 1 }} | ${{ github.event_name }} | #${{ github.run_number }}",
   "on": {
     "workflow_dispatch": {
       "inputs": {
         "release_version": {
-          "description": "Published release tag vyyyy.mm.dd.hh.nn (01 \u00b7 Full approved and published it): plan, owner approval, candidate slot, flip, observation, retire of the previous slot",
+          "description": "Published release tag vyyyy.mm.dd.hh.nn (01 \u00b7 Full approved and published it): plan, owner approval, one change set on this application's service stack, ECS rolling update, verification, observation",
           "type": "string",
           "required": true
+        },
+        "desired_count": {
+          "description": "Tasks the service should run after this deploy: 1 serves, 0 parks the service (user decision 2026-11-01)",
+          "type": "choice",
+          "options": [
+            "1",
+            "0"
+          ],
+          "required": false,
+          "default": "1"
+        }
+      }
+    },
+    "workflow_call": {
+      "inputs": {
+        "release_version": {
+          "description": "Published release tag vyyyy.mm.dd.hh.nn (01 \u00b7 Full approved and published it): plan, owner approval, one change set on this application's service stack, ECS rolling update, verification, observation",
+          "type": "string",
+          "required": true
+        },
+        "desired_count": {
+          "description": "Tasks the service should run after this deploy (1 or 0)",
+          "type": "string",
+          "required": false,
+          "default": "1"
         }
       }
     }
@@ -21,7 +46,8 @@
   },
   "env": {
     "DEPLOY_ROLE": "${{ vars.DEV_DEPLOY_ROLE_ARN || 'arn:aws:iam::509614632283:role/lookahead-dev-deploy' }}",
-    "RELEASE_VERSION": "${{ inputs.release_version }}"
+    "RELEASE_VERSION": "${{ inputs.release_version }}",
+    "DEPLOY_DESIRED_COUNT": "${{ inputs.desired_count || '1' }}"
   },
   "jobs": {
     "validate": {
@@ -82,7 +108,7 @@
         "AWS_EC2_METADATA_DISABLED": "true"
       },
       "outputs": {
-        "candidate-slot": "${{ steps.plan.outputs.candidate_slot }}",
+        "desired-count": "${{ steps.plan.outputs.desired_count }}",
         "plan-digest": "${{ steps.plan.outputs.plan_digest }}"
       },
       "steps": [
@@ -118,7 +144,7 @@
           }
         },
         {
-          "name": "Plan the deploy: published digest, idle slot, three change sets, resource preview",
+          "name": "Plan the deploy: published digest, service stack state, DesiredCount, resource preview",
           "id": "plan",
           "run": "python3 tools/release/deploy.py plan --output \"$RUNNER_TEMP/deploy-plan/plan.json\""
         },
@@ -272,7 +298,7 @@
           }
         },
         {
-          "name": "Execute the approved plan: candidate change set, verification, flip, observation, retire",
+          "name": "Execute the approved plan: change set, ECS rolling update, verification, observation",
           "id": "execute",
           "run": "python3 tools/release/deploy.py execute --plan \"$RUNNER_TEMP/deploy-plan/plan.json\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\" --output \"$RUNNER_TEMP/deploy-result/result.json\""
         },

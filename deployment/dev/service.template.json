@@ -1,24 +1,18 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "DLV-968: one DEV domain slot owned by the domain repository: ECS task definition lookahead-dev-domain-<Slot> and ECS service lookahead-dev-domain-<Slot> on the existing cluster, network, log group, credentials and IAM roles; nothing else is created.",
+  "Description": "DLV-968: the DEV domain application, one ECS service with rolling updates, owned by the Domain repository: task definition family lookahead-dev-domain and ECS service lookahead-dev-domain on the existing cluster, network, log group, credentials and IAM roles; nothing else is created.",
   "Metadata": {
     "Owner": "lookahead99ms/lookahead-learning-domain-api",
     "Ticket": "DLV-968",
     "Resources": [
-      "AWS::ECS::TaskDefinition lookahead-dev-domain-<Slot>",
-      "AWS::ECS::Service lookahead-dev-domain-<Slot>"
+      "AWS::ECS::TaskDefinition lookahead-dev-domain",
+      "AWS::ECS::Service lookahead-dev-domain"
     ],
-    "Deploy": "tools/release/deploy.py renders change sets app-<run>-candidate / -retire against this template; DesiredCount is 1 for the serving or candidate slot and 0 for the retired slot",
-    "PublicationMode": "live: the newest complete release under live/ in the publication bucket (DLV-968 T9)"
+    "Deploy": "tools/release/deploy.py renders one change set app-<run> against this template; a deploy is an ECS rolling update (surge to two tasks, circuit-breaker rollback); DesiredCount 1 serves, 0 parks the service (user decision V, 2026-11-01)",
+    "PublicationMode": "live: the newest complete release under live/ in the publication bucket (DLV-968 T9)",
+    "HealthCheck": "Spring Boot starts in 75-90 s on 512 CPU units; a 60 s start period with 3 retries killed healthy tasks (Domain run 41327104117, 2026-11-01), so the grace is 180 s plus 5 retries."
   },
   "Parameters": {
-    "Slot": {
-      "Type": "String",
-      "AllowedValues": [
-        "blue",
-        "green"
-      ]
-    },
     "Cluster": {
       "Type": "String"
     },
@@ -105,9 +99,7 @@
     "Task": {
       "Type": "AWS::ECS::TaskDefinition",
       "Properties": {
-        "Family": {
-          "Fn::Sub": "lookahead-dev-domain-${Slot}"
-        },
+        "Family": "lookahead-dev-domain",
         "RequiresCompatibilities": [
           "FARGATE"
         ],
@@ -160,7 +152,7 @@
               }
             },
             "Essential": true,
-            "StartTimeout": 120,
+            "StartTimeout": 180,
             "PortMappings": [
               {
                 "ContainerPort": 8443,
@@ -223,9 +215,7 @@
               },
               {
                 "Name": "LOOKAHEAD_TLS_SERVER_NAME",
-                "Value": {
-                  "Fn::Sub": "domain-${Slot}.lookahead-dev.internal"
-                }
+                "Value": "domain.lookahead-dev.internal"
               },
               {
                 "Name": "SPRING_PROFILES_ACTIVE",
@@ -306,8 +296,8 @@
               ],
               "Interval": 15,
               "Timeout": 5,
-              "Retries": 3,
-              "StartPeriod": 60
+              "Retries": 5,
+              "StartPeriod": 180
             }
           }
         ],
@@ -324,9 +314,7 @@
     "Service": {
       "Type": "AWS::ECS::Service",
       "Properties": {
-        "ServiceName": {
-          "Fn::Sub": "lookahead-dev-domain-${Slot}"
-        },
+        "ServiceName": "lookahead-dev-domain",
         "Cluster": {
           "Ref": "Cluster"
         },
@@ -344,7 +332,7 @@
           "MaximumPercent": 200,
           "DeploymentCircuitBreaker": {
             "Enable": true,
-            "Rollback": false
+            "Rollback": true
           }
         },
         "NetworkConfiguration": {
