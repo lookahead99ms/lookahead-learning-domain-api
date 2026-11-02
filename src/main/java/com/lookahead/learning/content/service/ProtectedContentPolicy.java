@@ -54,6 +54,8 @@ public class ProtectedContentPolicy {
                 }
                 if(scopes.stream().anyMatch(scope->!scope.matches(CatalogIds.SCOPE_PATTERN)) || (tier.equals("pro") && scopes.isEmpty()))throw new IllegalArgumentException("Invalid course scope");
                 if(path.startsWith("/content/study-plans/") && !ids.isEmpty())throw new IllegalArgumentException("Study plan assets cannot grant curriculum access");
+                // DLV-968: staff documents open for the staff:documents scope but never unlock lessons.
+                if(scopes.stream().anyMatch(scope->!CatalogIds.isCurriculumGrant(scope)) && !ids.isEmpty())throw new IllegalArgumentException("Staff assets cannot grant curriculum access");
                 if(entries.putIfAbsent(path,new Asset(path,sha,type,tier,scopes,ids,scopeMatch))!=null)throw new IllegalArgumentException("Duplicate asset path");
                 if(!tier.equals("pro"))free.addAll(ids);
             }

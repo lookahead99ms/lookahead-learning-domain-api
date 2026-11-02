@@ -65,7 +65,7 @@ public final class ReadyMadeTemplateMapper {
         List<String> topics = strings(template, "topicIds", 100, 256);
         require(!topics.isEmpty(), "Template has no selected scope");
         Set<String> selectedTopics = new LinkedHashSet<>(topics);
-        for (String topic : topics) require(topic.matches(CatalogIds.SCOPE_PATTERN), "Invalid course scope");
+        for (String topic : topics) require(topic.matches(CatalogIds.SCOPE_PATTERN) && CatalogIds.isCurriculumGrant(topic), "Invalid course scope");
         Map<String, JsonNode> references = references(template, selectedTopics);
         Set<String> assumptions = new HashSet<>(strings(template, "assumedPrerequisiteIds", 10000, 256));
         require(references.keySet().containsAll(assumptions), "Unresolved assumed prerequisite");

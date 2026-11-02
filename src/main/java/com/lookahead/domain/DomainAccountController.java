@@ -32,7 +32,8 @@ public class DomainAccountController {
     @GetMapping("/api/v1/auth/me")
     public ApiResponse<AccountView> me(@AuthenticationPrincipal AccountPrincipal principal, HttpServletResponse response) {
         response.setHeader("Cache-Control", "no-store");
-        var grants = accounts.findTopicGrants(principal.accountId());
+        // DLV-968: staff scopes stay out of the course list; staff documents are governed by permissions.previewDocuments.
+        var grants = com.lookahead.learning.content.util.CatalogIds.curriculumGrants(accounts.findTopicGrants(principal.accountId()));
         return ApiResponse.success(new AccountView(principal.accountId(), principal.getUsername(), principal.displayName(),
                 grants, publication.contentGrants(grants), author.allowed(principal),
                 access==null?com.lookahead.domain.access.StaffPermissions.forRoles(author.allowed(principal),java.util.Set.of()):access.permissions(principal)));

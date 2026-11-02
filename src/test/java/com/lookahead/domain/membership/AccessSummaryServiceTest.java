@@ -16,6 +16,10 @@ class AccessSummaryServiceTest {
                 .containsExactly("Promo · Annual Promo","Regular · Learn");
         assertThat(AccessSummaryService.summarize(List.of(),Set.of("grow:api-design","learn:core-java")).label())
                 .isEqualTo("Granted · grow:api-design, learn:core-java");
+        // DLV-968: the staff documents scope is never a granted course.
+        assertThat(AccessSummaryService.summarize(List.of(),Set.of("staff:documents")).label()).isEqualTo("Free");
+        var mixed=AccessSummaryService.summarize(List.of(),Set.of("staff:documents","learn:core-java"));
+        assertThat(mixed.label()).isEqualTo("Granted · learn:core-java");assertThat(mixed.grantedCourseIds()).containsExactly("learn:core-java");
     }
     @Test void coursePassListsOnlyItsPurchasedCourseIds() {
         var plan=json.readTree("""

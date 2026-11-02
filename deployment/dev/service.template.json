@@ -86,6 +86,24 @@
     "PublicationBucket": {
       "Type": "String"
     },
+    "PlatformReviewsBucket": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^(|[a-z0-9][a-z0-9.-]{1,61}[a-z0-9])$",
+      "Description": "DLV-968: private S3 bucket for platform reviews (app.platform-reviews.bucket); empty leaves review storage unconfigured (503)"
+    },
+    "PlatformReviewsPrefix": {
+      "Type": "String",
+      "Default": "platform-reviews/",
+      "AllowedPattern": "^(|[A-Za-z0-9/_.-]{1,200}/)$",
+      "Description": "DLV-968: object key prefix with a trailing slash (app.platform-reviews.prefix)"
+    },
+    "PlatformReviewsKmsKeyArn": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^(|arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]{36})$",
+      "Description": "DLV-968: KMS key ARN for SSE-KMS on review objects (app.platform-reviews.kms-key)"
+    },
     "RefreshToken": {
       "Type": "String",
       "Default": "none",
@@ -286,6 +304,24 @@
               {
                 "Name": "LOOKAHEAD_PUBLICATION_DIRECTORY",
                 "Value": "/tmp/lookahead-publications"
+              },
+              {
+                "Name": "LOOKAHEAD_PLATFORM_REVIEWS_BUCKET",
+                "Value": {
+                  "Ref": "PlatformReviewsBucket"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_PLATFORM_REVIEWS_PREFIX",
+                "Value": {
+                  "Ref": "PlatformReviewsPrefix"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_PLATFORM_REVIEWS_KMS_KEY",
+                "Value": {
+                  "Ref": "PlatformReviewsKmsKeyArn"
+                }
               },
               {
                 "Name": "LOOKAHEAD_DOMAIN_SEED_ENABLED",

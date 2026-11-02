@@ -11,6 +11,20 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import static org.mockito.Mockito.*;
 
 class DomainAccountControllerTest {
+    /** DLV-968: auth/me lists courses; the staff documents scope is governed by permissions.previewDocuments instead. */
+    @Test void meListsCurriculumGrantsWithoutTheStaffScope() {
+        var accounts = mock(AccountRepository.class);
+        var publication = mock(ProtectedContentPolicy.class);
+        var controller = new DomainAccountController(accounts, publication, mock(LocalAuthorAccess.class));
+        var actor = new AccountPrincipal(UUID.randomUUID(), "admin", "Admin", true);
+        when(accounts.findTopicGrants(actor.accountId())).thenReturn(java.util.Set.of("staff:documents", "learn:core-java"));
+        when(publication.contentGrants(java.util.Set.of("learn:core-java"))).thenReturn(java.util.Set.of("learn:core-java:intro"));
+        var view = controller.me(actor, new MockHttpServletResponse()).data();
+        org.assertj.core.api.Assertions.assertThat(view.topicGrants()).containsExactly("learn:core-java");
+        org.assertj.core.api.Assertions.assertThat(view.contentGrants()).containsExactly("learn:core-java:intro");
+        verify(publication).contentGrants(java.util.Set.of("learn:core-java"));
+    }
+
     @Test void repeatedReadsNeverClaimAndPostUsesOnlyVerifiedPrincipalEmail() throws Exception {
         var access = mock(StaffAccessService.class);
         var controller = new DomainAccountController(mock(AccountRepository.class),

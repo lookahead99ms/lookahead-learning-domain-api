@@ -461,11 +461,16 @@ activation follow-up. Owner-owned plan review artifacts remain owner-only.
 
 `S3PlatformReviewObjects` is a tested cloud candidate, using conditional ETags,
 expected bucket owner and SSE-KMS. Set all three cloud values together:
-`LOOKAHEAD_PLATFORM_REVIEW_BUCKET`, `LOOKAHEAD_PLATFORM_REVIEW_PREFIX` (trailing
-slash), `LOOKAHEAD_PLATFORM_REVIEW_KMS_KEY` (key ARN). The prefix/key are explicit;
+`LOOKAHEAD_PLATFORM_REVIEWS_BUCKET`, `LOOKAHEAD_PLATFORM_REVIEWS_PREFIX` (trailing
+slash), `LOOKAHEAD_PLATFORM_REVIEWS_KMS_KEY` (key ARN); the older singular names
+`LOOKAHEAD_PLATFORM_REVIEW_*` are still read as a fallback. The prefix/key are explicit;
 there is no Local emulator or cloud disk fallback. Runtime uses the existing
-container task credentials and regional S3 client. Infra must supply least-privilege
-S3/KMS permissions before deployment. No AWS resources have been provisioned.
+container task credentials and regional S3 client. In DEV the task definition
+(`deployment/dev/service.template.json`) binds the three variables to the template
+parameters `PlatformReviewsBucket`, `PlatformReviewsPrefix` and `PlatformReviewsKmsKeyArn`;
+`deployment/dev/deploy-config.json` carries `PENDING-S3-REVIEWS` placeholders until Infra
+supplies the bucket and key, and the deploy tool refuses to plan while a placeholder remains
+(DLV-968). Infra must supply least-privilege S3/KMS permissions before deployment.
 
 Cloud account preference/link routes use the current Cognito sign-in proof and
 Domain account lock, preserving Local request shapes. `CloudSignInRegistryDatabaseTest`

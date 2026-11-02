@@ -34,9 +34,10 @@ app:
   platform-reviews:
     # Local volume or explicitly configured cloud S3; absent configuration answers 503.
     directory: ${LOOKAHEAD_PLATFORM_REVIEW_DIRECTORY:}
-    bucket: ${LOOKAHEAD_PLATFORM_REVIEW_BUCKET:}
-    prefix: ${LOOKAHEAD_PLATFORM_REVIEW_PREFIX:}
-    kms-key: ${LOOKAHEAD_PLATFORM_REVIEW_KMS_KEY:}
+    # DLV-968: the DEV task definition sets LOOKAHEAD_PLATFORM_REVIEWS_*; the singular names remain for local use.
+    bucket: ${LOOKAHEAD_PLATFORM_REVIEWS_BUCKET:${LOOKAHEAD_PLATFORM_REVIEW_BUCKET:}}
+    prefix: ${LOOKAHEAD_PLATFORM_REVIEWS_PREFIX:${LOOKAHEAD_PLATFORM_REVIEW_PREFIX:}}
+    kms-key: ${LOOKAHEAD_PLATFORM_REVIEWS_KMS_KEY:${LOOKAHEAD_PLATFORM_REVIEW_KMS_KEY:}}
     # Interim reviewer list (account usernames, comma separated) until roles are managed in the admin pages.
     reviewers: ${LOOKAHEAD_PLATFORM_REVIEWERS:}
   author-reviews:
