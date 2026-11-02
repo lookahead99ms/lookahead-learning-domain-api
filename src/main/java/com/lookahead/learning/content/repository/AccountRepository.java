@@ -44,7 +44,10 @@ public class AccountRepository {
             }
             // DLV-968 (2026-11-02): the owner (cloud author capability) holds the whole curriculum, as People and access already states;
             // without this the owner saw "Full curriculum" there and "Unlock this premium content" on every paid lesson.
-            if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM cloud_accounts WHERE account_id=? AND author_access AND enabled)",Boolean.class,subject))) {
+            // The identity tables exist in every deployed schema; narrow fixtures (author-review and staff tests) create only the tables they use,
+            // and a failed statement would also poison an open transaction, so the table is checked first rather than the error caught.
+            if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT to_regclass('cloud_accounts') IS NOT NULL",Boolean.class))
+                    && Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM cloud_accounts WHERE account_id=? AND author_access AND enabled)",Boolean.class,subject))) {
                 result.addAll(catalog.allTopicIds());
                 result.add(com.lookahead.learning.content.util.CatalogIds.STAFF_DOCUMENTS_SCOPE);
             }

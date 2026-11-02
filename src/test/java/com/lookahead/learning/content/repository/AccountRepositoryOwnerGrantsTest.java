@@ -31,6 +31,7 @@ class AccountRepositoryOwnerGrantsTest {
 
     private AccountRepository repository(boolean owner, StaffAccessRepository.Assignment assignment) {
         when(jdbc.queryForList(anyString(), eq(String.class), eq(account))).thenReturn(List.of());
+        when(jdbc.queryForObject(contains("to_regclass"), eq(Boolean.class))).thenReturn(true);
         when(jdbc.queryForObject(contains("author_access"), eq(Boolean.class), eq(account))).thenReturn(owner);
         when(staff.forAccount(account)).thenReturn(assignment);
         when(catalog.allTopicIds()).thenReturn(CATALOG);
