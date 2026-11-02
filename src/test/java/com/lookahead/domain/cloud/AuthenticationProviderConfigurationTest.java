@@ -12,6 +12,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.ScheduledAnnotationBeanPostProcessor;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.web.SecurityFilterChain;
@@ -49,7 +50,8 @@ class AuthenticationProviderConfigurationTest {
                     assertThat(application).hasNotFailed().hasSingleBean(IdentitySettings.class)
                             .hasSingleBean(IdentityVerificationClient.class).hasSingleBean(JwtDecoder.class)
                             .hasSingleBean(SecurityFilterChain.class).doesNotHaveBean(CognitoSettings.class)
-                            .doesNotHaveBean(CognitoIdentityProviderClient.class).doesNotHaveBean(CloudSignInRegistry.class);
+                            .doesNotHaveBean(CognitoIdentityProviderClient.class).doesNotHaveBean(CloudSignInRegistry.class)
+                            .doesNotHaveBean(CloudAdmissionCleanup.class).doesNotHaveBean(ScheduledAnnotationBeanPostProcessor.class);
                     assertThat(application).hasBean("domainDecoder").hasBean("localAuthenticationConverter")
                             .doesNotHaveBean("cloudDecoder");
                     assertThat(mockingDetails(application.getBean(JdbcTemplate.class)).getInvocations())
@@ -63,7 +65,8 @@ class AuthenticationProviderConfigurationTest {
             assertThat(application).hasNotFailed().hasSingleBean(CognitoSettings.class)
                     .hasSingleBean(CognitoIdentityProviderClient.class).hasSingleBean(CloudSignInRegistry.class)
                     .hasSingleBean(JwtDecoder.class).doesNotHaveBean(IdentitySettings.class)
-                    .doesNotHaveBean(IdentityVerificationClient.class);
+                    .doesNotHaveBean(IdentityVerificationClient.class)
+                    .hasSingleBean(CloudAdmissionCleanup.class).hasSingleBean(ScheduledAnnotationBeanPostProcessor.class);
             assertThat(application).hasBean("cloudDecoder").hasBean("cloudAuthenticationConverter")
                     .doesNotHaveBean("domainDecoder").doesNotHaveBean("localAuthenticationConverter");
             assertThat(application.getBeansOfType(SecurityFilterChain.class)).hasSize(2);
@@ -91,7 +94,7 @@ class AuthenticationProviderConfigurationTest {
     }
 
     @Configuration @EnableWebSecurity @EnableWebMvc
-    @Import({DomainSecurityConfiguration.class, CloudSecurityConfiguration.class})
+    @Import({DomainSecurityConfiguration.class, CloudSecurityConfiguration.class, CloudSchedulingConfiguration.class})
     static class Application {
         @Bean AccountRepository accounts() { return mock(AccountRepository.class); }
         @Bean JdbcTemplate jdbc() { return mock(JdbcTemplate.class); }

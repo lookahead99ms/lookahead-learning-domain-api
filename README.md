@@ -448,7 +448,7 @@ there is writable. Tests: `PlatformReviewServiceTest`, `PlatformReviewController
 
 Domain V6 owns `staff_access` and immutable `staff_access_events`; V7 owns
 `cloud_account_preferences` and `cloud_account_profile_links`. Owner-only access
-assignment APIs are `/api/v1/admin/access`, `/catalog` and `/lookup`; current
+assignment APIs are `/api/v1/admin/access`, `/catalog`, `/lookup`, `/waiting` and `/admit` (DLV-969); current
 permissions are `/api/v1/account/permissions` and additive `auth/me.permissions`.
 Roles are admin/reviewer/tester, independent of selected/full curriculum grants.
 Only the existing owner capability manages access. Testers receive full courses

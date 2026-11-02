@@ -112,6 +112,84 @@ requires a disabled account, revokes all old sign-ins/challenges and clears the
 guard in one transaction. Enable only after review; require a fresh login. Normal
 restart and `enable` alone never clear the guard. Recovery is not automatic.
 
+## Admission (DLV-969)
+
+`V17__dev_access_admission.sql` turns the sign-in admission into a request-and-approve
+flow. The operator CLI above still works and the Gateway contract is unchanged: an
+account that is not admitted still receives `403 ACCOUNT_ADMISSION_REQUIRED`.
+
+First contact. When `POST /internal/v1/cloud-sign-ins/admit` finds no `cloud_accounts`
+row for the verified issuer and subject, `CloudSignInRegistry.admit` inserts a
+`platform_subjects` row and a waiting `cloud_accounts` row (`admitted=false`,
+`enabled=true`, `author_access=false`, `requested_at=clock_timestamp()`, username,
+display name and the provider-verified email when present), records a `request` event
+in `cloud_admission_events`, commits, and then answers the 403. A later sign-in before
+admission refreshes username, display name and verified email on the waiting row and
+answers the same 403. A per-identity transaction advisory lock makes two concurrent
+first contacts produce one row. Only the sign-in admission path does this; `authenticate`,
+`inventory` and the other actions keep failing without creating rows, and a disabled
+account keeps answering 401.
+
+Owner endpoints, proxied by the Gateway with the other `/api/v1/admin/access` routes
+and refused with `403 OWNER_REQUIRED` for anyone else, before any query:
+
+- `GET /api/v1/admin/access/waiting` answers
+  `{waiting:[{accountId, username, displayName, email, requestedAt, expiresAt}], expiryHours:48}`,
+  oldest request first; `email` is the verified email or null; `expiresAt` is
+  `requestedAt` plus 48 hours. `Cache-Control: no-store`.
+- `POST /api/v1/admin/access/admit` with `{accountId, roles}` locks the row, sets
+  `admitted=true`, `admitted_at`, `admitted_by`, saves the staff assignment through the
+  existing owner `StaffAccessService.save` when `roles` is not empty (creating one, or
+  updating the account's existing assignment with its id and revision), records an
+  `admit` event with the roles, and answers `{accountId, username, displayName, admittedAt, roles}`
+  in one transaction. Errors: `422 INVALID_ADMISSION` (not a canonical UUID, or a role
+  outside co-author/admin/reviewer/tester), `404 ACCOUNT_NOT_FOUND`,
+  `409 ACCOUNT_ALREADY_ADMITTED`. Owner access (`author_access`) is never granted here.
+
+Cleanup. In cloud mode only (`CloudSchedulingConfiguration` enables scheduling under the
+same `dev|prod` condition), `CloudAdmissionCleanup.expire` runs five minutes after start
+and then hourly. It takes `pg_try_advisory_xact_lock(hashtextextended('cloud-admission-cleanup',0))`
+and returns 0 when another task holds it; otherwise it selects waiting rows older than
+48 hours `FOR UPDATE SKIP LOCKED`, writes an `expire` event, deletes the `cloud_accounts`
+row (only while `admitted=false`) and its `platform_subjects` row, and returns the count.
+Failures are logged as one WARN line and never stop the scheduler. The 48 hours are the
+single constant `CloudAdmissionCleanup.WAITING_EXPIRY`, also used for `expiresAt`. The
+Cognito user is not touched; the person can sign in again and a new waiting row appears.
+
+V17 grants to `lookahead_platform_app`: `INSERT` and `DELETE` on `cloud_accounts`,
+`UPDATE` on `admitted`, `admitted_at`, `admitted_by`, `requested_at` and `verified_email`
+(in addition to the V4 `username`, `display_name`, `credential_change_pending`), and
+`SELECT`, `INSERT` on `cloud_admission_events`. `enabled`, `author_access`, `issuer` and
+`subject` stay operator-only; `cloud_admission_events` is append-only by trigger and
+revoke; a `BEFORE DELETE` trigger refuses to delete an admitted `cloud_accounts` row.
+`CloudSignInRegistryDatabaseTest` applies V4, V6, V7 and V17 and covers first contact,
+concurrent first contacts, the runtime-role grants, owner admission with roles and
+rollback, and the cleanup under a held lock.
+
+Test accounts in DEV (phase C, Domain side). `LOOKAHEAD_TEST_ACCOUNT_IDENTITY`
+(`app.test-accounts.identity`, `local` by default) set to `cognito` together with
+`LOOKAHEAD_TEST_ACCOUNT_POOL_ID` (`app.test-accounts.pool-id`, the sign-in pool of
+`LOOKAHEAD_COGNITO_ISSUER`, validated like the issuer) turns on created test learners in
+DEV only: `CloudTestAccountSettings` refuses to start in `prod`, and `TestAccountPolicy.cloud()`
+is true only for `dev`. Local behaviour is unchanged; the fixture roster (`seed`, `reset`,
+the legacy preset, the Local real-account deletion) answers `403 TEST_ACCOUNTS_DISABLED` in
+cloud mode and `GET /api/v1/admin/test-accounts` lists only learners with `initialization='created'`.
+`CognitoTestIdentityOperator` writes the pool with the task role (`ContainerCredentialsProvider`,
+a client separate from the anonymous verifier client, same timeouts, no retries); the task role
+needs exactly five actions on the pool ARN: `cognito-idp:AdminCreateUser` (message suppressed,
+no attributes), `AdminSetUserPassword` (permanent), `AdminGetUser` (reads the `sub`),
+`AdminDisableUser` and `AdminDeleteUser` (see `shared/iam-transition-proposal.md` in the
+DLV-969 evidence folder). The completing transaction of `POST /api/v1/admin/test-accounts`
+also inserts the admitted `cloud_accounts` row (`admitted=true`, `enabled=true`,
+`author_access=false`, username = display name = the generated username, `admitted_by` = the
+creator) and an `admit` event with roles `[]`, so the Waiting list and the audit stay
+consistent; an existing Cognito user from an interrupted attempt is reused on retry with the
+same mutation key, and the lifetime allowance is unchanged. `DELETE` disables and deletes the
+Cognito user, revokes the account's `cloud_sign_ins`, erases its data and marks the registry
+row deleted; the admitted `cloud_accounts` row stays, because the runtime role cannot change
+`enabled` and V17 never deletes an admitted row. `CloudTestAccountsDatabaseTest` (cloud-auth
+database, full schema plus V17) covers create, retry, delete and the roster refusal.
+
 ## Configuration and validation
 
 Cloud requires `LOOKAHEAD_COGNITO_ISSUER`, `AWS_REGION`,

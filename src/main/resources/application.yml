@@ -72,6 +72,11 @@ app:
     cache-entries: ${LOOKAHEAD_CONTENT_CACHE_ENTRIES:256}
   cors:
     allowed-origins: []
+  test-accounts:
+    # DLV-969 phase C: local (default) keeps the Local fixture roster; cognito (DEV only) creates
+    # test learners in the sign-in pool named by pool-id, which must be the pool of app.cognito.issuer.
+    identity: ${LOOKAHEAD_TEST_ACCOUNT_IDENTITY:local}
+    pool-id: ${LOOKAHEAD_TEST_ACCOUNT_POOL_ID:}
   local-test:
     seed-enabled: ${LOOKAHEAD_DOMAIN_SEED_ENABLED:false}
     author-enabled: ${LOOKAHEAD_DOMAIN_AUTHOR_ENABLED:false}

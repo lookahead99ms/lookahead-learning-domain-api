@@ -33,7 +33,7 @@ public class TestAccountsService {
             .orElseThrow(()->new AccountFailure(404,"TEST_ACCOUNT_NOT_FOUND","Managed test account not found"));}
     @Transactional
     public int seed(){
-        policy.requireEnabled();actor("seed");
+        policy.requireLocal();actor("seed");
         jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended('test-account-seed',0))",rs->{});
         var fresh=new ArrayList<TestAccountRoster.Entry>();
         for(var entry:TestAccountRoster.entries()){
@@ -48,7 +48,11 @@ public class TestAccountsService {
         return fresh.size();
     }
     @Transactional(readOnly=true)
-    public List<ObjectNode> list(AccountPrincipal actor){reader(actor);var actorRole=staff.permissions(actor).feedbackRole();return jdbc.query("SELECT * FROM test_account_registry WHERE creation_state='active' ORDER BY username",(r,n)->{
+    public List<ObjectNode> list(AccountPrincipal actor){reader(actor);var actorRole=staff.permissions(actor).feedbackRole();
+    // Cloud mode has no roster: only learners created through CreatedTestAccounts (initialization 'created') exist.
+    String rows=policy.cloud()?"SELECT * FROM test_account_registry WHERE creation_state='active' AND initialization='created' ORDER BY username"
+        :"SELECT * FROM test_account_registry WHERE creation_state='active' ORDER BY username";
+    return jdbc.query(rows,(r,n)->{
         var item=json.createObjectNode().put("accountId",r.getString("account_id")).put("username",r.getString("username"))
                 .put("isTestAccount",true).put("revision",r.getLong("revision")).put("initialization",r.getString("initialization"))
                 .put("lastChangedBy",r.getString("last_changed_by")).put("lastChangedAt",r.getTimestamp("last_changed_at").toInstant().toString());
@@ -61,12 +65,12 @@ public class TestAccountsService {
         item.set("roles",roleNode);
         item.put("canDelete",TestAccountDeletionPolicy.allows(actorRole,actor.accountId(),id,targetRoles));
         item.set("access",json.valueToTree(summaries.get(actor,id)));
-        item.put("legacyPresetAvailable",r.getString("username").matches("learner(0[1-9]|10)"));
+        item.put("legacyPresetAvailable",policy.local()&&r.getString("username").matches("learner(0[1-9]|10)"));
         return item;
     });}
     @Transactional
     public void reset(AccountPrincipal actor,UUID id,Reset request){
-        reader(actor);var permissions=staff.permissions(actor);
+        reader(actor);policy.requireLocal();var permissions=staff.permissions(actor);
         if(!permissions.manageAccess()&&!permissions.triageFeedback())throw new AccountFailure(403,"RESET_FORBIDDEN","Only owner or admin can reset test accounts");
         var entry=entry(id);
         if(request==null||request.key()==null||!entry.username().equals(request.confirmation())||(request.preset()==null||!Set.of("scenario","legacy").contains(request.preset())))

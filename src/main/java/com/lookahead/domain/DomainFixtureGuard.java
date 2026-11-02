@@ -9,7 +9,7 @@ import org.springframework.stereotype.Component;
 public class DomainFixtureGuard {
     public DomainFixtureGuard(Environment environment) {
         boolean managed = environment.getProperty("app.test-accounts.enabled", Boolean.class, false);
-        if (managed) new com.lookahead.domain.testaccounts.TestAccountPolicy(environment).requireEnabled();
+        if (managed) new com.lookahead.domain.testaccounts.TestAccountPolicy(environment).requireLocal();
         boolean fixtureProfile = environment.acceptsProfiles(Profiles.of("local-test"));
         boolean seed = environment.getProperty("app.local-test.seed-enabled", Boolean.class, false);
         boolean author = environment.getProperty("app.local-test.author-enabled", Boolean.class, false);
