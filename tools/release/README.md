@@ -81,7 +81,8 @@ scheduled scale-down from 2026-11-05). `01 · Full` always passes `1`.
    `<app>-deploy-<run>-1` (60 minutes) runs `deploy.py execute`: one change set `app-<run>`
    (CREATE for the first stack, UPDATE afterwards; its preview must show only the task definition
    and the service), execution, then for `desired_count` 1 the ECS rollout `COMPLETED` with exactly
-   one `HEALTHY` task carrying the approved image, a clean log window, service discovery listing
+   one `HEALTHY` task whose container reports the approved image digest (`describe-tasks`; the deploy
+   session is denied `DescribeTaskDefinition` by the Infra bundle and does not need it), a clean log window, service discovery listing
    the task (Web, Domain) or healthy target health (GW-BFF), and the observation window (service,
    task and public probe every minute). For `desired_count` 0 it waits until the service runs zero
    tasks. A stack that ends in a rollback state fails the run; the previous revision keeps serving.

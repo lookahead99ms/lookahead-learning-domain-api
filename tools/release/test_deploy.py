@@ -50,6 +50,7 @@ class FakeAws:
         self.previewOverride = None
         self.rollout = 'COMPLETED'
         self.executeStatus = None  # forces the stack status after execution (circuit breaker rollback)
+        self.containerDigest = None  # digest the running container reports when it differs from the task definition
 
     def __call__(self, *args):
         self.calls.append(args)
@@ -82,10 +83,11 @@ class FakeAws:
         if key == 'ecs list-tasks':
             return {'taskArns': [TASK] if self.service and self.service['running'] else []}
         if key == 'ecs describe-tasks':
+            running = self.stack['parameters']['ApplicationImage']
+            pulled = self.containerDigest or running.rsplit('@', 1)[-1]
             return {'tasks': [{'healthStatus': self.health, 'lastStatus': 'RUNNING', 'startedAt': '2026-11-01T21:00:00+00:00',
-                               'taskDefinitionArn': 'arn:aws:ecs:us-east-2:509614632283:task-definition/' + self.config['stack'] + ':3'}]}
-        if key == 'ecs describe-task-definition':
-            return {'taskDefinition': {'containerDefinitions': [{'image': self.config['imageRepository'] + '@' + self.stack['parameters']['ApplicationImage'].rsplit('@', 1)[-1]}]}}
+                               'taskDefinitionArn': 'arn:aws:ecs:us-east-2:509614632283:task-definition/' + self.config['stack'] + ':3',
+                               'containers': [{'name': self.config['service'], 'image': running.rsplit('@', 1)[0] + '@' + pulled, 'imageDigest': pulled, 'lastStatus': 'RUNNING'}]}]}
         if key == 'logs filter-log-events':
             return {'events': self.logs}
         if key == 'elbv2 describe-target-health':
@@ -371,6 +373,16 @@ class ExecuteTests(DeployFixture):
         self.assertEqual('failure', deployer.outcome['outcome'])
         self.assertEqual(('sha256:' + 'o' * 64, 1), (self.aws.stack['parameters']['ApplicationImage'].rsplit('@', 1)[-1], self.aws.service['running']))
         self.assertEqual([], self.aws.ops('cloudformation', 'delete-stack'))
+
+    def test_image_check_reads_the_running_container_digest_and_never_describes_the_task_definition(self):
+        outcome = self.deployer(self.planned()).run()
+        self.assertEqual('success', outcome['outcome'])
+        self.assertEqual([], self.aws.ops('ecs', 'describe-task-definition'))
+        self.aws.containerDigest = 'sha256:' + 'f' * 64
+        self.aws.stack = None; self.aws.service = None
+        with self.assertRaisesRegex(ValueError, 'Running task does not carry the approved image'):
+            self.deployer(self.planned()).run()
+        self.assertEqual([], self.aws.ops('ecs', 'describe-task-definition'))
 
     def test_unhealthy_task_log_markers_or_missing_discovery_fail_verification(self):
         self.aws.health = 'UNHEALTHY'
