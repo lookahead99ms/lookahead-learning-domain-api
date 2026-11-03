@@ -137,7 +137,7 @@ class DynamoS3StudyPlanDocumentDatabaseTest {
         assertThat(s3.versions).hasSize(1);assertThat(audits()).isEqualTo(1);assertThat(jobs()).isZero();
     }
     @Test void expiredIntentRejectsLateUploadAndLeavesDurableJobForFutureCleanup() {
-        var mutable=org.mockito.Mockito.mock(Clock.class);org.mockito.Mockito.when(mutable.instant()).thenReturn(NOW);
+        var mutable=org.mockito.Mockito.mock(Clock.class,org.mockito.Mockito.withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));org.mockito.Mockito.when(mutable.instant()).thenReturn(NOW);
         var timed=new S3StudyPlanDocumentStore(client,TABLES,s3.objects(),mutable);
         s3.afterPut=()->org.mockito.Mockito.when(mutable.instant()).thenReturn(NOW.plusSeconds(60));
         assertThatIllegalStateException().isThrownBy(()->timed.stage(id,bytes,NOW.plusSeconds(60)));

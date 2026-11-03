@@ -13,7 +13,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 class DynamoStaffAliasStoreTest {
-    private final DynamoDbClient client=mock(DynamoDbClient.class);
+    private final DynamoDbClient client=mock(DynamoDbClient.class,withSettings().mockMaker(org.mockito.MockMakers.PROXY));
     private final DynamoTableNames tables=DynamoTableNamesTest.names("dev");
     private final Clock clock=Clock.fixed(Instant.parse("2026-11-03T00:00:00Z"),ZoneOffset.UTC);
     private final UUID id=UUID.randomUUID();

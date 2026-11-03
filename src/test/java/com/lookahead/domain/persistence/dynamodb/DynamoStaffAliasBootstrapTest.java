@@ -10,7 +10,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 class DynamoStaffAliasBootstrapTest {
-    private final DynamoDbClient client=mock(DynamoDbClient.class);
+    private final DynamoDbClient client=mock(DynamoDbClient.class,withSettings().mockMaker(org.mockito.MockMakers.PROXY));
     private final DynamoTableNames tables=DynamoTableNamesTest.names("dev");
     private final DynamoStaffAliasBootstrap bootstrap=new DynamoStaffAliasBootstrap(client,tables);
     private final UUID id=UUID.randomUUID();
