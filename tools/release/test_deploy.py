@@ -51,6 +51,9 @@ class FakeAws:
         self.rollout = 'COMPLETED'
         self.executeStatus = None  # forces the stack status after execution (circuit breaker rollback)
         self.containerDigest = None  # digest the running container reports when it differs from the task definition
+        # Busy-stack park (DLV-969): describe-stacks keeps the busy status for `busyPolls` more reads, then shows `settleStatus`;
+        # `restoreDesired` times a stuck rollback puts DesiredCount 1 back; `scaleDenied` makes the direct scale-down fail.
+        self.busyPolls, self.settleStatus, self.restoreDesired, self.scaleDenied = None, 'UPDATE_COMPLETE', 0, False
 
     def __call__(self, *args):
         self.calls.append(args)
@@ -69,6 +72,10 @@ class FakeAws:
             assert opts['--stack-name'] == self.config['stack'], opts
             if self.stack is None:
                 raise RuntimeError('aws cloudformation describe-stacks failed: Stack with id ' + opts['--stack-name'] + ' does not exist')
+            if self.busyPolls is not None and self.stack['status'] in m.BUSY_PARKABLE:
+                if self.busyPolls <= 0:
+                    self.stack['status'] = self.settleStatus
+                self.busyPolls -= 1
             return {'Stacks': [{'StackStatus': self.stack['status'], 'StackId': 'id-' + opts['--stack-name'],
                                 'Parameters': [{'ParameterKey': k, 'ParameterValue': v} for k, v in self.stack['parameters'].items()]}]}
         if key == 'servicediscovery list-instances':
@@ -78,8 +85,16 @@ class FakeAws:
             assert opts['--services'] == self.config['stack'], opts
             if self.service is None:
                 return {'services': [], 'failures': [{'reason': 'MISSING'}]}
+            if self.restoreDesired and self.stack and self.stack['status'] in m.BUSY_PARKABLE:
+                self.service['desired'] = 1; self.restoreDesired -= 1
             return {'services': [{'status': 'ACTIVE', 'desiredCount': self.service['desired'], 'runningCount': self.service['running'],
                                   'deployments': [{'status': 'PRIMARY', 'rolloutState': self.service['rolloutState'], 'taskDefinition': 'td'}]}]}
+        if key == 'ecs update-service':
+            assert (opts['--cluster'], opts['--service'], opts['--desired-count']) == (self.config['cluster'], self.config['stack'], '0'), opts
+            if self.scaleDenied:
+                raise RuntimeError('aws ecs update-service failed: AccessDeniedException: not authorized to perform: ecs:UpdateService')
+            self.service = {'desired': 0, 'running': 0, 'rolloutState': 'COMPLETED'}
+            return {'service': {'desiredCount': 0}}
         if key == 'ecs list-tasks':
             return {'taskArns': [TASK] if self.service and self.service['running'] else []}
         if key == 'ecs describe-tasks':
@@ -218,6 +233,31 @@ class PlanTests(DeployFixture):
         self.assertEqual('Park ' + APP, m.headline(parked)['action'])
         with self.assertRaisesRegex(ValueError, 'must be 1 \\(serve\\) or 0'):
             self.planned(count='2')
+
+    def test_busy_stack_park_scales_down_directly_then_records_the_park(self):
+        for status in sorted(m.BUSY_PARKABLE):
+            self.aws.serving('old'); self.aws.stack['status'] = status
+            parked = self.planned(count='0')
+            self.assertEqual((True, status, False, ['deploy'], 0), (parked['busyStackPark'], parked['busyStackStatus'], parked['unchanged'], parked['choices'], parked['desiredCount']))
+            self.assertEqual([('Modify', 'AWS::ECS::Service'), ('Modify', 'AWS::CloudFormation::Stack')], [(r['action'], r['type']) for r in parked['resources']])
+            self.assertIn('directly', parked['resources'][0]['note'])
+            self.assertEqual(self.config['stack'] + ' to zero tasks while the stack is ' + status, m.headline(parked)['change'])
+            text = m.gist(parked)
+            for phrase in ('ecs update-service', 'ecs:UpdateService', '30 minutes', 'UPDATE_ROLLBACK_FAILED', 'desired_count 1'):
+                self.assertIn(phrase, text)
+            stamp = self.now.replace(microsecond=0).isoformat()
+            self.assertIn('park of a busy stack', m.body(parked, {'createdAt': stamp, 'expiresAt': stamp}))
+        self.aws.serving('old')
+        self.assertEqual((False, None), (self.planned(count='0')['busyStackPark'], self.planned(count='0')['busyStackStatus']))
+
+    def test_busy_stack_refuses_serving_and_every_other_busy_or_failed_state(self):
+        self.aws.serving('old'); self.aws.stack['status'] = 'UPDATE_IN_PROGRESS'
+        with self.assertRaisesRegex(ValueError, 'is busy: UPDATE_IN_PROGRESS.*desired_count 0 first to park.*desired_count 1'):
+            self.planned()
+        for status in ('UPDATE_ROLLBACK_FAILED', 'UPDATE_COMPLETE_CLEANUP_IN_PROGRESS', 'CREATE_IN_PROGRESS', 'DELETE_IN_PROGRESS'):
+            self.aws.stack['status'] = status
+            with self.assertRaisesRegex(ValueError, 'not updatable: ' + status):
+                self.planned(count='0')
 
     def test_plan_refuses_missing_image_failed_create_other_app_and_placeholders(self):
         self.aws.image = None
@@ -385,6 +425,46 @@ class ExecuteTests(DeployFixture):
         outcome = self.deployer(self.planned(count='0'), fetch=lambda url: probes.append(url) or 200).run()
         self.assertEqual(['identity', 'change-set', 'executed', 'parked'], [s['step'] for s in outcome['steps']])
         self.assertEqual(([('Service', 'Modify', 'False')], 0, []), ([(c['logical'], c['action'], c['replacement']) for c in outcome['steps'][1]['changes']], self.aws.service['desired'], probes))
+
+    def busyPark(self, status='UPDATE_ROLLBACK_IN_PROGRESS'):
+        self.aws.busyPolls, self.aws.settleStatus = None, 'UPDATE_COMPLETE'
+        self.aws.serving('old'); self.aws.stack['status'] = status
+        planned = self.planned(count='0')
+        self.aws.busyPolls = 2
+        return planned
+
+    def test_busy_stack_park_scales_to_zero_waits_for_the_stack_then_records_the_park(self):
+        planned = self.busyPark()
+        self.aws.settleStatus, self.aws.restoreDesired = 'UPDATE_ROLLBACK_COMPLETE', 1  # the rollback puts DesiredCount 1 back once
+        outcome = self.deployer(planned).run()
+        self.assertEqual('success', outcome['outcome'])
+        self.assertEqual(['identity', 'scaled-to-zero', 'scaled-to-zero', 'stack-settled', 'change-set', 'executed', 'parked'], [s['step'] for s in outcome['steps']])
+        self.assertEqual('UPDATE_ROLLBACK_COMPLETE', outcome['steps'][3]['status'])
+        scale = ('ecs', 'update-service', '--cluster', self.config['cluster'], '--service', self.config['stack'], '--desired-count', '0')
+        self.assertEqual([scale, scale], self.aws.ops('ecs', 'update-service'))
+        first = self.aws.calls.index(scale)
+        self.assertLess(first, self.aws.calls.index(self.aws.ops('cloudformation', 'create-change-set')[0]))
+        sent = {r['ParameterKey']: r['ParameterValue'] for r in json.loads(dict(zip(self.aws.ops('cloudformation', 'create-change-set')[0][::1], self.aws.ops('cloudformation', 'create-change-set')[0][1:]))['--parameters'])}
+        self.assertEqual(('0', 0, 0), (sent['DesiredCount'], self.aws.service['desired'], self.aws.service['running']))
+        self.assertEqual('UPDATE_COMPLETE', self.aws.stack['status'])
+
+    def test_busy_stack_park_stops_on_rollback_failed_timeout_or_denied_scale_down(self):
+        planned = self.busyPark()
+        self.aws.settleStatus = 'UPDATE_ROLLBACK_FAILED'
+        with self.assertRaisesRegex(ValueError, 'ended in UPDATE_ROLLBACK_FAILED after the scale-down; follow the break-glass runbook'):
+            self.deployer(planned).run()
+        self.assertEqual([], self.aws.ops('cloudformation', 'create-change-set'))
+        planned = self.busyPark('UPDATE_IN_PROGRESS')
+        self.aws.busyPolls = 10 ** 6
+        with self.assertRaisesRegex(ValueError, 'did not complete within 1800 seconds'):
+            self.deployer(planned).run()
+        self.assertEqual([], self.aws.ops('cloudformation', 'create-change-set'))
+        planned = self.busyPark()
+        self.aws.scaleDenied = True
+        deployer = self.deployer(planned)
+        with self.assertRaisesRegex(RuntimeError, 'not authorized to perform: ecs:UpdateService'):
+            deployer.run()
+        self.assertEqual(('failure', []), (deployer.outcome['outcome'], self.aws.ops('cloudformation', 'create-change-set')))
 
     def test_circuit_breaker_rollback_fails_the_run_and_the_previous_revision_keeps_serving(self):
         self.aws.serving('old')

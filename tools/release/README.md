@@ -13,11 +13,12 @@ under `deployment/dev/` that describe this application's own DEV service stack.
 | `02 · Build` | `build.yml` | `release.yml` with `action: build`: cut the next tag at the main head and build; no approval, no credentials |
 | `03 · Publish` | `publish.yml` | `release.yml` with `action: publish`: cut the next tag at the main head, build, scan, owner approval, publish to ECR |
 | `04 · Deploy DEV` | `deploy-dev.yml` | its own workflow, dispatched by hand for a tag already in ECR (redeploys, rollbacks, `desired_count` 0 to park) or called by `01 · Full` after publication: Security gate → Plan DEV deploy → Approve DEV deploy → Deploy to DEV (one change set, ECS rolling update) → Record deploy (DLV-968) |
+| `05 · Recover DEV` | `recover-dev.yml` | dispatched by hand when a deploy left the service unhealthy or its stack stuck: Security gate → Plan DEV recovery → Approve DEV recovery (one approval) → Recover DEV (park, target, and only if needed park again, fallback, park) → Record recovery (DLV-969) |
 
 `release.yml` is what `02` and `03` call through `workflow_call` (`secrets: inherit`), so the run
 keeps the caller's path; `owner_approval.PUBLISHERS` registers `release.yml` and `publish.yml` as
-this repository's publisher paths, and `deploy.WORKFLOW` names `deploy-dev.yml` as the only deploy
-path. Every run refuses any ref but `main`, runs first-attempt only, and the tooling always
+this repository's publisher paths, and `deploy.DEPLOY_WORKFLOWS` names `deploy-dev.yml` (and its two callers) and
+`recover-dev.yml` as the only deploy paths. Every run refuses any ref but `main`, runs first-attempt only, and the tooling always
 executes from the main commit (`workflowSha`, M) while the application is built from the commit
 the release tag resolves to (`sourceSha`, S).
 
@@ -70,7 +71,7 @@ scheduled scale-down from 2026-11-05). `01 · Full` always passes `1`.
 2. **Plan DEV deploy** (`plan-dev`, environment `dev`): `release_version.py resolve` freezes the
    dispatched tag; the plan session `<app>-deploy-plan-<run>-1` (15 minutes) runs `deploy.py
    plan`, which reads the digest back from the immutable ECR tag, describes the stack (absent,
-   updatable, or refused), renders the parameters and the resource preview, records the image and
+   updatable, busy but parkable, or refused), renders the parameters and the resource preview, records the image and
    count currently serving, and writes `plan.json` with its digest (artifact `deploy-plan`). A plan
    whose image and count already match the stack is recorded as `unchanged` (a duplicate image) and offers
    `refresh` and `verify` instead of `deploy` (`verify` only when the duplicate is a parked service).
@@ -110,11 +111,68 @@ there and this tool never deletes: recovery is the owner's
 `aws cloudformation delete-stack --stack-name lookahead-dev-<app>` (DeletionPolicy Retain keeps the
 service and task definition) followed by a new run.
 
+**A stack stuck in an update or rollback** (DLV-969, user decision 2026-11-02: recovery is two pipeline runs, never
+the AWS CLI). When no revision can become healthy (for example both the new and the previous one fail readiness),
+CloudFormation keeps the stack in `UPDATE_IN_PROGRESS` or `UPDATE_ROLLBACK_IN_PROGRESS` for a long time and refuses
+every change set, and the circuit breaker's rollback relaunches the failing revision. Recover with:
+
+1. `04 · Deploy DEV` with any published `release_version` and `desired_count` **0**. On a busy stack the plan is
+   marked `busyStackPark` and the approval issue says so. The deploy session sets the ECS service to DesiredCount 0
+   directly (`ecs update-service`), so the stuck rollout stops and ECS reports the service stable; it waits at most
+   30 minutes for CloudFormation to finish its update or rollback, setting DesiredCount 0 again if the rollback puts
+   1 back; then the usual park change set records DesiredCount 0 in the stack, and the run verifies zero tasks.
+   `UPDATE_ROLLBACK_FAILED` or the 30-minute limit stops the run (break-glass runbook on the Admin page Support
+   runbooks).
+2. `04 · Deploy DEV` with the fixed `release_version` and `desired_count` **1**: an ordinary rolling update.
+
+A deploy with `desired_count` 1 on a busy stack is refused with that instruction; any other busy or failed stack
+state is refused as before. The direct scale-down needs `ecs:UpdateService` on this application's service for the
+`<app>-deploy-*` sessions; until that IAM transition (DLV-969 proposal, owned by the Infra IAM lane) is installed
+the call is denied, the run fails at that step and nothing else changes. Wait budget of a busy-stack park: settle
+1800 s, change set 120 s, stack execution 1200 s, scale-in 300 s, inside the 60-minute session.
+
 Rollback is a new run of `04 · Deploy DEV` with the previous tag. Steady state is one task per
 application; two run only during one application's rolling update. The GW-BFF reaches Web and Domain
 by their stable names `web.lookahead-dev.internal` and `domain.lookahead-dev.internal` (Cloud Map A
 records that ECS registers for the running task), so the applications deploy independently; the
 only hard dependencies are Domain's database and bucket.
+
+## Stages of `05 · Recover DEV`
+
+Use it instead of a sequence of `04 · Deploy DEV` runs when a service does not serve and you want one run that ends either
+serving a release or parked, with no AWS CLI (DLV-969, user decision 2026-11-02). Inputs: `release_version` (the release
+to serve), `fallback_release` (optional) and `healthy_minutes` (10, 15, 20 or 30; default 15). It shares the `deploy-dev`
+concurrency group, so it never runs beside a deploy. Use `04 · Deploy DEV` for ordinary deploys, rollbacks and parks.
+
+1. **Security gate**: the release tooling tests with the 85 percent gate, now including `recover.py`.
+2. **Plan DEV recovery** (`plan-recovery`, environment `dev`): `release_version.py resolve` freezes the target tag;
+   `recover.py fallback` chooses the fallback: the `fallback_release` input, or else the newest release whose deploy
+   verified healthy on `main` (a successful `04 · Deploy DEV` run with `desired 1`, or a successful `01 · Full` / `03 ·
+   Publish` run whose `Deploy to DEV` job succeeded, read from its `deploy-record-<release>-<run>` artifact name; never
+   the target itself). With neither, the plan stops and asks for the input. The fallback tag is frozen the same way;
+   then `recover.py plan` writes one `deploy.py` plan per stage (artifact `recover-plan`).
+3. **Approve DEV recovery**: one issue lists every stage, both releases and the park steps; the owner answers
+   `APPROVE RECOVER <app>-<tag>` within 40 minutes (`REJECT` stops the run).
+4. **Recover DEV** (environment `dev`): the live approval is rechecked before any credentials; then each stage assumes
+   its own deploy session `<app>-deploy-<run>-<n>` (60 minutes each) and runs `recover.py stage`:
+   - `park` (session 1): DesiredCount 0 for the target release. On a stack in `UPDATE_IN_PROGRESS` /
+     `UPDATE_ROLLBACK_IN_PROGRESS` it uses the busy-stack park above (direct scale-down, wait, park change set).
+   - `target` (2): the target release at DesiredCount 1; its stack may take at most `healthy_minutes`, then the usual
+     verification and a short observation (the refresh window).
+   - `park-again` (3) and `fallback` (4): only when the target did not serve; the fallback release the same way.
+   - `park-final` (5): only when the fallback did not serve either; the run then fails.
+   A serving stage that ran its change set and did not verify counts as not serving and the sequence continues. A park
+   that fails, a stack in any other state (for example `UPDATE_ROLLBACK_FAILED`), or a failure before a change set (wrong
+   session, preview mismatch) stops the run. The summary step writes a table of every stage (release, DesiredCount,
+   outcome, task definition revision, times, stop reasons of the newest stopped tasks) to the run summary and fails the
+   run unless a release serves; the stage results are kept (artifact `recover-result`) and the issue is closed with the
+   outcome.
+5. **Record recovery**: one `recover-record-<release>-<run>` artifact per run.
+
+Each stage keeps every `deploy.py` check: provenance, owner on `main`, the frozen tag, the published digest, the stage
+plan's digest and template, the change-set preview, and the session identity. Stage change sets are named
+`app-<run>-<stage>`. Prerequisite: the busy-stack park's `ecs:UpdateService` for the `<app>-deploy-*` sessions (above);
+without it a busy stack stops the run at its first stage, and an idle stack recovers without it.
 
 ## Settings the repository needs
 
@@ -130,7 +188,8 @@ trust must admit the sessions `<app>-deploy-plan-*` and `<app>-deploy-*` (DLV-96
 
 ## Shared copies and local checks
 
-`release_version.py`, `issue_template.py`, `issue_close.py` and `owner_approval.py` are byte-identical copies of
+`recover.py` and `test_recover.py` are identical across the three app repositories too; `recover-dev.yml` differs only in the
+application name (as `deploy-dev.yml` does). `release_version.py`, `issue_template.py`, `issue_close.py` and `owner_approval.py` are byte-identical copies of
 Infra's `github/releases/release_version.py`, `github/approvals/issue_template.py` and
 `github/approvals/image_publication.py`; `owner_release.py`, `candidate.py`, `deploy.py`,
 `pipeline_tag.py` and every test are identical across the three app repositories. Update all copies together.

@@ -27,9 +27,11 @@ import owner_approval as owner
 import release_version as versions
 
 WORKFLOW = '.github/workflows/deploy-dev.yml'
+# `05 · Recover DEV` (recover-dev.yml, tools/release/recover.py) runs park, deploy and fallback stages of this tool in one approved run.
+RECOVER_WORKFLOW = '.github/workflows/recover-dev.yml'
 # `01 · Full` (release.yml) and `03 · Publish` (publish.yml) call deploy-dev.yml after the image is published; a reusable-workflow
 # call keeps the caller's workflow ref, run path and event (push or dispatch).
-DEPLOY_WORKFLOWS = (WORKFLOW, '.github/workflows/release.yml', '.github/workflows/publish.yml')
+DEPLOY_WORKFLOWS = (WORKFLOW, '.github/workflows/release.yml', '.github/workflows/publish.yml', RECOVER_WORKFLOW)
 SCHEMA_CONFIG = 'lookahead-app-deploy-config/v2'
 SCHEMA_PLAN = 'app-deploy-plan/v3'
 SCHEMA_RECEIPT = 'app-deploy-approval/v2'
@@ -41,6 +43,11 @@ TERMINAL_BAD = {'CREATE_FAILED', 'ROLLBACK_COMPLETE', 'ROLLBACK_FAILED', 'UPDATE
 # only accepts deletion there, and this tool never deletes (see README). REVIEW_IN_PROGRESS is an aborted CREATE change set.
 UPDATABLE = TERMINAL_OK | {'UPDATE_ROLLBACK_COMPLETE', 'IMPORT_COMPLETE'}
 REVIEW = 'REVIEW_IN_PROGRESS'
+# A stack stuck in an update or rollback refuses every change set. A park run (DesiredCount 0) still proceeds on such a stack:
+# it scales the service to zero directly, waits for CloudFormation to finish, then records the park with the usual change set
+# (DLV-969, user decision 2026-11-02: recovery is two pipeline runs, park then deploy, never the AWS CLI).
+BUSY_PARKABLE = {'UPDATE_IN_PROGRESS', 'UPDATE_ROLLBACK_IN_PROGRESS'}
+BUSY_SETTLE_SECONDS = 1800
 NO_CHANGES = "didn't contain changes"
 CONFIG_KEYS = {'schema', 'app', 'service', 'account', 'region', 'imageRepository', 'deployRoleArn', 'cloudFormationRoleArn',
                'sessionPrefix', 'cluster', 'clusterName', 'stack', 'logGroup', 'namespaceName', 'discovery', 'targetGroupArn',
@@ -192,8 +199,13 @@ def serviceCounts(call, config):
             'rolloutState': primary.get('rolloutState'), 'taskDefinition': primary.get('taskDefinition')}
 
 
-def resourceRows(config, state, count, current, unchanged=False):
+def resourceRows(config, state, count, current, unchanged=False, busy=False):
     first = state is None
+    if busy:
+        return [{'action': 'Modify', 'type': 'AWS::ECS::Service', 'consoleName': config['stack'],
+                 'note': 'stack busy (' + state['status'] + '): DesiredCount 0 set on the service directly, so the stuck rollout stops'},
+                {'action': 'Modify', 'type': 'AWS::CloudFormation::Stack', 'consoleName': config['stack'],
+                 'note': 'after the stack finishes its update or rollback (at most ' + str(BUSY_SETTLE_SECONDS // 60) + ' minutes), change set app-<run> records DesiredCount 0'}]
     if unchanged:
         return [{'action': 'Modify only on REFRESH', 'type': 'AWS::CloudFormation::Stack', 'consoleName': config['stack'],
                  'note': 'duplicate image: the stack already runs this image at DesiredCount ' + str(count) + '. APPROVE REFRESH registers a new task definition revision '
@@ -210,36 +222,51 @@ def resourceRows(config, state, count, current, unchanged=False):
     return rows
 
 
-def plan(env, call, root, get=owner.api, now=None):
+def plan(env, call, root, get=owner.api, now=None, stage=None, session=1, recovery=False):
+    """One deploy plan. `05 · Recover DEV` plans each of its stages with `recovery=True`: a stage always executes (no duplicate-image
+    choice), a serving stage may follow a park on a stack that is still busy at plan time, and `stage`/`session` name the stage's own
+    change set (`app-<run>-<stage>`) and deploy session (`<prefix>-<run>-<session>`)."""
     release = provenance(env, get)
     config, (templateText, _) = loadConfig(root), loadTemplate(root)
     require(release['app'] == config['app'], 'Configuration belongs to another application')
     count = desiredCount(env)
     image = publishedImage(call, config, release['imageTag'])
     state = stackState(call, config['stack'])
-    require(state is None or state['status'] in UPDATABLE or state['status'] == REVIEW,
+    busy = state is not None and state['status'] in BUSY_PARKABLE
+    if recovery:
+        require(state is not None and state['status'] != REVIEW, 'Stack ' + config['stack'] + ' does not exist yet; recovery needs a deployed service (use 04 · Deploy DEV)')
+    if busy and not recovery:
+        require(count == 0, 'Stack ' + config['stack'] + ' is busy: ' + state['status'] + ' and refuses change sets.'
+                ' Run 04 · Deploy DEV with desired_count 0 first to park the service; then deploy this release with desired_count 1')
+    require(busy or state is None or state['status'] in UPDATABLE or state['status'] == REVIEW,
             'Stack ' + config['stack'] + ' is not updatable: ' + str(state and state['status']) + ' (manual recovery, see README)')
     exists = state is not None and state['status'] != REVIEW
     current = state['parameters'] if exists else {}
     rendered = parameters(config, image, count, current.get('RefreshToken', 'none') if exists else 'none')
-    unchanged = exists and all(current.get(k) == v for k, v in rendered.items())
+    # A busy stack's parameters are the ones it is still trying to apply; a park there is always a change.
+    unchanged = exists and not busy and not recovery and all(current.get(k) == v for k, v in rendered.items())
     # A duplicate image offers a restart (refresh) or a verification only; a parked duplicate can only be verified.
     choices = (['refresh', 'verify'] if count == 1 else ['verify']) if unchanged else ['deploy']
     result = {'schema': SCHEMA_PLAN, **release, 'image': image, 'desiredCount': count, 'account': config['account'], 'region': config['region'],
               'deployRoleArn': config['deployRoleArn'], 'cloudFormationRoleArn': config['cloudFormationRoleArn'],
-              'sessionName': config['sessionPrefix'] + '-' + release['runId'] + '-1', 'stack': config['stack'], 'stackExists': exists,
-              'unchanged': unchanged, 'choices': choices, 'refreshToken': 'run-' + release['runId'], 'changeSet': 'app-' + release['runId'], 'parameters': rendered,
+              'sessionName': config['sessionPrefix'] + '-' + release['runId'] + '-' + str(session), 'stack': config['stack'], 'stackExists': exists,
+              'unchanged': unchanged, 'choices': choices, 'refreshToken': 'run-' + release['runId'],
+              'changeSet': 'app-' + release['runId'] + ('-' + stage if stage else ''), 'parameters': rendered,
               'currentImage': current.get('ApplicationImage'), 'currentDesiredCount': current.get('DesiredCount'),
               'observationMinutes': config['observationMinutes'], 'refreshObservationMinutes': config['refreshObservationMinutes'], 'probeUrl': config['probeUrl'],
               'templateSha256': hashlib.sha256(templateText.encode()).hexdigest(),
               'configSha256': hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest(),
-              'resources': resourceRows(config, state if exists else None, count, current, unchanged), 'plannedAt': utc(now).isoformat()}
+              'busyStackPark': busy and count == 0, 'busyStackStatus': state['status'] if busy and count == 0 else None,
+              'resources': resourceRows(config, state if exists else None, count, current, unchanged, busy and count == 0), 'plannedAt': utc(now).isoformat()}
+    if stage:
+        result['stage'] = stage
     result['planDigest'] = digest({k: v for k, v in result.items() if k != 'planDigest'})
     return result
 
 
-def validatePlan(planned, env, root, get=owner.api):
-    identity = provenance(env, get)
+def validatePlan(planned, env, root, get=owner.api, identity=None):
+    """`identity` lets `05 · Recover DEV` check several stage plans against one provenance lookup per release."""
+    identity = identity or provenance(env, get)
     require(planned.get('schema') == SCHEMA_PLAN and all(planned.get(k) == v for k, v in identity.items()), 'Deploy plan identity changed')
     require(planned.get('planDigest') == digest({k: v for k, v in planned.items() if k != 'planDigest'}), 'Deploy plan digest changed')
     templateText, _ = loadTemplate(root)
@@ -270,6 +297,8 @@ def headline(planned):
         else planned['stack'] + ' to zero tasks'
     if planned['unchanged']:
         change = 'DUPLICATE IMAGE, ' + planned['stack'] + ' already runs it: ' + (' or '.join(planned['choices']) + ' or reject')
+    if planned.get('busyStackPark'):
+        change = planned['stack'] + ' to zero tasks while the stack is ' + planned['busyStackStatus']
     return {'env': 'DEV', 'action': action, 'subject': planned['imageTag'], 'change': change}
 
 
@@ -285,6 +314,15 @@ def gist(planned):
                + ', then watch the public probe for ' + str(planned['observationMinutes']) + ' minutes.')
     parked = ('1. Recheck the tag, the plan digest, the template and the configuration; then assume `' + t(planned['deployRoleArn']) + '` as session `' + t(planned['sessionName']) + '`.',
               '2. Change set `' + t(planned['changeSet']) + '` on stack `' + t(planned['stack']) + '`: DesiredCount 0. The stack, service and task definition stay; a later run with DesiredCount 1 starts it again.')
+    if planned.get('busyStackPark'):
+        parked = (parked[0],
+                  '2. The stack is `' + t(planned['busyStackStatus']) + '` and refuses change sets, so the ECS service `' + t(planned['stack'])
+                  + '` is set to DesiredCount 0 directly (`ecs update-service`); the stuck rollout stops and ECS reports the service stable. '
+                  'This needs `ecs:UpdateService` for this deploy session (IAM transition in the README); without it the call is denied and nothing changes.',
+                  '3. Wait at most ' + str(BUSY_SETTLE_SECONDS // 60) + ' minutes for CloudFormation to finish its update or rollback. `UPDATE_ROLLBACK_FAILED` or a timeout stops this run '
+                  '(break-glass runbook on the Admin page Support runbooks).',
+                  '4. Change set `' + t(planned['changeSet']) + '` on stack `' + t(planned['stack']) + '`: DesiredCount 0, so the stack records the park. '
+                  'Then run this workflow again with the release to deploy and desired_count 1.')
     head = ('**Business change:** the published ' + t(planned['app']) + ' image `' + t(planned['imageTag']) + '` serves DEV after an ECS rolling update of `' + t(planned['stack']) + '`.'
             if planned['desiredCount'] == 1 else '**Business change:** the DEV ' + t(planned['app']) + ' service `' + t(planned['stack']) + '` is parked at zero tasks (scheduled scale-down); nothing is deleted.')
     if planned['unchanged']:
@@ -316,7 +354,9 @@ def body(planned, receipt):
         validation=[('Release tag ' + issueTemplate.text(planned['releaseVersion']), 'resolved to source commit ' + owner.commitLink(planned, planned['sourceSha'])),
                     ('Image', 'ECR tag `' + issueTemplate.text(planned['imageTag']) + '` read back as `' + issueTemplate.text(planned['image'].rsplit('@', 1)[-1]) + '`'),
                     ('Template and configuration', '`' + planned['templateSha256'][:16] + '…` / `' + planned['configSha256'][:16] + '…` rechecked before execution'),
-                    ('Change', 'duplicate image: no-op unless you answer REFRESH (restart on the same image)' if planned['unchanged'] else 'rolling update' if planned['stackExists'] else 'first creation')],
+                    ('Change', 'duplicate image: no-op unless you answer REFRESH (restart on the same image)' if planned['unchanged']
+                     else 'park of a busy stack: direct scale to zero, wait, then the park change set' if planned.get('busyStackPark')
+                     else 'rolling update' if planned['stackExists'] else 'first creation')],
         evidence='Review the plan artifact of this run before approving.',
         risks='A new revision that never becomes healthy is rolled back by the ECS circuit breaker and this run fails; the previous revision keeps serving. '
             'Old and new tasks overlap for the discovery TTL and the load-balancer drain. This is owner approval enforced by workflow code, not independent review.',
@@ -327,17 +367,24 @@ def body(planned, receipt):
 
 def decision(planned, receipt, env, root, get=owner.api, now=None):
     validatePlan(planned, env, root, get)
+    return selectedApproval(planned, receipt, get, now)
+
+
+def selectedApproval(planned, receipt, get=owner.api, now=None, render=None, commands=None, window=None):
+    """The owner's live answer on the approval issue of this receipt, or None while there is none. `render`, `commands` and `window`
+    default to this deploy's issue body, commands and window; `05 · Recover DEV` passes its own."""
+    render, commands, window = render or body, commands or approvalCommands, window or approvalWindow
     now = now or utc()
     created, expires = owner.timestamp(receipt['createdAt']), owner.timestamp(receipt['expiresAt'])
     require(receipt.get('schema') == SCHEMA_RECEIPT and receipt.get('planDigest') == planned['planDigest'] and receipt.get('runId') == planned['runId']
-            and created <= now < expires and timedelta(0) < expires - created <= approvalWindow(planned), 'Approval expired or binding changed')
+            and created <= now < expires and timedelta(0) < expires - created <= window(planned), 'Approval expired or binding changed')
     issue = get(planned['repository'], 'issues/' + str(receipt['issue']))
     require(issue.get('state') == 'open' and not issue.get('pull_request') and issue.get('user', {}).get('login') == 'github-actions[bot]'
-            and issue.get('body') == body(planned, receipt), 'Approval issue changed')
+            and issue.get('body') == render(planned, receipt), 'Approval issue changed')
     require(created <= owner.timestamp(issue['created_at']) < expires, 'Approval issue creation time outside review window')
     comments = get(planned['repository'], 'issues/' + str(receipt['issue']) + '/comments?per_page=100')
     require(isinstance(comments, list) and len(comments) < 100, 'Incomplete approval comment inventory')
-    selected, commands = None, {command: mode for mode, command in approvalCommands(planned).items()}
+    selected, commands = None, {command: mode for mode, command in commands(planned).items()}
     for comment in comments:
         if comment.get('user', {}).get('login') != owner.OWNER:
             continue
@@ -377,9 +424,12 @@ def verify(planned, receipt, env, root, get=owner.api, now=None):
 class Deployer:
     """Executes one approved plan; every AWS step is recorded in `self.steps` and written whatever the outcome."""
 
-    def __init__(self, planned, config, templateText, call, sleep=time.sleep, now=None, fetch=None, mode='deploy', log=print):
+    def __init__(self, planned, config, templateText, call, sleep=time.sleep, now=None, fetch=None, mode='deploy', log=print,
+                 stackSeconds=1200, observeRounds=None):
         self.plan, self.config, self.template, self.call = planned, config, templateText, call
         self.sleep, self.now, self.fetch, self.mode, self.log = sleep, now or (lambda: utc()), fetch or probe, mode, log
+        # `05 · Recover DEV` bounds the wait for a serving stage (its healthy_minutes input) and observes for the shorter refresh window.
+        self.stackSeconds, self.observeRounds = stackSeconds, observeRounds
         self.steps = []
 
     def note(self, step, **detail):
@@ -435,7 +485,7 @@ class Deployer:
     def execute(self):
         p = self.plan
         self.call('cloudformation', 'execute-change-set', '--stack-name', p['stack'], '--change-set-name', p['changeSet'])
-        state = self.waitFor('stack ' + p['stack'], self.stackStatus, 1200)
+        state = self.waitFor('stack ' + p['stack'], self.stackStatus, self.stackSeconds)
         require(state in TERMINAL_OK, 'Stack ' + p['stack'] + ' ended in ' + str(state) + ' (ECS rolled the service back to the previous revision if the new one never became healthy)')
         self.note('executed', stack=p['stack'], name=p['changeSet'], status=state)
 
@@ -475,6 +525,31 @@ class Deployer:
                 self.call('elbv2', 'describe-target-health', '--target-group-arn', cfg['targetGroupArn']).get('TargetHealthDescriptions', [])), 180)
         self.note('verified', task=arns[0], counts=counts, discovered=registered, targets=None if targets is None else len(targets))
 
+    def scaleToZero(self):
+        """Busy-stack park: DesiredCount 0 on exactly the configured service, outside the stuck stack update."""
+        p, cfg = self.plan, self.config
+        self.call('ecs', 'update-service', '--cluster', cfg['cluster'], '--service', p['stack'], '--desired-count', '0')
+        self.note('scaled-to-zero', stack=p['stack'], stackStatus=p['busyStackStatus'])
+
+    def settleStack(self):
+        """Wait until CloudFormation has finished the update or rollback it was stuck in; only an updatable state continues."""
+        p = self.plan
+
+        def check():
+            state = stackState(self.call, p['stack'])
+            status = state['status'] if state else None
+            require(status not in TERMINAL_BAD - UPDATABLE, 'Stack ' + p['stack'] + ' ended in ' + str(status)
+                    + ' after the scale-down; follow the break-glass runbook (Support runbooks) before another run')
+            if status in UPDATABLE:
+                return status
+            # A rollback restores the previous DesiredCount; scale to zero again until CloudFormation is done.
+            counts = serviceCounts(self.call, self.config)
+            if counts and counts['desired'] != 0:
+                self.scaleToZero()
+            return None
+        status = self.waitFor('stack ' + p['stack'] + ' to finish its update or rollback', check, BUSY_SETTLE_SECONDS)
+        self.note('stack-settled', stack=p['stack'], status=status)
+
     def verifyParked(self):
         counts = self.waitFor('ECS scale-in of ' + self.plan['stack'],
                               lambda: (lambda c: c if c and c['running'] == 0 and c['desired'] == 0 else None)(serviceCounts(self.call, self.config)), 300)
@@ -503,6 +578,9 @@ class Deployer:
             if self.mode == 'verify':
                 self.note('unchanged', stack=self.plan['stack'], verifyOnly=True)
             else:
+                if self.plan.get('busyStackPark'):
+                    self.scaleToZero()
+                    self.settleStack()
                 if self.mode == 'refresh':
                     self.note('refresh', stack=self.plan['stack'], refreshToken=self.plan['refreshToken'])
                 if self.changeSet() is not None:
@@ -512,7 +590,7 @@ class Deployer:
                 if self.mode == 'refresh':
                     self.observe(self.plan['refreshObservationMinutes'])
                 elif self.mode == 'deploy':
-                    self.observe()
+                    self.observe(self.observeRounds)
             else:
                 self.verifyParked()
             outcome['outcome'] = 'success'
