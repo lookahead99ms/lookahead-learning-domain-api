@@ -33,9 +33,11 @@ public class ScenarioPlans {
         this.hashes=hashes;this.json=json;this.policy=policy;this.customPath=customPath;
     }
     public void populate(UUID owner,LearnerScenario scenario,Instant now){
-        policy.requireLocal();
+        policy.requireEnabled(); // Local seed, or DEV test accounts (DLV-969 S35)
         if(scenario.planKind()==LearnerScenario.PlanKind.NONE)return;
-        if(scenario.planKind()==LearnerScenario.PlanKind.CUSTOM){
+        // DEV has no custom-plan fixture file (it is built for one content release and kept out of images), so the five
+        // custom scenarios get the ready-made plan with the same progress there.
+        if(scenario.planKind()==LearnerScenario.PlanKind.CUSTOM&&!policy.cloud()){
             JsonNode input=custom(scenario.number()==9||scenario.number()==18?"customGrow":"customLearn");
             var validated=catalog.validate(input.path("snapshot"),input.path("provenance"),false,catalog.allTopicIds());
             save(owner,scenario,input.path("snapshot"),validated.provenance(),validated.assignmentContentIds(),now,0);

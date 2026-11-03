@@ -20,7 +20,7 @@ public class ScenarioPurchases {
         this.jdbc=jdbc; this.json=json; this.policy=policy;
     }
     public void populate(UUID account, UUID actor, LearnerScenario scenario, Instant now) {
-        policy.requireLocal();
+        policy.requireEnabled(); // Local seed, or DEV test accounts (DLV-969 S35)
         if (scenario.membership() == null) return;
         ObjectNode plan = definition(scenario.membership());
         var dates = scenario.dates(now, plan.path("duration").path("kind").asText(), plan.path("duration").path("count").asInt());

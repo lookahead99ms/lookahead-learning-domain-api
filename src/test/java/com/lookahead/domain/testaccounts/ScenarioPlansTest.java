@@ -52,6 +52,23 @@ class ScenarioPlansTest {
    verify(lifecycle,times(row.progress()==LearnerScenario.Progress.FINISHED?count:0)).transition(eq(owner),any(),any(),eq("completed"),any());
   }
  }
+ /** DLV-969 S35: DEV has no custom-plan fixture file; the custom scenarios get the ready-made plan, with no fixture read. */
+ @Test void devGivesTheCustomScenariosTheReadyMadePlan() throws Exception {
+  var publication=mock(ProtectedContentPolicy.class);var catalog=mock(SnapshotValidator.class);var plans=mock(PlanRepository.class);
+  JsonNode source=json.readTree(getClass().getResourceAsStream("/study-plans/synthetic-adoption-template.json"));
+  Set<String> topics=new HashSet<>();source.path("topicIds").forEach(t->topics.add(t.asText()));
+  var asset=new ProtectedContentPolicy.Asset("fixture","a".repeat(64),"application/json","pro",topics,Set.of(),"all");
+  when(publication.find(anyString())).thenReturn(Optional.of(asset));when(publication.read(asset)).thenReturn(json.writeValueAsBytes(source));
+  var service=new ScenarioPlans(publication,catalog,plans,mock(PlanLifecycle.class),new PlanJson(json),json,new TestAccountPolicy(TestAccountPolicyTest.cloud("dev")),"");
+  UUID owner=UUID.randomUUID();
+  service.populate(owner,LearnerScenario.of(3),Instant.parse("2026-11-03T12:00:00Z"));
+  verify(publication).find("/content/study-plans/templates/coding-interviews-d7-h1.json");
+  verify(plans).createPlan(eq(owner),any(),any(),anyString(),any(),anyString(),anyLong());
+  verify(catalog,never()).validate(any(),any(),anyBoolean(),any());
+  // Outside Local and DEV nothing is written.
+  var off=new ScenarioPlans(publication,catalog,plans,mock(PlanLifecycle.class),new PlanJson(json),json,new TestAccountPolicy(TestAccountPolicyTest.cloud("prod")),"");
+  assertThatThrownBy(()->off.populate(owner,LearnerScenario.of(3),Instant.now())).hasMessageContaining("disabled");
+ }
  @Test void missingOrUntrustedFixturesFailBeforePlanWrites() throws Exception {
   var publication=mock(ProtectedContentPolicy.class);var catalog=mock(SnapshotValidator.class);var plans=mock(PlanRepository.class);
   var service=new ScenarioPlans(publication,catalog,plans,mock(PlanLifecycle.class),new PlanJson(json),json,new TestAccountPolicy(TestAccountPolicyTest.local()),root.resolve("missing").toString());

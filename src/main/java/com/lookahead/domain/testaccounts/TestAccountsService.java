@@ -61,8 +61,9 @@ public class TestAccountsService {
     @Transactional(readOnly=true)
     public List<ObjectNode> list(AccountPrincipal actor){reader(actor);var actorRole=staff.permissions(actor).feedbackRole();
     boolean named=aliases==null||aliases.seesIdentities(actor);
-    // Cloud mode has no roster: only learners created through CreatedTestAccounts (initialization 'created') exist.
-    String rows=policy.cloud()?"SELECT * FROM test_account_registry WHERE creation_state='active' AND initialization='created' ORDER BY username"
+    // Cloud mode: learners created through CreatedTestAccounts, and the DEV roster the owner created (it records its
+    // creator; Local's seed does not, and never runs in cloud mode).
+    String rows=policy.cloud()?"SELECT * FROM test_account_registry WHERE creation_state='active' AND (initialization='created' OR creator_id IS NOT NULL) ORDER BY username"
         :"SELECT * FROM test_account_registry WHERE creation_state='active' ORDER BY username";
     return jdbc.query(rows,(r,n)->{
         var item=json.createObjectNode().put("accountId",r.getString("account_id")).put("username",r.getString("username"))
@@ -82,10 +83,16 @@ public class TestAccountsService {
     });}
     @Transactional
     public void reset(AccountPrincipal actor,UUID id,Reset request){
-        reader(actor);policy.requireLocal();var permissions=staff.permissions(actor);
+        reader(actor);var permissions=staff.permissions(actor);
+        // DLV-969 S35: in DEV only the owner-created roster resets, and only to its scenario; Local keeps both presets.
+        if(policy.cloud()){
+            if(request==null||!"scenario".equals(request.preset())||jdbc.queryForList("SELECT 1 FROM test_account_registry WHERE account_id=? AND creator_id IS NOT NULL AND initialization<>'created'",Integer.class,id).isEmpty())
+                throw new AccountFailure(422,"RESET_UNAVAILABLE","In DEV only the test roster resets, and only to its scenario.");
+        }else policy.requireLocal();
         if(!permissions.manageAccess()&&!permissions.triageFeedback())throw new AccountFailure(403,"RESET_FORBIDDEN","Only owner or admin can reset test accounts");
         var entry=entry(id);
-        if(request==null||request.key()==null||!entry.username().equals(request.confirmation())||(request.preset()==null||!Set.of("scenario","legacy").contains(request.preset())))
+        String shown=policy.cloud()?entry.cloudUsername():entry.username(); // the username the list shows
+        if(request==null||request.key()==null||!shown.equals(request.confirmation())||(request.preset()==null||!Set.of("scenario","legacy").contains(request.preset())))
             throw new AccountFailure(422,"RESET_CONFIRMATION_REQUIRED","Confirm the exact test username and preset");
         if(request.preset().equals("legacy")&&!entry.username().matches("learner(0[1-9]|10)"))throw new AccountFailure(422,"LEGACY_PRESET_UNAVAILABLE","Legacy fixtures exist only for learner01–learner10");
         jdbc.query("SELECT id FROM platform_subjects WHERE id=? FOR UPDATE",rs->{},id);
@@ -109,13 +116,46 @@ public class TestAccountsService {
         jdbc.update("INSERT INTO test_account_resets(account_id,mutation_key,actor_id,preset) VALUES (?,?,?,?)",id,request.key(),actor.accountId(),request.preset());
     }
     private void defaults(TestAccountRoster.Entry entry,UUID actor,String preset,Instant now){
-        UUID id=entry.accountId();
-        if(entry.staff()){
-            String role=entry.username().startsWith("coauthor")?"co-author":"admin";
+        applyTemplate(entry.accountId(),entry.template(),actor,preset,now);
+    }
+    /**
+     * DLV-969 S35: one DEV roster account inside the caller's transaction: the subject, the registry row with its
+     * creator, an admitted cloud_accounts row on the test issuer and its 'admit' event, then the same defaults as Local.
+     * An account that already has a registry row, deleted or not, is left alone.
+     */
+    void admitRosterEntry(AccountPrincipal owner,TestAccountRoster.Entry entry){
+        policy.requireCloud();
+        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended('test-account-seed',0))",rs->{});
+        if(!jdbc.queryForList("SELECT 1 FROM test_account_registry WHERE account_id=?",Integer.class,entry.accountId()).isEmpty())return;
+        actor(owner.accountId().toString());
+        jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT DO NOTHING",entry.accountId());
+        jdbc.update("INSERT INTO test_account_registry(account_id,username,initialization,creator_id,last_changed_by) VALUES (?,?,'scenario',?,?)",
+                entry.accountId(),entry.cloudUsername(),owner.accountId(),owner.accountId().toString());
+        admitTestAccount(entry.accountId(),entry.cloudUsername(),entry.firstName(),owner.accountId());
+        defaults(entry,owner.accountId(),"scenario",Instant.now());
+    }
+    /** DLV-969 S35: the admitted cloud_accounts row of a DEV test account, on the test issuer, and its 'admit' event. */
+    void admitTestAccount(UUID id,String username,String displayName,UUID admittedBy){
+        jdbc.update("""
+                INSERT INTO cloud_accounts(account_id,issuer,subject,admitted,enabled,author_access,username,display_name,requested_at,admitted_at,admitted_by)
+                VALUES (?,?,?,true,true,false,?,?,clock_timestamp(),clock_timestamp(),?)
+                """,id,TestAccountRoster.TEST_ISSUER,id.toString(),username,displayName,admittedBy);
+        jdbc.update("INSERT INTO cloud_admission_events(id,account_id,issuer,subject,actor_id,action,roles) VALUES (?,?,?,?,?,'admit','[]'::jsonb)",
+                UUID.randomUUID(),id,TestAccountRoster.TEST_ISSUER,id.toString(),admittedBy);
+    }
+    /** A created test account starts from a scenario (DLV-969 S35), inside the creating transaction. */
+    void applyCreated(UUID id,String template,UUID actor){
+        this.actor(actor.toString());
+        applyTemplate(id,template,actor,"scenario",Instant.now());
+    }
+    /** {@code learnerNN} gets its Local scenario (or the legacy preset), {@code co-author} and {@code admin} their role. */
+    private void applyTemplate(UUID id,String template,UUID actor,String preset,Instant now){
+        if(template.equals("co-author")||template.equals("admin")){
+            String role=template;
             jdbc.update("INSERT INTO staff_access(id,account_id,roles,topic_grants,full_curriculum,revision) VALUES (?,?,?::jsonb,'[]',true,1) ON CONFLICT(account_id) DO UPDATE SET roles=excluded.roles,topic_grants='[]',full_curriculum=true,revision=staff_access.revision+1,updated_at=clock_timestamp()",UUID.randomUUID(),id,json.writeValueAsString(List.of(role)));
             return;
         }
-        int number=Integer.parseInt(entry.username().substring(7));
+        int number=Integer.parseInt(template.substring(7));
         if(preset.equals("legacy")){
             var topics=number==9?Set.of("learn:hands-on-dsa","learn:algorithmic-patterns"):catalog.allTopicIds();
             for(String topic:topics)jdbc.update("INSERT INTO account_grants(account_id,topic_id) VALUES (?,?)",id,topic);

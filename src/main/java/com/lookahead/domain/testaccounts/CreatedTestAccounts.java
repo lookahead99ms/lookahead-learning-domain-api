@@ -8,7 +8,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -16,18 +15,33 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * A pending reservation precedes Identity; only a completed Domain record may be activated.
- * Cloud mode (DLV-969, DEV): the Cognito operator provisions the user and the completing transaction also
- * writes the admitted cloud_accounts row and its 'admit' event, so the Waiting list and the audit stay
- * consistent. Delete revokes the account's cloud sign-ins and keeps the admitted row (see
- * {@link CognitoTestIdentityOperator}); the mutation key and the lifetime allowance behave as in Local.
+ * Cloud mode (DLV-969 S35, DEV): no identity provider and no password. The completing transaction writes the admitted
+ * cloud_accounts row on the test issuer and its 'admit' event, then the chosen scenario; staff use the account through
+ * a test session. Delete keeps the admitted row (V17); the mutation key and the lifetime allowance behave as in Local.
  */
 @Service
 public class CreatedTestAccounts {
-    public record Create(UUID key, String password) {
+    /**
+     * {@code scenario}: DLV-969 S35, a {@link TestAccountTemplates} id the account starts from (none: a learner without
+     * access, as before). {@code roster}: the owner's DEV roster ({@link DevTestRoster}) through the same route.
+     * {@code password}: Local only.
+     */
+    public record Create(UUID key, String password, String scenario, boolean roster) {
+        public Create(UUID key, String password) { this(key, password, null, false); }
         @Override public String toString() { return "Create[redacted]"; }
     }
     public record Created(UUID accountId, String username, boolean active) {}
-    public record Allowance(int limit, int used, int remaining) {}
+    /** {@code roster}: the DEV roster's progress, for the owner only; {@code scenarios}: what this creator may choose. */
+    public record Allowance(int limit, int used, int remaining, DevTestRoster.Status roster, List<TestAccountTemplates.Template> scenarios) {
+        public Allowance(int limit, int used, int remaining) { this(limit, used, remaining, null, null); }
+        Allowance with(DevTestRoster.Status status) { return new Allowance(limit, used, remaining, status, scenarios); }
+    }
+    /** DEV test accounts have no sign-in of their own (DLV-969 S35): nothing to provision, activate or disable. */
+    private static final TestIdentity NO_SIGN_IN = new TestIdentity() {
+        @Override public String provision(UUID accountId, String username, String password) { return accountId.toString(); }
+        @Override public void activate(UUID accountId, String username) {}
+        @Override public void disable(UUID accountId, String username) {}
+    };
     private record Reservation(UUID accountId, String username, String state) {}
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
@@ -35,19 +49,23 @@ public class CreatedTestAccounts {
     private final StaffAccessRepository staff;
     private final LocalAuthorAccess owner;
     private final TestIdentityOperator local;
-    private final ObjectProvider<CognitoTestIdentityOperator> cloud;
+    private TestAccountsService accounts;
 
     public CreatedTestAccounts(JdbcTemplate jdbc, PlatformTransactionManager transactionManager, TestAccountPolicy policy,
-            StaffAccessRepository staff, LocalAuthorAccess owner, TestIdentityOperator local,
-            ObjectProvider<CognitoTestIdentityOperator> cloud) {
+            StaffAccessRepository staff, LocalAuthorAccess owner, TestIdentityOperator local) {
         this.jdbc=jdbc; this.transactions=new TransactionTemplate(transactionManager);
-        this.policy=policy; this.staff=staff; this.owner=owner; this.local=local; this.cloud=cloud;
+        this.policy=policy; this.staff=staff; this.owner=owner; this.local=local;
     }
-    private TestIdentity identity() {
-        if (!policy.cloud()) return local;
-        var operator=cloud.getIfAvailable();
-        if (operator==null) throw TestIdentityOperator.unavailable();
-        return operator;
+    /** Writes the scenarios and the DEV admitted row (DLV-969 S35). */
+    @org.springframework.beans.factory.annotation.Autowired
+    public void configureAccounts(TestAccountsService accounts) { this.accounts=accounts; }
+    private TestIdentity identity() { return policy.cloud() ? NO_SIGN_IN : local; }
+    /** The creator's role for scenario limits; a dual-role actor gets the lower one, as for the allowance. */
+    private String role(AccountPrincipal actor) {
+        if (owner.allowed(actor)) return "owner";
+        var assignment=staff.forAccount(actor.accountId());
+        Set<String> roles=assignment==null?Set.of():assignment.roles();
+        return roles.contains("admin") ? "admin" : roles.contains("co-author") ? "co-author" : "";
     }
     private int limit(AccountPrincipal actor) {
         policy.requireEnabled();
@@ -63,19 +81,29 @@ public class CreatedTestAccounts {
     public Allowance allowance(AccountPrincipal actor) {
         int cap=limit(actor);
         int used=jdbc.queryForObject("SELECT count(*) FROM test_account_creations WHERE creator_id=? AND state IN ('active','deleted')",Integer.class,actor.accountId());
-        return new Allowance(cap,used,cap==Integer.MAX_VALUE?Integer.MAX_VALUE:Math.max(0,cap-used));
+        String role=role(actor);
+        var scenarios=TestAccountTemplates.all().stream().filter(t->TestAccountTemplates.allows(role,Set.copyOf(t.roles()))).toList();
+        return new Allowance(cap,used,cap==Integer.MAX_VALUE?Integer.MAX_VALUE:Math.max(0,cap-used),null,scenarios);
     }
     public Created create(AccountPrincipal actor, Create request) {
-        if (request==null || request.key()==null || request.password()==null
+        boolean cloud=policy.cloud();
+        if (request==null || request.key()==null || !cloud && (request.password()==null
                 || request.password().codePointCount(0,request.password().length())<15
-                || request.password().getBytes(StandardCharsets.UTF_8).length>72)
-            throw new AccountFailure(422,"INVALID_TEST_ACCOUNT","Provide a request key and a password of 15 to 72 UTF-8 bytes.");
-        var identity=identity(); // An unwired cloud mode fails before any reservation holds capacity.
+                || request.password().getBytes(StandardCharsets.UTF_8).length>72))
+            throw new AccountFailure(422,"INVALID_TEST_ACCOUNT",cloud?"Provide a request key.":"Provide a request key and a password of 15 to 72 UTF-8 bytes.");
+        String scenario=request.scenario();
+        if (scenario!=null) {
+            if (!TestAccountTemplates.known(scenario)) throw new AccountFailure(422,"UNKNOWN_SCENARIO","Choose one of the listed scenarios.");
+            limit(actor);
+            if (!TestAccountTemplates.allows(role(actor),TestAccountTemplates.roles(scenario)))
+                throw new AccountFailure(403,"SCENARIO_FORBIDDEN","Your role cannot create a test account with this role.");
+        }
+        var identity=identity();
         var reservation=transactions.execute(status -> reserve(actor,request.key()));
         if (reservation==null) throw new IllegalStateException("Reservation did not complete");
         if (!"active".equals(reservation.state())) {
-            String subject=identity.provision(reservation.accountId(),reservation.username(),request.password());
-            transactions.executeWithoutResult(status -> complete(actor,reservation,subject));
+            String subject=identity.provision(reservation.accountId(),reservation.username(),cloud?null:request.password());
+            transactions.executeWithoutResult(status -> complete(actor,reservation,subject,scenario));
         }
         identity.activate(reservation.accountId(),reservation.username());
         return new Created(reservation.accountId(),reservation.username(),true);
@@ -97,14 +125,14 @@ public class CreatedTestAccounts {
         if (used>=cap) throw new AccountFailure(409,"TEST_ACCOUNT_LIMIT","Lifetime test-account creation limit reached.");
         UUID id=UUID.nameUUIDFromBytes(("lookahead-created-test:"+actor.accountId()+":"+key).getBytes(StandardCharsets.UTF_8));
         String hex=id.toString().replace("-","");
-        // Cloud (DEV): the Gateway's sign-in form takes an email, so the pool username is one on the reserved .test
-        // domain (no mail is ever sent); 30 characters fits the varchar(32) username columns.
-        String username=policy.cloud()?"test-"+hex.substring(0,10)+"@lookahead.test":"test-"+hex.substring(0,24);
+        // DEV (DLV-969 S35): an address on the owner's domain, like the roster; it never signs in. 29 characters fits
+        // the varchar(32) username columns.
+        String username=policy.cloud()?"test-"+hex.substring(0,10)+"@"+TestAccountRoster.CLOUD_DOMAIN:"test-"+hex.substring(0,24);
         jdbc.update("INSERT INTO test_account_creations(creator_id,mutation_key,account_id,username,state) VALUES (?,?,?,?,'pending')",
                 actor.accountId(),key,id,username);
         return new Reservation(id,username,"pending");
     }
-    private void complete(AccountPrincipal actor, Reservation reserved, String subject) {
+    private void complete(AccountPrincipal actor, Reservation reserved, String subject, String scenario) {
         limit(actor);
         jdbc.query("SELECT id FROM platform_subjects WHERE id=? FOR UPDATE",rs->{},actor.accountId());
         var states=jdbc.queryForList("SELECT state FROM test_account_creations WHERE creator_id=? AND account_id=? FOR UPDATE",
@@ -118,19 +146,10 @@ public class CreatedTestAccounts {
         jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT DO NOTHING",reserved.accountId());
         jdbc.update("INSERT INTO test_account_registry(account_id,username,initialization,creator_id,last_changed_by) VALUES (?,?,'created',?,?)",
                 reserved.accountId(),reserved.username(),actor.accountId(),actor.accountId().toString());
-        if (policy.cloud()) admit(actor,reserved,subject);
+        // DEV: admitted by its creator on the test issuer, so every account feature finds its row (DLV-969 S35).
+        if (policy.cloud()) accounts.admitTestAccount(reserved.accountId(),reserved.username(),reserved.username(),actor.accountId());
+        if (scenario!=null) accounts.applyCreated(reserved.accountId(),scenario,actor.accountId());
         jdbc.update("UPDATE test_account_creations SET state='active' WHERE creator_id=? AND account_id=?",actor.accountId(),reserved.accountId());
-    }
-    /** The created learner is admitted by its creator; the row is what sign-in admission looks up by issuer and subject. */
-    private void admit(AccountPrincipal actor, Reservation reserved, String subject) {
-        if (subject==null || subject.isBlank()) throw TestIdentityOperator.unavailable();
-        String issuer=cloud.getObject().issuer();
-        jdbc.update("""
-                INSERT INTO cloud_accounts(account_id,issuer,subject,admitted,enabled,author_access,username,display_name,requested_at,admitted_at,admitted_by)
-                VALUES (?,?,?,true,true,false,?,?,clock_timestamp(),clock_timestamp(),?)
-                """,reserved.accountId(),issuer,subject,reserved.username(),reserved.username(),actor.accountId());
-        jdbc.update("INSERT INTO cloud_admission_events(id,account_id,issuer,subject,actor_id,action,roles) VALUES (?,?,?,?,?,'admit','[]'::jsonb)",
-                UUID.randomUUID(),reserved.accountId(),issuer,subject,actor.accountId());
     }
     public void delete(AccountPrincipal actor, UUID id) {
         var target=transactions.execute(status -> authorizedTarget(actor,id));
@@ -167,8 +186,7 @@ public class CreatedTestAccounts {
         jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor.accountId().toString());
         // Audit purge is a Local fixture privilege only; cloud mode never passes it (AccountDataErasure contract).
         new AccountDataErasure(jdbc).erase(id, policy.local());
-        // Cloud: the Cognito user is gone; existing sessions end here. The admitted row stays (V17).
-        if (policy.cloud()) jdbc.update("UPDATE cloud_sign_ins SET revoked_at=clock_timestamp() WHERE account_id=? AND revoked_at IS NULL",id);
+        // Cloud: a deleted test account leaves every test-session list and check at once. The admitted row stays (V17).
         jdbc.update("UPDATE test_account_creations SET state='deleted' WHERE account_id=?",id);
         jdbc.update("UPDATE test_account_registry SET creation_state='deleted',revision=revision+1,last_changed_by=?,last_changed_at=clock_timestamp() WHERE account_id=?",
                 actor.accountId().toString(),id);

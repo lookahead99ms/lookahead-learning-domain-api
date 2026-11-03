@@ -45,8 +45,7 @@
     "PlatformReviewsBucket": "",
     "PlatformReviewsPrefix": "",
     "PlatformReviewsKmsKeyArn": "",
-    "TestAccountIdentity": "cognito",
-    "TestAccountPoolId": "us-east-2_edT1KP4r9"
+    "TestAccountIdentity": "dev"
   },
   "logFailurePatterns": [
     "ERROR",
