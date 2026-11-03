@@ -25,11 +25,60 @@ class CognitoTokenVerifierTest {
             assertThatThrownBy(()->verifier.verify(token(overrides))).isInstanceOf(org.springframework.security.oauth2.core.OAuth2AuthenticationException.class);
         assertThat(fixture.calls.get()).isZero();
     }
-    @Test void validatesProviderSubjectAndDoesNotCacheRevocation(){
+    /**
+     * DLV-969 S37: Cognito's answer for one token is reused for up to a minute (never past the token's expiry), so a
+     * revocation made inside Cognito alone applies within a minute; claim checks still run on every request.
+     */
+    @Test void validatesProviderSubjectAndReusesTheProviderAnswerForAMinuteAtMost(){
+        var now=new java.util.concurrent.atomic.AtomicReference<>(Instant.parse("2026-11-03T12:00:00Z"));
+        var clock=new java.time.Clock(){
+            public java.time.ZoneId getZone(){return java.time.ZoneOffset.UTC;}
+            public java.time.Clock withZone(java.time.ZoneId zone){return this;}
+            public Instant instant(){return now.get();}
+        };
+        var reusing=new CognitoTokenVerifier(SETTINGS,client,clock);
         fixture.response=request->{if(fixture.calls.get()>1)throw NotAuthorizedException.builder().message("revoked").build();return GetUserResponse.builder().username("learner").userAttributes(AttributeType.builder().name("sub").value("synthetic-provider-subject").build()).build();};
-        assertThat(verifier.verify(token(Map.of())).subject()).isEqualTo("synthetic-provider-subject");
-        assertThatThrownBy(()->verifier.verify(token(Map.of()))).isInstanceOf(org.springframework.security.oauth2.core.OAuth2AuthenticationException.class);
+        assertThat(reusing.verifyForApiCall(token(Map.of()),false).subject()).isEqualTo("synthetic-provider-subject");
+        now.set(now.get().plusSeconds(59));
+        assertThat(reusing.verifyForApiCall(token(Map.of()),false).subject()).isEqualTo("synthetic-provider-subject");
+        assertThat(fixture.calls.get()).isEqualTo(1);
+        // Claim checks never use the kept answer.
+        assertThatThrownBy(()->reusing.verifyForApiCall(token(Map.of("client_id","wrong")),false)).isInstanceOf(org.springframework.security.oauth2.core.OAuth2AuthenticationException.class);
+        // After a minute Cognito is asked again, and its revocation applies.
+        now.set(now.get().plusSeconds(2));
+        assertThatThrownBy(()->reusing.verifyForApiCall(token(Map.of()),false)).isInstanceOf(org.springframework.security.oauth2.core.OAuth2AuthenticationException.class);
         assertThat(fixture.calls.get()).isEqualTo(2);
+        // Sign-in routes never reuse: they always ask Cognito.
+        assertThatThrownBy(()->reusing.verify(token(Map.of()))).isInstanceOf(org.springframework.security.oauth2.core.OAuth2AuthenticationException.class);
+        assertThat(fixture.calls.get()).isEqualTo(3);
+        // A refusal is never kept: the next request asks again.
+        assertThatThrownBy(()->reusing.verifyForApiCall(token(Map.of()),false)).isInstanceOf(org.springframework.security.oauth2.core.OAuth2AuthenticationException.class);
+        assertThat(fixture.calls.get()).isEqualTo(4);
+    }
+    @Test void reuseNeverOutlivesTheTokenAndEachTokenIsAskedOnItsOwn(){
+        var now=new java.util.concurrent.atomic.AtomicReference<>(Instant.now());
+        var clock=new java.time.Clock(){
+            public java.time.ZoneId getZone(){return java.time.ZoneOffset.UTC;}
+            public java.time.Clock withZone(java.time.ZoneId zone){return this;}
+            public Instant instant(){return now.get();}
+        };
+        var reusing=new CognitoTokenVerifier(SETTINGS,client,clock);
+        fixture.response=request->GetUserResponse.builder().username("learner").userAttributes(AttributeType.builder().name("sub").value("synthetic-provider-subject").build()).build();
+        var shortLived=Jwt.withTokenValue("short-lived-token").headers(h->h.putAll(token(Map.of()).getHeaders()))
+            .claims(c->{c.putAll(token(Map.of()).getClaims());c.put("exp",now.get().plusSeconds(20));}).build();
+        reusing.verifyForApiCall(shortLived,false);
+        now.set(now.get().plusSeconds(10));
+        reusing.verifyForApiCall(shortLived,false);
+        assertThat(fixture.calls.get()).isEqualTo(1);
+        // Kept only until the token's own expiry (20 s), not the full minute: past it, Cognito is asked again.
+        now.set(now.get().plusSeconds(11));
+        reusing.verifyForApiCall(shortLived,false);
+        assertThat(fixture.calls.get()).isEqualTo(2);
+        // Each token gets its own answer.
+        reusing.verifyForApiCall(token(Map.of()),false);
+        var other=Jwt.withTokenValue("another-access-token").headers(h->h.putAll(token(Map.of()).getHeaders())).claims(c->c.putAll(token(Map.of()).getClaims())).build();
+        reusing.verifyForApiCall(other,false);
+        assertThat(fixture.calls.get()).isEqualTo(4);
     }
     @Test void invitationProofUsesProviderVerifiedEmailNotTokenClaimsOrUsername() {
         fixture.response=request->GetUserResponse.builder().username("typed@example.invalid").userAttributes(

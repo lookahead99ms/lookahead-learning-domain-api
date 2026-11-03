@@ -20,7 +20,7 @@ public final class CloudDomainTokenConverter implements Converter<Jwt,AbstractAu
         String proof=request.getHeader(PROOF_HEADER);
         // DLV-969 decision B: an API sign-in token is admissible only alongside the Gateway's per-sign-in proof,
         // which registry.authenticate then binds to this exact sign-in (a forged or stale proof is refused there).
-        var identity=verifier.verify(token,proof!=null && !proof.isBlank() && proof.length()<=512);
+        var identity=verifier.verifyForApiCall(token,proof!=null && !proof.isBlank() && proof.length()<=512);
         try {
             var principal=registry.authenticate(identity,proof);
             return UsernamePasswordAuthenticationToken.authenticated(principal,null,List.of(new SimpleGrantedAuthority("SCOPE_account"),new SimpleGrantedAuthority("SCOPE_content"),new SimpleGrantedAuthority("SCOPE_support")));

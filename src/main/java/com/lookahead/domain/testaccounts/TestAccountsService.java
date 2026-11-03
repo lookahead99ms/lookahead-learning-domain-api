@@ -164,6 +164,12 @@ public class TestAccountsService {
         var scenario=LearnerScenario.of(number);
         if(number==4)for(String topic:List.of("learn:algorithmic-patterns","learn:core-java"))
             jdbc.update("INSERT INTO account_grants(account_id,topic_id) VALUES (?,?)",id,topic);
-        purchases.populate(id,actor,scenario,now);plans.populate(id,scenario,now);
+        purchases.populate(id,actor,scenario,now);
+        try { plans.populate(id,scenario,now); }
+        catch(ScenarioPlans.TemplateMissing missing) {
+            // DLV-969 S37: DEV before its study plans are published. The account keeps its membership, purchases and
+            // role; Reset adds the plan once the content release has the template. Local still requires it.
+            if(!policy.cloud())throw missing;
+        }
     }
 }

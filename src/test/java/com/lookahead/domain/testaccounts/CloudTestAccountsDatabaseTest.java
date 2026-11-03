@@ -172,14 +172,16 @@ class CloudTestAccountsDatabaseTest {
  }
  @Test void theOwnerCreatesTheRosterInBatchesWithItsScenariosAndRolesAndItResetsInDev(){
   var roster=roster();
-  assertThat(roster.statusFor(owner)).isEqualTo(new DevTestRoster.Status(35,0,0));
+  assertThat(roster.statusFor(owner)).extracting("total","ready","deleted").containsExactly(35,0,0);
   assertThat(roster.statusFor(admin)).isNull();
   assertThatThrownBy(()->roster.next(admin)).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.code()).isEqualTo("TEST_ROSTER_OWNER_ONLY"));
-  assertThat(roster.next(owner)).isEqualTo(new DevTestRoster.Status(35,5,0));
+  assertThat(roster.next(owner)).extracting("total","ready","deleted").containsExactly(35,5,0);
   int calls=1;DevTestRoster.Status status;
   do{status=roster.next(owner);calls++;}while(status.remaining()>0);
-  assertThat(calls).isEqualTo(7);assertThat(status).isEqualTo(new DevTestRoster.Status(35,35,0));
+  assertThat(calls).isEqualTo(7);assertThat(status).extracting("total","ready","deleted").containsExactly(35,35,0);
   assertThat(roster.next(owner)).isEqualTo(status);
+  // Plans are faked here, so every learner whose scenario has a plan counts as still without one (all but 01 and 10).
+  assertThat(status.withoutPlan()).isEqualTo(25);
   assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE issuer=? AND admitted AND admitted_by=?",Integer.class,TestAccountRoster.TEST_ISSUER,owner.accountId())).isEqualTo(35);
   var learner01=TestAccountRoster.entries().getFirst();
   assertThat(jdbc.queryForMap("SELECT username,display_name FROM cloud_accounts WHERE account_id=?",learner01.accountId()))
@@ -200,8 +202,23 @@ class CloudTestAccountsDatabaseTest {
   assertThat(jdbc.queryForObject("SELECT count(*) FROM membership_purchases WHERE account_id=? AND superseded_at IS NULL",Integer.class,learner12)).isEqualTo(2);
   // A deleted roster account is never created again.
   created.delete(owner,learner01.accountId());
-  assertThat(roster.next(owner)).isEqualTo(new DevTestRoster.Status(35,34,1));
+  assertThat(roster.next(owner)).extracting("total","ready","deleted").containsExactly(35,34,1);
   assertThat(jdbc.queryForObject("SELECT creation_state FROM test_account_registry WHERE account_id=?",String.class,learner01.accountId())).isEqualTo("deleted");
+ }
+ /** DLV-969 S37: DEV before its study plans are published; the roster carries on and says who still needs a plan. */
+ @Test void aMissingPlanTemplateNeverStopsTheRosterInDevButStillFailsLocal(){
+  doThrow(new ScenarioPlans.TemplateMissing("coding-interviews-d7-h1")).when(plans).populate(any(),any(),any());
+  var roster=roster();
+  var first=roster.next(owner);
+  assertThat(first).extracting("total","ready","deleted","withoutPlan").containsExactly(35,5,0,4);
+  // learner05 still got its scenario's membership; only the plan is missing.
+  assertThat(jdbc.queryForList("SELECT plan_id FROM membership_purchases WHERE account_id=?",String.class,new TestAccountRoster.Entry("learner05",false).accountId())).containsExactly("learn");
+  // Local keeps requiring the template.
+  var localPolicy=new TestAccountPolicy(TestAccountPolicyTest.local());
+  var staff=mock(StaffAccessService.class);when(staff.permissions(any())).thenReturn(StaffPermissions.forRoles(false,Set.of("admin")));
+  var local=new TestAccountsService(jdbc,json,localPolicy,new ScenarioPurchases(jdbc,json,localPolicy),plans,staff,new AccessSummaryService(jdbc,json,staff),mock(SnapshotValidator.class));
+  UUID id=UUID.randomUUID();jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",id);
+  assertThatThrownBy(()->local.applyCreated(id,"learner02",owner.accountId())).isInstanceOf(ScenarioPlans.TemplateMissing.class).hasMessageContaining("coding-interviews-d7-h1");
  }
  @Test void testSessionsFollowTheGateHoldersRoleAndStateOnEveryCall(){
   var roster=roster();while(roster.next(owner).remaining()>0){}

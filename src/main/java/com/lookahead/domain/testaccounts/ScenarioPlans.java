@@ -18,6 +18,10 @@ import java.util.*;
 /** Historical local fixtures use the real plan/version/progress/lifecycle model. */
 @Component
 public class ScenarioPlans {
+    /** The content release has no such ready-made plan template (DLV-969 S37: DEV before its study plans are published). */
+    public static final class TemplateMissing extends IllegalStateException {
+        TemplateMissing(String templateId) { super("Required scenario template is missing: " + templateId); }
+    }
     private final ProtectedContentPolicy publication;
     private final SnapshotValidator catalog;
     private final PlanRepository plans;
@@ -57,7 +61,7 @@ public class ScenarioPlans {
     }
     private void ready(UUID owner,LearnerScenario scenario,String templateId,Instant now,int index){
         var asset=publication.find("/content/study-plans/templates/"+templateId+".json")
-                .orElseThrow(()->new IllegalStateException("Required scenario template is missing"));
+                .orElseThrow(()->new TemplateMissing(templateId));
         JsonNode source=json.readTree(publication.read(asset));
         catalog.validateTemplateReferences(CatalogIds.normalize(source));
         var mapping=new ReadyMadeTemplateMapper(json).map(source,asset.sha256());
