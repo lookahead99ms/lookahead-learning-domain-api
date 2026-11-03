@@ -125,6 +125,6 @@
     {"id": "executions-cancel", "method": "DELETE", "path": "/api/v1/executions/jobs/{jobId}", "example": "/api/v1/executions/jobs/aa852488-aead-4b3d-a91f-c5d189539a52", "callers": ["GatewayController.proxy"]}
   ],
   "forwardedWithoutProviderNote": "The Gateway relays these execution routes, but Domain has no handler for them today (learner code execution is deferred, DLV-310 / ADR-007); Domain answers 404. The provider test asserts they stay unmapped so adding them means moving them to calls.",
-  "webPaths": ["/", "/index.html", "/sign-in", "/sign-in/choose", "/account", "/pricing", "/delivery-plan", "/study-plan", "/learn", "/grow", "/blaze", "/look-ahead", "/search", "/support", "/author", "/admin"],
+  "webPaths": ["/", "/index.html", "/sign-in", "/sign-in/choose", "/welcome", "/account", "/pricing", "/delivery-plan", "/study-plan", "/learn", "/grow", "/blaze", "/look-ahead", "/search", "/support", "/author", "/admin"],
   "webPathsNote": "DevWebProxy forwards every safe GET/HEAD path to the Web origin (DevServiceOrigins.web); these are the paths the Gateway itself sends browsers to: the sign-in redirects of GatewaySecurityHandlers/GatewayController and the return destinations GatewayConfiguration.safeReturn accepts. Each must resolve on the built Web site to a file, a route snapshot or the application shell."
 }

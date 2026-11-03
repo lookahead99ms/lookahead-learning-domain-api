@@ -56,6 +56,29 @@ class CognitoTokenVerifierTest {
         assertThatThrownBy(()->verifier.verify(token(Map.of("iat",Instant.now().plusSeconds(120))))).isInstanceOf(org.springframework.security.oauth2.core.OAuth2AuthenticationException.class);
         assertThat(fixture.calls.get()).isZero();
     }
+    /** DLV-969 decision B: API sign-in tokens carry only the Cognito admin scope; accepted only with Gateway proof. */
+    @Test void apiSignInTokenNeedsGatewayProofOurClientAndExactlyTheAdminScope(){
+        fixture.response=request->GetUserResponse.builder().username("priya@example.invalid").userAttributes(AttributeType.builder().name("sub").value("synthetic-provider-subject").build()).build();
+        var api=Map.<String,Object>of("scope",CognitoTokenVerifier.ADMIN_SCOPE);
+        assertThat(verifier.verify(token(api),true).subject()).isEqualTo("synthetic-provider-subject");
+        assertThat(fixture.calls.get()).isEqualTo(1);
+        // Without proof of the Gateway, an API sign-in token is refused before the provider is asked.
+        assertThatThrownBy(()->verifier.verify(token(api))).isInstanceOf(org.springframework.security.oauth2.core.OAuth2AuthenticationException.class);
+        assertThatThrownBy(()->verifier.verify(token(api),false)).isInstanceOf(org.springframework.security.oauth2.core.OAuth2AuthenticationException.class);
+        for(var bad:java.util.List.of(
+                Map.<String,Object>of("scope",CognitoTokenVerifier.ADMIN_SCOPE,"client_id","another-client"),
+                Map.<String,Object>of("scope",CognitoTokenVerifier.ADMIN_SCOPE,"token_use","id"),
+                Map.<String,Object>of("scope",CognitoTokenVerifier.ADMIN_SCOPE+" lookahead/account"),
+                Map.<String,Object>of("scope",CognitoTokenVerifier.ADMIN_SCOPE+" openid"),
+                Map.<String,Object>of("scope","lookahead/account lookahead/content lookahead/support"),
+                Map.<String,Object>of("scope",""),
+                Map.<String,Object>of("scope",CognitoTokenVerifier.ADMIN_SCOPE,"exp",Instant.now().minusSeconds(5),"iat",Instant.now().minusSeconds(60))))
+            assertThatThrownBy(()->verifier.verify(token(bad),true)).as(bad.toString()).isInstanceOf(org.springframework.security.oauth2.core.OAuth2AuthenticationException.class);
+        assertThat(fixture.calls.get()).isEqualTo(1);
+        // OAuth tokens keep today's rule, with or without the proof flag.
+        assertThat(verifier.verify(token(Map.of()),false).subject()).isEqualTo("synthetic-provider-subject");
+        assertThat(verifier.verify(token(Map.of()),true).subject()).isEqualTo("synthetic-provider-subject");
+    }
     @Test void cloudSettingsCannotFallBackToLocal(){
         var env=new MockEnvironment().withProperty("app.deployment-environment","dev").withProperty("app.cognito.issuer",SETTINGS.issuer()).withProperty("app.cognito.region",SETTINGS.region())
             .withProperty("app.cognito.client-id",SETTINGS.clientId()).withProperty("app.cognito.scope-prefix",SETTINGS.scopePrefix()).withProperty("app.cognito.gateway-secret",SETTINGS.gatewaySecret());
