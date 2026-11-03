@@ -66,7 +66,9 @@ class CloudTestAccountsDatabaseTest {
  @Test void createInCloudModeWritesTheAdmittedRowAndItsAuditEventOnceAndIsRetrySafe(){
   var key=UUID.randomUUID();var request=new CreatedTestAccounts.Create(key,"Synthetic-learner-password-1!");
   var first=created.create(admin,request);
-  assertThat(first.active()).isTrue();assertThat(first.username()).startsWith("test-");
+  assertThat(first.active()).isTrue();
+  // The Gateway's sign-in form takes an email: a reserved .test address that fits the varchar(32) columns.
+  assertThat(first.username()).matches("test-[0-9a-f]{10}@lookahead\\.test").hasSizeLessThanOrEqualTo(32);
   var row=jdbc.queryForMap("SELECT issuer,subject,admitted,enabled,author_access,username,display_name,admitted_by,admitted_at,requested_at,verified_email FROM cloud_accounts WHERE account_id=?",first.accountId());
   assertThat(row.get("issuer")).isEqualTo(ISSUER);assertThat(row.get("subject")).isEqualTo("sub-"+first.username());
   assertThat(row.get("admitted")).isEqualTo(true);assertThat(row.get("enabled")).isEqualTo(true);assertThat(row.get("author_access")).isEqualTo(false);

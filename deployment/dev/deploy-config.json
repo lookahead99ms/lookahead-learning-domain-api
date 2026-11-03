@@ -44,7 +44,9 @@
     "DiscoveryServiceArn": "arn:aws:servicediscovery:us-east-2:509614632283:service/srv-kjp3rm76n4xr45ss",
     "PlatformReviewsBucket": "",
     "PlatformReviewsPrefix": "",
-    "PlatformReviewsKmsKeyArn": ""
+    "PlatformReviewsKmsKeyArn": "",
+    "TestAccountIdentity": "cognito",
+    "TestAccountPoolId": "us-east-2_edT1KP4r9"
   },
   "logFailurePatterns": [
     "ERROR",
