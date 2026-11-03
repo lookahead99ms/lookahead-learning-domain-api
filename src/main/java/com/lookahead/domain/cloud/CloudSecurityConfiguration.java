@@ -65,7 +65,7 @@ public class CloudSecurityConfiguration {
                 byte[] supplied=java.util.Objects.toString(secret,"").getBytes(StandardCharsets.UTF_8);
                 boolean gatewayVerified=MessageDigest.isEqual(supplied,settings.gatewaySecret().getBytes(StandardCharsets.UTF_8));
                 if(!gatewayVerified)throw CognitoTokenVerifier.invalid();
-                return UsernamePasswordAuthenticationToken.authenticated(verifier.verify(jwt),null,List.of());
+                return UsernamePasswordAuthenticationToken.authenticated(verifier.verify(jwt,true),null,List.of());
             })).authenticationEntryPoint((req,res,error)->{
                 res.setStatus(error instanceof AuthenticationServiceException?503:401);res.setHeader("Cache-Control","no-store");res.setContentType("application/json");
                 res.getWriter().write("{\"code\":\"AUTHENTICATION_REQUIRED\",\"message\":\"Unable to verify sign-in.\"}");

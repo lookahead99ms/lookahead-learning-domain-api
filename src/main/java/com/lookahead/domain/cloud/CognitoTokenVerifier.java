@@ -12,23 +12,44 @@ import software.amazon.awssdk.services.cognitoidentityprovider.CognitoIdentityPr
 import software.amazon.awssdk.services.cognitoidentityprovider.model.NotAuthorizedException;
 import software.amazon.awssdk.services.cognitoidentityprovider.model.UserNotFoundException;
 
-/** Called after JWT signature/issuer/time validation; checks provider revocation on every request. */
+/**
+ * Called after JWT signature/issuer/time validation; checks provider revocation on every request.
+ *
+ * <p>Two token shapes are accepted, both only for our application client:
+ * <ul>
+ *   <li>authorization-server (OAuth) tokens carrying {@code aws.cognito.signin.user.admin} and the three Look Ahead
+ *   scopes, exactly as before;</li>
+ *   <li>DLV-969 decision B: Cognito API sign-in tokens (our own sign-in page, {@code InitiateAuth}), whose scope is
+ *   exactly {@code aws.cognito.signin.user.admin} because Cognito cannot add custom scopes to them, and only when the
+ *   caller has already proven the request comes from our Gateway ({@code gatewayProven}: the Gateway service secret
+ *   on the internal sign-in routes, the per-sign-in proof on API calls). Such a token is treated as holding the same
+ *   three logical scopes. Any other scope mix is refused.</li>
+ * </ul>
+ */
 public final class CognitoTokenVerifier {
+    public static final String ADMIN_SCOPE="aws.cognito.signin.user.admin";
     private final CognitoSettings settings;
     private final CognitoIdentityProviderClient client;
     public CognitoTokenVerifier(CognitoSettings settings,CognitoIdentityProviderClient client){this.settings=settings;this.client=client;}
-    public CognitoIdentity verify(Jwt jwt) {
-        try { return verifyClaims(jwt); }
+    /** OAuth tokens only; API sign-in tokens are refused without proof of the Gateway. */
+    public CognitoIdentity verify(Jwt jwt) { return verify(jwt,false); }
+    public CognitoIdentity verify(Jwt jwt,boolean gatewayProven) {
+        try { return verifyClaims(jwt,gatewayProven); }
         catch(OAuth2AuthenticationException|IdentityUnavailableException expected){throw expected;}
         catch(RuntimeException malformed){throw invalid();}
     }
-    private CognitoIdentity verifyClaims(Jwt jwt) {
+    /** The full OAuth scope set, or exactly the API sign-in scope when the Gateway is proven. */
+    boolean scopesAccepted(Set<String> scopes,boolean gatewayProven){
+        if(scopes.containsAll(Set.of(ADMIN_SCOPE,settings.scopePrefix()+"/account",settings.scopePrefix()+"/content",settings.scopePrefix()+"/support")))return true;
+        return gatewayProven && scopes.equals(Set.of(ADMIN_SCOPE));
+    }
+    private CognitoIdentity verifyClaims(Jwt jwt,boolean gatewayProven) {
         Set<String> scopes=Set.of();
         String scope=jwt.getClaimAsString("scope");
-        if(scope!=null)scopes=Arrays.stream(scope.split(" ")).collect(Collectors.toSet());
+        if(scope!=null)scopes=Arrays.stream(scope.split(" ")).filter(s->!s.isEmpty()).collect(Collectors.toSet());
         if(jwt.hasClaim("aud") || jwt.getTokenValue().length()>16384 || !settings.issuer().equals(jwt.getIssuer().toString())
                 || !"access".equals(jwt.getClaimAsString("token_use")) || !settings.clientId().equals(jwt.getClaimAsString("client_id"))
-                || !scopes.containsAll(Set.of("aws.cognito.signin.user.admin",settings.scopePrefix()+"/account",settings.scopePrefix()+"/content",settings.scopePrefix()+"/support")))throw invalid();
+                || !scopesAccepted(scopes,gatewayProven))throw invalid();
         String subject=bounded(jwt.getSubject(),256),family=bounded(jwt.getClaimAsString("origin_jti"),256);
         Instant now=Instant.now(),auth=jwt.getClaimAsInstant("auth_time");
         if(jwt.getIssuedAt()==null || jwt.getExpiresAt()==null || !jwt.getExpiresAt().isAfter(now)
