@@ -123,12 +123,12 @@ class CloudTestAccountsDatabaseTest {
   var learner=created.create(admin,new CreatedTestAccounts.Create(UUID.randomUUID(),null,"learner02",false));
   jdbc.update("INSERT INTO account_grants(account_id,topic_id) VALUES (?,'learn:core-java')",learner.accountId());
   String ownerSub="sub-owner";holder(ownerSub,true);
-  assertThat(sessions().authenticate(ownerSub,learner.accountId()).username()).isEqualTo(learner.username());
+  assertThat(sessions().actAs(ownerSub,learner.accountId()).username()).isEqualTo(learner.username());
   created.delete(admin,learner.accountId());
   assertThat(jdbc.queryForMap("SELECT admitted,enabled FROM cloud_accounts WHERE account_id=?",learner.accountId())).containsEntry("admitted",true).containsEntry("enabled",true);
   assertThat(jdbc.queryForObject("SELECT creation_state FROM test_account_registry WHERE account_id=?",String.class,learner.accountId())).isEqualTo("deleted");
   assertThat(jdbc.queryForObject("SELECT count(*) FROM account_grants WHERE account_id=?",Integer.class,learner.accountId())).isZero();
-  assertThatThrownBy(()->sessions().authenticate(ownerSub,learner.accountId())).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.status()).isEqualTo(404));
+  assertThatThrownBy(()->sessions().actAs(ownerSub,learner.accountId())).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.status()).isEqualTo(404));
   assertThat(sessions().usable(ownerSub)).isEmpty();
   assertThat(created.allowance(admin)).extracting("limit","used","remaining").containsExactly(10,1,9);
  }
@@ -219,26 +219,28 @@ class CloudTestAccountsDatabaseTest {
   assertThat(sessions.usable(ownerSub).stream().filter(u->u.username().equals("learner06@lookahead.dev")).findFirst().orElseThrow().scenario())
       .isEqualTo("Learn · ending soon · student discount · custom plan · in progress");
   UUID coauthor01=new TestAccountRoster.Entry("coauthor01",true).accountId(),learner07=new TestAccountRoster.Entry("learner07",false).accountId();
-  var principal=sessions.authenticate(adminSub,learner07);
+  var principal=sessions.actAs(adminSub,learner07);
   assertThat(principal.accountId()).isEqualTo(learner07);assertThat(principal.username()).isEqualTo("learner07@lookahead.dev");
   assertThat(principal.displayName()).isEqualTo("Learner07");assertThat(principal.isEnabled()).isTrue();assertThat(principal.cloudAuthor()).isFalse();
-  assertThatThrownBy(()->sessions.authenticate(adminSub,coauthor01)).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.code()).isEqualTo("TEST_SESSION_FORBIDDEN"));
-  assertThat(sessions.authenticate(coauthorSub,coauthor01).accountId()).isEqualTo(coauthor01);
-  assertThatThrownBy(()->sessions.authenticate(learnerSub,learner07)).isInstanceOf(AccountFailure.class);
-  assertThatThrownBy(()->sessions.authenticate(disabledSub,learner07)).isInstanceOf(AccountFailure.class);
+  assertThatThrownBy(()->sessions.actAs(adminSub,coauthor01)).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.code()).isEqualTo("TEST_SESSION_FORBIDDEN"));
+  assertThat(sessions.actAs(coauthorSub,coauthor01).accountId()).isEqualTo(coauthor01);
+  assertThatThrownBy(()->sessions.actAs(learnerSub,learner07)).isInstanceOf(AccountFailure.class);
+  assertThatThrownBy(()->sessions.actAs(disabledSub,learner07)).isInstanceOf(AccountFailure.class);
+  // A start without an account id is refused before anything is looked up.
+  assertThatThrownBy(()->sessions.actAs(adminSub,null)).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.status()).isEqualTo(422));
   // A real account is never a test-session target, even for the owner.
   UUID real=holder("sub-real",false);
-  assertThatThrownBy(()->sessions.authenticate(ownerSub,real)).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.status()).isEqualTo(404));
+  assertThatThrownBy(()->sessions.actAs(ownerSub,real)).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.status()).isEqualTo(404));
   // A holder disabled after the session started loses it on the next call.
   jdbc.update("INSERT INTO cloud_account_states(account_id,state,changed_by) SELECT account_id,'disabled',? FROM cloud_accounts WHERE subject=?",owner.accountId(),adminSub);
-  assertThatThrownBy(()->sessions.authenticate(adminSub,learner07)).isInstanceOf(AccountFailure.class);
+  assertThatThrownBy(()->sessions.actAs(adminSub,learner07)).isInstanceOf(AccountFailure.class);
   // The Gateway secret is compared on every request.
   var request=new MockHttpServletRequest();assertThat(sessions.fromGateway(request)).isFalse();
   request.addHeader(DevTestSessions.SECRET_HEADER,"synthetic-gateway-secret");assertThat(sessions.fromGateway(request)).isTrue();
   // Outside dev mode nothing answers.
   var off=new DevTestSessions(jdbc,new TestAccountPolicy(TestAccountPolicyTest.cloud("prod")),ISSUER,"synthetic-gateway-secret");
   assertThatThrownBy(()->off.usable(ownerSub)).isInstanceOf(AccountFailure.class);
-  assertThatThrownBy(()->off.authenticate(ownerSub,learner07)).isInstanceOf(AccountFailure.class);
+  assertThatThrownBy(()->off.actAs(ownerSub,learner07)).isInstanceOf(AccountFailure.class);
  }
 
  static JdbcTemplate fixtureJdbc; static org.springframework.transaction.PlatformTransactionManager fixtureTransactions;

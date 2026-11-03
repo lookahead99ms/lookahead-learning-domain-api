@@ -60,9 +60,28 @@ public class DevTestSessions {
         }).filter(Objects::nonNull).toList();
     }
 
+    /**
+     * What an {@code /api/**} request is: not a test-session request (empty), the test account it acts as, or refused
+     * ({@link AccountFailure} 401) without the Gateway secret, with a bearer token, or with a malformed account id. The
+     * whole decision stays here, so the caller acts only on its result.
+     */
+    public java.util.Optional<AccountPrincipal> requestAccount(HttpServletRequest request) {
+        String account = request.getHeader(ACCOUNT_HEADER);
+        boolean gateway = fromGateway(request);
+        if (account == null) return java.util.Optional.empty();
+        if (!gateway || request.getHeader("Authorization") != null) throw refused();
+        UUID id;
+        try { id = UUID.fromString(account); } catch (IllegalArgumentException malformed) { throw refused(); }
+        try { return java.util.Optional.of(actAs(request.getHeader(HOLDER_HEADER), id)); }
+        catch (AccountFailure denied) { throw refused(); }
+    }
+
+    private static AccountFailure refused() { return new AccountFailure(401, "AUTHENTICATION_REQUIRED", "Sign in to continue"); }
+
     /** The test account a gate holder acts as for this request; refused unless every rule above holds. */
-    public AccountPrincipal authenticate(String holderSubject, UUID accountId) {
+    public AccountPrincipal actAs(String holderSubject, UUID accountId) {
         policy.requireCloud();
+        if (accountId == null) throw new AccountFailure(422, "TEST_ACCOUNT_REQUIRED", "Choose a test account.");
         String role = holderRole(holderSubject);
         var target = targets(accountId).stream().findFirst()
                 .orElseThrow(() -> new AccountFailure(404, "TEST_ACCOUNT_NOT_FOUND", "This test account is not available."));

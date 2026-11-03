@@ -27,8 +27,9 @@ class DevTestSessionsTest {
     static final class Stub extends DevTestSessions {
         RuntimeException failure;
         Stub() { super(null, null, "issuer", "secret"); }
-        @Override public AccountPrincipal authenticate(String holder, UUID account) {
+        @Override public AccountPrincipal actAs(String holder, UUID account) {
             if (failure != null) throw failure;
+            if (account == null) throw new AccountFailure(422, "TEST_ACCOUNT_REQUIRED", "Choose a test account.");
             if (!"sub-admin".equals(holder)) throw new AccountFailure(403, "TEST_SESSION_FORBIDDEN", "No");
             if (!ACCOUNT.equals(account)) throw new AccountFailure(404, "TEST_ACCOUNT_NOT_FOUND", "No");
             return LEARNER;

@@ -1,7 +1,6 @@
 package com.lookahead.domain.testaccounts;
 
 import com.lookahead.learning.content.dto.ApiResponse;
-import com.lookahead.learning.content.exception.AccountFailure;
 import jakarta.servlet.http.HttpServletResponse;
 import java.util.Map;
 import java.util.UUID;
@@ -26,8 +25,8 @@ public class DevTestSessionsController {
     public ApiResponse<?> start(@RequestHeader(value = DevTestSessions.HOLDER_HEADER, required = false) String holder,
             @RequestBody(required = false) Start request, HttpServletResponse response) {
         response.setHeader("Cache-Control", "no-store");
-        if (request == null || request.accountId() == null) throw new AccountFailure(422, "TEST_ACCOUNT_REQUIRED", "Choose a test account.");
-        var principal = sessions.authenticate(holder, request.accountId());
+        // actAs refuses a missing account id (422); the holder and the account are checked in the database.
+        var principal = sessions.actAs(holder, request == null ? null : request.accountId());
         return ApiResponse.success(Map.of("accountId", principal.accountId(), "username", principal.username(), "displayName", principal.displayName()));
     }
 }

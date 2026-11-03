@@ -8,7 +8,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.List;
-import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -35,9 +34,10 @@ public class DevTestSessionConfiguration {
     }
 
     @Bean @Order(0) SecurityFilterChain devTestSessionSecurity(HttpSecurity http, DevTestSessions sessions) throws Exception {
-        // Service to service: no browser, cookie or session, so no CSRF token; the Gateway secret is the credential.
+        // Service to service, with no browser cookie or session. CSRF stays on; only a request carrying the valid Gateway
+        // secret skips it, and the gate filter below, which runs before CSRF, refuses every other request.
         return http.securityMatcher("/internal/v1/test-sessions/**")
-                .csrf(AbstractHttpConfigurer::disable).httpBasic(AbstractHttpConfigurer::disable).formLogin(AbstractHttpConfigurer::disable)
+                .csrf(csrf -> csrf.ignoringRequestMatchers(sessions::fromGateway)).httpBasic(AbstractHttpConfigurer::disable).formLogin(AbstractHttpConfigurer::disable)
                 .logout(AbstractHttpConfigurer::disable).requestCache(AbstractHttpConfigurer::disable)
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .addFilterBefore(new OncePerRequestFilter() {
@@ -46,7 +46,7 @@ public class DevTestSessionConfiguration {
                         if (!sessions.fromGateway(request)) { Filter.refuse(response); return; }
                         chain.doFilter(request, response);
                     }
-                }, org.springframework.security.web.authentication.AnonymousAuthenticationFilter.class)
+                }, org.springframework.security.web.csrf.CsrfFilter.class)
                 .authorizeHttpRequests(a -> a.anyRequest().permitAll()).build();
     }
 
@@ -59,21 +59,17 @@ public class DevTestSessionConfiguration {
         public Filter(DevTestSessions sessions) { this.sessions = sessions; }
         @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
                 throws ServletException, IOException {
-            String account = request.getHeader(DevTestSessions.ACCOUNT_HEADER);
-            if (account == null) { chain.doFilter(request, response); return; }
-            boolean gateway = sessions.fromGateway(request);
-            if (!gateway || request.getHeader("Authorization") != null) { refuse(response); return; }
-            UsernamePasswordAuthenticationToken authentication;
-            try {
-                var principal = sessions.authenticate(request.getHeader(DevTestSessions.HOLDER_HEADER), UUID.fromString(account));
-                authentication = UsernamePasswordAuthenticationToken.authenticated(principal, null, List.of(new SimpleGrantedAuthority("SCOPE_account"),
-                        new SimpleGrantedAuthority("SCOPE_content"), new SimpleGrantedAuthority("SCOPE_support")));
-            } catch (IllegalArgumentException | AccountFailure refused) { refuse(response); return; }
+            java.util.Optional<com.lookahead.learning.content.security.AccountPrincipal> principal;
+            try { principal = sessions.requestAccount(request); }
+            catch (AccountFailure refused) { refuse(response); return; }
             catch (RuntimeException unavailable) {
                 response.setStatus(503); response.setHeader("Cache-Control", "no-store"); response.setContentType("application/json");
                 response.getWriter().write("{\"status\":503,\"code\":\"IDENTITY_UNAVAILABLE\",\"message\":\"Identity verification is unavailable; retain your work and retry\"}");
                 return;
             }
+            if (principal.isEmpty()) { chain.doFilter(request, response); return; }
+            var authentication = UsernamePasswordAuthenticationToken.authenticated(principal.get(), null, List.of(new SimpleGrantedAuthority("SCOPE_account"),
+                    new SimpleGrantedAuthority("SCOPE_content"), new SimpleGrantedAuthority("SCOPE_support")));
             var context = SecurityContextHolder.getContextHolderStrategy().createEmptyContext();
             context.setAuthentication(authentication);
             SecurityContextHolder.getContextHolderStrategy().setContext(context);
