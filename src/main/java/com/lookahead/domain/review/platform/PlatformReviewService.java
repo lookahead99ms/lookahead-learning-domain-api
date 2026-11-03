@@ -46,6 +46,9 @@ public class PlatformReviewService {
     private com.lookahead.domain.access.StaffAccessService access;
     @Autowired
     public void configureStaffAccess(com.lookahead.domain.access.StaffAccessService access) { this.access=access; }
+    private com.lookahead.domain.access.StaffAliases aliases;
+    @Autowired(required = false)
+    public void configureAliases(com.lookahead.domain.access.StaffAliases aliases) { this.aliases=aliases; }
     private final java.util.concurrent.locks.ReentrantLock writes = new java.util.concurrent.locks.ReentrantLock();
 
     @Autowired
@@ -79,13 +82,13 @@ public class PlatformReviewService {
             read++;
             var items = new ArrayList<>(load(day).items());
             Collections.reverse(items);
-            for (StoredItem item : items) if (owner || mine(item, actor)) page.add(summary(item));
+            for (StoredItem item : items) if (owner || mine(item, actor)) page.add(summary(shown(actor, item)));
         }
         return new Page(page, null);
     }
 
     public Item item(AccountPrincipal actor, String id) {
-        return view(visible(actor, id).item());
+        return view(shown(actor, visible(actor, id).item()));
     }
 
     public Content attachment(AccountPrincipal actor, String id, String attachmentId) {
@@ -195,7 +198,7 @@ public class PlatformReviewService {
         if (status == null || !STATUSES.contains(status)) throw invalid("Choose a status.");
         String ownerNote = text(note == null ? "" : note, NOTE_LENGTH, true, "Keep the note within 2000 characters.").strip();
         var found = visible(actor, id);
-        return view(change(found.day(), items -> {
+        return view(shown(actor, change(found.day(), items -> {
             var next = new ArrayList<>(items);
             int at = indexOf(next, id);
             StoredItem c = next.get(at);
@@ -204,7 +207,7 @@ public class PlatformReviewService {
                     clock.instant().toString(), c.createKey(), c.createHash(), c.lastWriteKey(), c.submitterRole());
             next.set(at, updated);
             return new Change<>(next, updated, true);
-        }));
+        })));
     }
 
     public record Receipt(Item item, boolean replayed) {}
@@ -425,6 +428,17 @@ public class PlatformReviewService {
     private static String submitterRole(StoredItem item) {
         return item.submitterRole() == null ? "legacy" : item.submitterRole();
     }
+    /**
+     * DLV-969 (owner decision 2026-11-03): only the owner sees who wrote another person's item. An admin sees the
+     * writer's role label ("Co-author 2"); everyone sees their own name on their own items.
+     */
+    private StoredItem shown(AccountPrincipal viewer, StoredItem i) {
+        if (aliases == null || mine(i, viewer) || aliases.seesIdentities(viewer)) return i;
+        return new StoredItem(i.id(), i.reviewerAccountId(), i.reviewerId(), aliases.label(i.reviewerAccountId()), i.category(),
+                i.page(), i.pageUrl(), i.title(), i.details(), i.priority(), i.attachments(), i.status(), i.ownerNote(),
+                i.createdAt(), i.updatedAt(), i.createKey(), i.createHash(), i.lastWriteKey(), i.submitterRole());
+    }
+
     private static Item view(StoredItem i) {
         return new Item(i.id(), i.reviewerId(), i.reviewerName(), i.category(), i.page(), i.pageUrl(), i.title(), i.details(),
                 i.priority(), i.attachments().stream().map(a -> new Attachment(a.id(), a.name(), a.contentType(), a.size())).toList(),

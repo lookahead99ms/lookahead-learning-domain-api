@@ -69,6 +69,29 @@ class PlatformReviewServiceTest {
         assertThat(reviews.triage(second, item.id(), "accepted", "Investigating").submitterRole()).isEqualTo("tester");
     }
 
+    /** DLV-969 (owner decision 2026-11-03): an admin sees who wrote an item as a role label; the owner sees the name. */
+    @Test void adminsSeeTheWriterAsARoleLabelAndTheOwnerSeesTheName() {
+        var access = mock(com.lookahead.domain.access.StaffAccessService.class);
+        var aliases = mock(com.lookahead.domain.access.StaffAliases.class);
+        reviews.configureStaffAccess(access);
+        reviews.configureAliases(aliases);
+        when(access.permissions(learner)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(false, Set.of("tester")));
+        when(access.permissions(second)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(false, Set.of("admin")));
+        when(access.permissions(owner)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(true, Set.of()));
+        when(aliases.seesIdentities(owner)).thenReturn(true);
+        when(aliases.label(learner.accountId())).thenReturn("Tester 3");
+        var item = create(learner, "Tester finding");
+        var mine = create(second, "Admin note");
+        assertThat(reviews.list(second, null).items()).extracting(Summary::reviewerName).containsExactly("Second Reviewer", "Tester 3");
+        assertThat(reviews.item(second, item.id()).reviewerName()).isEqualTo("Tester 3");
+        assertThat(reviews.triage(second, item.id(), "accepted", "").reviewerName()).isEqualTo("Tester 3");
+        assertThat(reviews.item(second, mine.id()).reviewerName()).isEqualTo("Second Reviewer");
+        assertThat(reviews.item(owner, item.id()).reviewerName()).isEqualTo("Learner");
+        assertThat(reviews.item(learner, item.id()).reviewerName()).isEqualTo("Learner");
+        // The stored file keeps the real name; only what an admin is sent changes.
+        assertThat(reviews.list(owner, null).items()).extracting(Summary::reviewerName).contains("Learner");
+    }
+
     @Test void accountsWithoutAReviewRoleAreDenied() {
         assertFailure(() -> reviews.viewer(learner), 403);
         assertFailure(() -> reviews.list(learner, null), 403);

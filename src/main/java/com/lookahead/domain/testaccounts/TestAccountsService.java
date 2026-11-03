@@ -24,6 +24,17 @@ public class TestAccountsService {
     }
     public record Reset(UUID key,long expectedRevision,String confirmation,String preset) {}
     private void actor(String actor){jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor);}
+    private StaffAliases aliases;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void configureAliases(StaffAliases aliases){this.aliases=aliases;}
+    /**
+     * Who created or last changed a test account (DLV-969): the owner gets the account id, which the page names; anyone
+     * else gets their own id back (shown as "You"), "seed", or the other person's role label, never their id.
+     */
+    private String person(AccountPrincipal actor,boolean named,String recorded){
+        if(named||recorded==null||"seed".equals(recorded)||recorded.equals(actor.accountId().toString()))return recorded;
+        try{return aliases.label(UUID.fromString(recorded));}catch(IllegalArgumentException notAnAccount){return "Unknown";}
+    }
     private void reader(AccountPrincipal actor){
         policy.requireEnabled();var permissions=staff.permissions(actor);
         if(!permissions.manageAccess()&&!permissions.triageFeedback()&&!"co-author".equals(permissions.feedbackRole()))
@@ -49,14 +60,15 @@ public class TestAccountsService {
     }
     @Transactional(readOnly=true)
     public List<ObjectNode> list(AccountPrincipal actor){reader(actor);var actorRole=staff.permissions(actor).feedbackRole();
+    boolean named=aliases==null||aliases.seesIdentities(actor);
     // Cloud mode has no roster: only learners created through CreatedTestAccounts (initialization 'created') exist.
     String rows=policy.cloud()?"SELECT * FROM test_account_registry WHERE creation_state='active' AND initialization='created' ORDER BY username"
         :"SELECT * FROM test_account_registry WHERE creation_state='active' ORDER BY username";
     return jdbc.query(rows,(r,n)->{
         var item=json.createObjectNode().put("accountId",r.getString("account_id")).put("username",r.getString("username"))
                 .put("isTestAccount",true).put("revision",r.getLong("revision")).put("initialization",r.getString("initialization"))
-                .put("lastChangedBy",r.getString("last_changed_by")).put("lastChangedAt",r.getTimestamp("last_changed_at").toInstant().toString());
-        if(r.getObject("creator_id",UUID.class)!=null)item.put("creatorId",r.getObject("creator_id",UUID.class).toString());
+                .put("lastChangedBy",person(actor,named,r.getString("last_changed_by"))).put("lastChangedAt",r.getTimestamp("last_changed_at").toInstant().toString());
+        if(r.getObject("creator_id",UUID.class)!=null)item.put("creatorId",person(actor,named,r.getObject("creator_id",UUID.class).toString()));
         UUID id=r.getObject("account_id",UUID.class);
         var roleRows=jdbc.queryForList("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,id);
         var targetRoles=new HashSet<String>();
