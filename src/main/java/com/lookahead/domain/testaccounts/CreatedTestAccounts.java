@@ -96,7 +96,10 @@ public class CreatedTestAccounts {
                 """,Integer.class,actor.accountId());
         if (used>=cap) throw new AccountFailure(409,"TEST_ACCOUNT_LIMIT","Lifetime test-account creation limit reached.");
         UUID id=UUID.nameUUIDFromBytes(("lookahead-created-test:"+actor.accountId()+":"+key).getBytes(StandardCharsets.UTF_8));
-        String username="test-"+id.toString().replace("-","").substring(0,24);
+        String hex=id.toString().replace("-","");
+        // Cloud (DEV): the Gateway's sign-in form takes an email, so the pool username is one on the reserved .test
+        // domain (no mail is ever sent); 30 characters fits the varchar(32) username columns.
+        String username=policy.cloud()?"test-"+hex.substring(0,10)+"@lookahead.test":"test-"+hex.substring(0,24);
         jdbc.update("INSERT INTO test_account_creations(creator_id,mutation_key,account_id,username,state) VALUES (?,?,?,?,'pending')",
                 actor.accountId(),key,id,username);
         return new Reservation(id,username,"pending");
