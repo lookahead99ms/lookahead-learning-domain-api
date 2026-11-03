@@ -2,6 +2,7 @@ package com.lookahead.domain.cloud;
 
 import com.lookahead.learning.content.exception.AccountFailure;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockMakers;
 import software.amazon.awssdk.services.cognitoidentityprovider.CognitoIdentityProviderClient;
 import software.amazon.awssdk.services.cognitoidentityprovider.model.*;
 import static org.assertj.core.api.Assertions.*;
@@ -10,7 +11,8 @@ import static org.mockito.Mockito.*;
 
 /** DLV-969: Disable, Enable and Delete call exactly the issuer's pool, are safe to repeat, and fail as one retryable 503. */
 class CognitoSignInAccountsTest {
-    final CognitoIdentityProviderClient client=mock(CognitoIdentityProviderClient.class);
+    // Subclass mock maker, as in CognitoTestIdentityOperatorTest: the image build runs without the inline agent.
+    final CognitoIdentityProviderClient client=mock(CognitoIdentityProviderClient.class,withSettings().mockMaker(MockMakers.SUBCLASS));
     final CognitoSignInAccounts accounts=new CognitoSignInAccounts(CognitoTokenVerifierTest.SETTINGS,client);
 
     @Test void eachActionNamesTheIssuersPoolAndTheUser() {
