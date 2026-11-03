@@ -20,7 +20,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class DevTestRoster {
     static final int BATCH = 5;
-    public record Status(int total, int ready, int deleted) {
+    /** {@code withoutPlan}: ready learners whose scenario has a study plan they don't have yet (DLV-969 S37). */
+    public record Status(int total, int ready, int deleted, int withoutPlan) {
+        public Status(int total, int ready, int deleted) { this(total, ready, deleted, 0); }
         public int remaining() { return total - ready - deleted; }
     }
     private final JdbcTemplate jdbc;
@@ -54,11 +56,23 @@ public class DevTestRoster {
     private Status status() {
         var roster = new HashSet<UUID>();
         for (var entry : TestAccountRoster.entries()) roster.add(entry.accountId());
-        int ready = 0, deleted = 0;
+        int ready = 0, deleted = 0, withoutPlan = 0;
+        var withPlans = new HashSet<>(jdbc.queryForList(
+                "SELECT DISTINCT p.account_id FROM plans p JOIN test_account_registry r ON r.account_id=p.account_id"
+                + " WHERE r.creator_id IS NOT NULL AND r.initialization<>'created'", UUID.class));
         for (var row : jdbc.queryForList("SELECT account_id,creation_state FROM test_account_registry WHERE creator_id IS NOT NULL AND initialization<>'created'")) {
-            if (!roster.contains((UUID) row.get("account_id"))) continue;
-            if ("deleted".equals(row.get("creation_state"))) deleted++; else ready++;
+            UUID id = (UUID) row.get("account_id");
+            if (!roster.contains(id)) continue;
+            if ("deleted".equals(row.get("creation_state"))) { deleted++; continue; }
+            ready++;
+            if (needsPlan(id) && !withPlans.contains(id)) withoutPlan++;
         }
-        return new Status(roster.size(), ready, deleted);
+        return new Status(roster.size(), ready, deleted, withoutPlan);
+    }
+
+    /** A roster learner whose scenario includes a study plan. */
+    private static boolean needsPlan(UUID id) {
+        return TestAccountRoster.entries().stream().filter(entry -> entry.accountId().equals(id) && !entry.staff())
+                .anyMatch(entry -> LearnerScenario.of(Integer.parseInt(entry.username().substring(7))).planKind() != LearnerScenario.PlanKind.NONE);
     }
 }

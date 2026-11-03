@@ -51,8 +51,10 @@ class CloudSecurityDatabaseTest extends CloudSignInRegistryDatabaseTest {
                 http.perform(get("/api/v1/auth/me").header("Authorization","Bearer "+token(identity,overrides)).header(CloudDomainTokenConverter.PROOF_HEADER,proof)).andExpect(status().isUnauthorized());
             }
             http.perform(get("/api/v1/auth/me").header("Authorization","Bearer "+token).header(CloudDomainTokenConverter.PROOF_HEADER,proof())).andExpect(status().isUnauthorized());
+            // DLV-969 S37: a revocation inside Cognito alone applies to a token Cognito is asked about again; a fresh token
+            // here (the kept answer for the first lasts at most a minute, see CognitoTokenVerifierTest).
             providerRevoked.set(true);
-            http.perform(get("/api/v1/auth/me").header("Authorization","Bearer "+token).header(CloudDomainTokenConverter.PROOF_HEADER,proof)).andExpect(status().isUnauthorized());
+            http.perform(get("/api/v1/auth/me").header("Authorization","Bearer "+token(identity,Map.of("jti","fresh-after-revocation"))).header(CloudDomainTokenConverter.PROOF_HEADER,proof)).andExpect(status().isUnauthorized());
             providerRevoked.set(false);registry.terminate(identity,proof);
             http.perform(get("/api/v1/auth/me").header("Authorization","Bearer "+token).header(CloudDomainTokenConverter.PROOF_HEADER,proof)).andExpect(status().isUnauthorized());
         }
