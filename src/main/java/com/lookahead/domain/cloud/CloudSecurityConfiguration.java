@@ -41,6 +41,10 @@ public class CloudSecurityConfiguration {
                 .retryPolicy(software.amazon.awssdk.core.retry.RetryPolicy.none()))
             .build();
     }
+    /** DLV-969: Disable, Enable and Delete reach the pool with the task role (IAM #7), never the token-check client. */
+    @Bean CognitoSignInAccounts cognitoSignInAccounts(CognitoSettings settings){
+        return new CognitoSignInAccounts(settings,CognitoSignInAccounts.taskRoleClient(settings.region()));
+    }
     @Bean CognitoTokenVerifier cognitoVerifier(CognitoSettings settings,CognitoIdentityProviderClient client){return new CognitoTokenVerifier(settings,client);}
     @Bean CloudSignInRegistry cloudSignIns(JdbcTemplate jdbc,PlatformTransactionManager manager){return new CloudSignInRegistry(jdbc,manager);}
     @Bean CloudAdmissionCleanup cloudAdmissionCleanup(JdbcTemplate jdbc,PlatformTransactionManager manager){return new CloudAdmissionCleanup(jdbc,manager);}

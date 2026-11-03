@@ -39,10 +39,13 @@ public class DomainDatabaseHealthIndicator implements HealthIndicator {
      * creates waiting rows at first contact, admits them for the owner and deletes expired waiting rows, so it holds
      * INSERT and DELETE on cloud_accounts and UPDATE on the admission columns, and records admission events it can
      * never change. Identity columns and the operator-only enabled and author_access flags stay out of reach.
+     * Since V18 (DLV-969, run before this release) the role also keeps the owner's Disable/Delete states and the
+     * permanent role labels, which it may add but never change or remove.
      */
     public static final String CLOUD_SQL = """
         SELECT EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='4' AND success)
           AND EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='17' AND success)
+          AND EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='18' AND success)
           AND has_table_privilege(current_user,'public.cloud_accounts','SELECT')
           AND has_table_privilege(current_user,'public.cloud_accounts','INSERT')
           AND has_table_privilege(current_user,'public.cloud_accounts','DELETE')
@@ -65,7 +68,13 @@ public class DomainDatabaseHealthIndicator implements HealthIndicator {
           AND NOT has_table_privilege(current_user,'public.cloud_admission_events','UPDATE')
           AND NOT has_table_privilege(current_user,'public.cloud_admission_events','DELETE')
           AND NOT has_table_privilege(current_user,'public.cloud_admission_events','TRUNCATE')
-          AND NOT EXISTS(SELECT 1 FROM unnest(ARRAY['public.cloud_sign_ins','public.cloud_sign_in_challenges']) t(name)
+          AND has_table_privilege(current_user,'public.staff_aliases','SELECT')
+          AND has_table_privilege(current_user,'public.staff_aliases','INSERT')
+          AND NOT has_table_privilege(current_user,'public.staff_aliases','UPDATE')
+          AND NOT has_table_privilege(current_user,'public.staff_aliases','DELETE')
+          AND NOT has_table_privilege(current_user,'public.staff_aliases','TRUNCATE')
+          AND NOT has_table_privilege(current_user,'public.cloud_account_states','TRUNCATE')
+          AND NOT EXISTS(SELECT 1 FROM unnest(ARRAY['public.cloud_sign_ins','public.cloud_sign_in_challenges','public.cloud_account_states']) t(name)
             CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE']) p(privilege)
             WHERE NOT has_table_privilege(current_user,t.name,p.privilege))
         """;
