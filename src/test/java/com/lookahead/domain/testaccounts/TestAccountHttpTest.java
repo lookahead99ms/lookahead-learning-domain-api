@@ -32,6 +32,7 @@ class TestAccountHttpTest {
             return service;
         }
         @Bean CreatedTestAccounts created() { return mock(CreatedTestAccounts.class); }
+        @Bean DevTestRoster roster() { return mock(DevTestRoster.class); }
     }
     @LocalServerPort int port;
     private HttpResponse<String> send(String method, String path, String credentials) throws Exception {

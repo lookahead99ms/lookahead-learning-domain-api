@@ -44,8 +44,17 @@ public class DomainSecurityConfiguration {
     }
     @Bean @org.springframework.core.annotation.Order(2)
     SecurityFilterChain domainSecurity(HttpSecurity http, JwtDecoder decoder,
-            org.springframework.core.convert.converter.Converter<org.springframework.security.oauth2.jwt.Jwt,org.springframework.security.authentication.AbstractAuthenticationToken> domainAuthenticationConverter) throws Exception {
-        return http.cors(Customizer.withDefaults()).csrf(csrf -> csrf.csrfTokenRepository(new org.springframework.security.web.csrf.CookieCsrfTokenRepository()))
+            org.springframework.core.convert.converter.Converter<org.springframework.security.oauth2.jwt.Jwt,org.springframework.security.authentication.AbstractAuthenticationToken> domainAuthenticationConverter,
+            org.springframework.beans.factory.ObjectProvider<com.lookahead.domain.testaccounts.DevTestSessions> testSessions) throws Exception {
+        // DLV-969 S35 (DEV only): a Gateway test-session request carries no bearer token, so it needs no CSRF token
+        // either (as bearer requests); the filter refuses it unless the Gateway secret is valid.
+        var sessions = testSessions.getIfAvailable();
+        if (sessions != null) http.addFilterBefore(new com.lookahead.domain.testaccounts.DevTestSessionConfiguration.Filter(sessions),
+                org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter.class);
+        return http.cors(Customizer.withDefaults()).csrf(csrf -> {
+                    csrf.csrfTokenRepository(new org.springframework.security.web.csrf.CookieCsrfTokenRepository());
+                    if (sessions != null) csrf.ignoringRequestMatchers(request -> request.getHeader(com.lookahead.domain.testaccounts.DevTestSessions.ACCOUNT_HEADER) != null);
+                })
                 .httpBasic(AbstractHttpConfigurer::disable).formLogin(AbstractHttpConfigurer::disable)
                 .logout(AbstractHttpConfigurer::disable).requestCache(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))

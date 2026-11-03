@@ -11,7 +11,8 @@ import java.util.*;
 public class TestAccountsController {
     private final TestAccountsService service;
     private final CreatedTestAccounts created;
-    public TestAccountsController(TestAccountsService service,CreatedTestAccounts created){this.service=service;this.created=created;}
+    private final DevTestRoster roster;
+    public TestAccountsController(TestAccountsService service,CreatedTestAccounts created,DevTestRoster roster){this.service=service;this.created=created;this.roster=roster;}
     @ModelAttribute void noCache(HttpServletResponse response){response.setHeader("Cache-Control","no-store");}
     @GetMapping("/internal/v1/test-accounts/csrf")
     public Map<String,String> csrf(org.springframework.security.web.csrf.CsrfToken token) {
@@ -19,8 +20,12 @@ public class TestAccountsController {
     }
     @PostMapping("/internal/v1/test-accounts/seed") public Map<String,Integer> seed(){return Map.of("created",service.seed());}
     @GetMapping("/api/v1/admin/test-accounts") public ApiResponse<?> list(@AuthenticationPrincipal AccountPrincipal actor){return ApiResponse.success(service.list(actor));}
-    @GetMapping("/api/v1/admin/test-accounts/allowance") public ApiResponse<?> allowance(@AuthenticationPrincipal AccountPrincipal actor){return ApiResponse.success(created.allowance(actor));}
+    @GetMapping("/api/v1/admin/test-accounts/allowance") public ApiResponse<?> allowance(@AuthenticationPrincipal AccountPrincipal actor){
+        return ApiResponse.success(created.allowance(actor).with(roster.statusFor(actor)));
+    }
+    /** DLV-969 S35: {@code "roster": true} creates the next DEV roster accounts, on the route the Gateway already forwards. */
     @PostMapping("/api/v1/admin/test-accounts") public ApiResponse<?> create(@AuthenticationPrincipal AccountPrincipal actor,@RequestBody CreatedTestAccounts.Create request){
+        if(request!=null&&request.roster())return ApiResponse.success(roster.next(actor));
         return ApiResponse.success(created.create(actor,request));
     }
     @DeleteMapping("/api/v1/admin/test-accounts/{id}") public ApiResponse<?> delete(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable UUID id){

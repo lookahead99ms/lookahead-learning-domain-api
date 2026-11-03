@@ -21,7 +21,6 @@ class TestAccountsDatabaseTest {
  JdbcTemplate jdbc; TransactionTemplate tx; String schema; ObjectMapper json=new ObjectMapper();
  StaffAccessService staff; ScenarioPlans plans; TestAccountsService service;
  AccountPrincipal admin=new AccountPrincipal(UUID.randomUUID(),"operator","Operator",true,false);
- static org.springframework.beans.factory.ObjectProvider<CognitoTestIdentityOperator> noCloud(){return new org.springframework.beans.factory.support.StaticListableBeanFactory().getBeanProvider(CognitoTestIdentityOperator.class);}
  @BeforeAll void setup() throws Exception {
   String url=System.getenv("DLV921_DATABASE_URL");assertThat(url).isEqualTo("jdbc:postgresql://127.0.0.1:4392/lookahead_domain_review");
   String password=Files.readString(Path.of(System.getenv("DLV921_DATABASE_PASSWORD_FILE"))).strip();
@@ -113,12 +112,12 @@ class TestAccountsDatabaseTest {
       UUID.randomUUID(),admin.accountId(),null,Set.of("admin"),Set.of(),false,1));
   var owner=mock(LocalAuthorAccess.class);
   var created=new CreatedTestAccounts(jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),
-      new TestAccountPolicy(TestAccountPolicyTest.local()),repository,owner,operator,noCloud());
+      new TestAccountPolicy(TestAccountPolicyTest.local()),repository,owner,operator);
   var key=UUID.randomUUID();var request=new CreatedTestAccounts.Create(key,"synthetic-learner-fixture-only");
   var first=created.create(admin,request);
   assertThat(first.active()).isTrue();
   assertThat(created.create(admin,request).accountId()).isEqualTo(first.accountId());
-  assertThat(created.allowance(admin)).isEqualTo(new CreatedTestAccounts.Allowance(10,1,9));
+  assertThat(created.allowance(admin)).extracting("limit","used","remaining").containsExactly(10,1,9);
   verify(operator,times(1)).provision(eq(first.accountId()),eq(first.username()),anyString());
   verify(operator,times(2)).activate(first.accountId(),first.username());
   UUID planId=UUID.randomUUID(),versionId=UUID.randomUUID();
@@ -155,7 +154,7 @@ class TestAccountsDatabaseTest {
   assertThat(jdbc.queryForObject("SELECT count(*) FROM membership_mock_payments WHERE idempotency_key=?",Integer.class,paymentKey)).isZero();
   assertThat(jdbc.queryForObject("SELECT count(*) FROM membership_audit WHERE id=?",Integer.class,auditId)).isZero();
   assertThat(jdbc.queryForObject("SELECT state FROM test_account_creations WHERE account_id=?",String.class,first.accountId())).isEqualTo("deleted");
-  assertThat(created.allowance(admin)).isEqualTo(new CreatedTestAccounts.Allowance(10,1,9));
+  assertThat(created.allowance(admin)).extracting("limit","used","remaining").containsExactly(10,1,9);
   verify(operator).disable(first.accountId(),first.username());
   assertThatThrownBy(()->created.create(admin,request)).hasMessageContaining("deleted");
  }
@@ -170,7 +169,7 @@ class TestAccountsDatabaseTest {
   when(repository.forAccount(coauthorId)).thenReturn(new StaffAccessRepository.Assignment(
       UUID.randomUUID(),coauthorId,null,Set.of("co-author"),Set.of(),false,1));
   var created=new CreatedTestAccounts(jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),
-      new TestAccountPolicy(TestAccountPolicyTest.local()),repository,owner,operator,noCloud());
+      new TestAccountPolicy(TestAccountPolicyTest.local()),repository,owner,operator);
   CreatedTestAccounts.Created first=null;
   for(int n=0;n<10;n++){
    var item=created.create(admin,new CreatedTestAccounts.Create(UUID.randomUUID(),"synthetic-learner-fixture-only"));
@@ -208,7 +207,7 @@ class TestAccountsDatabaseTest {
   var owner=mock(LocalAuthorAccess.class);when(owner.allowed(admin)).thenReturn(true);
   var identity=mock(TestIdentityOperator.class);
   var managed=new CreatedTestAccounts(jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),
-      new TestAccountPolicy(TestAccountPolicyTest.local()),new StaffAccessRepository(jdbc,json),owner,identity,noCloud());
+      new TestAccountPolicy(TestAccountPolicyTest.local()),new StaffAccessRepository(jdbc,json),owner,identity);
   tx.executeWithoutResult(status->{
    managed.delete(admin,coauthorTarget.accountId());
    assertThat(jdbc.queryForObject("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,coauthorTarget.accountId())).isEqualTo("[]");
@@ -264,7 +263,7 @@ class TestAccountsDatabaseTest {
   var identity=mock(TestIdentityOperator.class);
   var owner=mock(LocalAuthorAccess.class);when(owner.allowed(admin)).thenReturn(true);
   var managed=new CreatedTestAccounts(jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),
-      new TestAccountPolicy(TestAccountPolicyTest.local()),mock(StaffAccessRepository.class),owner,identity,noCloud());
+      new TestAccountPolicy(TestAccountPolicyTest.local()),mock(StaffAccessRepository.class),owner,identity);
   managed.delete(admin,id);
   verify(identity).disable(id,"learner27");
   assertThat(jdbc.queryForObject("SELECT creation_state FROM test_account_registry WHERE account_id=?",String.class,id)).isEqualTo("deleted");
@@ -277,7 +276,7 @@ class TestAccountsDatabaseTest {
   when(repository.forAccount(admin.accountId())).thenReturn(new StaffAccessRepository.Assignment(
       UUID.randomUUID(),admin.accountId(),null,Set.of("admin"),Set.of(),false,1));
   var created=new CreatedTestAccounts(jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),
-      new TestAccountPolicy(TestAccountPolicyTest.local()),repository,mock(LocalAuthorAccess.class),operator,noCloud());
+      new TestAccountPolicy(TestAccountPolicyTest.local()),repository,mock(LocalAuthorAccess.class),operator);
   UUID key=UUID.randomUUID();var request=new CreatedTestAccounts.Create(key,"synthetic-learner-fixture-only");
   doThrow(new IllegalStateException("synthetic lost activation reply")).doNothing().when(operator).activate(any(),any());
   assertThatThrownBy(()->created.create(admin,request)).hasMessageContaining("lost activation reply");

@@ -109,15 +109,9 @@
       "Default": "local",
       "AllowedValues": [
         "local",
-        "cognito"
+        "dev"
       ],
-      "Description": "DLV-969 S28: where created test learners sign in (app.test-accounts.identity); cognito creates them in the Look Ahead pool with the task role (IAM #7)"
-    },
-    "TestAccountPoolId": {
-      "Type": "String",
-      "Default": "",
-      "AllowedPattern": "^(|[a-z]{2}-[a-z]+-[0-9]_[A-Za-z0-9]+)$",
-      "Description": "DLV-969 S28: the Look Ahead pool that receives test learners (app.test-accounts.pool-id); must be the issuer's pool"
+      "Description": "DLV-969 S35: dev keeps database-only test accounts that staff use through test sessions inside the DEV gate (app.test-accounts.identity)"
     },
     "RefreshToken": {
       "Type": "String",
@@ -342,12 +336,6 @@
                 "Name": "LOOKAHEAD_TEST_ACCOUNT_IDENTITY",
                 "Value": {
                   "Ref": "TestAccountIdentity"
-                }
-              },
-              {
-                "Name": "LOOKAHEAD_TEST_ACCOUNT_POOL_ID",
-                "Value": {
-                  "Ref": "TestAccountPoolId"
                 }
               },
               {

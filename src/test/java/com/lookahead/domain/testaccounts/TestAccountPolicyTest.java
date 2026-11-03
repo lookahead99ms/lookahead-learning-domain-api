@@ -37,33 +37,31 @@ class TestAccountPolicyTest {
                 .isInstanceOf(com.lookahead.learning.content.exception.AccountFailure.class);
     }
     static MockEnvironment cloud(String mode) {
-        return new MockEnvironment().withProperty("app.deployment-environment", mode)
-                .withProperty("app.test-accounts.identity", "cognito")
-                .withProperty("app.test-accounts.pool-id", "us-east-2_Example");
+        return new MockEnvironment().withProperty("app.deployment-environment", mode).withProperty("app.test-accounts.identity", "dev");
     }
-    @Test void modeMatrixEnablesTheCloudPathOnlyForDevCognitoWithAPoolAndNeverTheRosterThere() {
+    /** DLV-969 S35: database-only DEV test accounts need exactly dev + identity dev; cognito is no longer a mode. */
+    @Test void modeMatrixEnablesTheCloudPathOnlyForDevWithIdentityDev() {
         var dev = new TestAccountPolicy(cloud("dev"));
         assertThat(dev.enabled()).isTrue(); assertThat(dev.cloud()).isTrue(); assertThat(dev.local()).isFalse();
         assertThatCode(dev::requireEnabled).doesNotThrowAnyException();
+        assertThatCode(dev::requireCloud).doesNotThrowAnyException();
         assertThatThrownBy(dev::requireLocal).isInstanceOf(com.lookahead.learning.content.exception.AccountFailure.class)
                 .hasMessageContaining("disabled");
         for (String mode : new String[]{"prod", "production", "local", "", "DEV"}) {
             var policy = new TestAccountPolicy(cloud(mode));
             assertThat(policy.cloud()).as(mode).isFalse(); assertThat(policy.enabled()).as(mode).isFalse();
+            assertThatThrownBy(policy::requireCloud).isInstanceOf(com.lookahead.learning.content.exception.AccountFailure.class);
         }
-        for (String identity : new String[]{"local", "cognito"}) {
-            var policy = new TestAccountPolicy(new MockEnvironment().withProperty("app.deployment-environment", "dev")
-                    .withProperty("app.test-accounts.identity", identity));
-            assertThat(policy.cloud()).as("dev without a pool, identity " + identity).isFalse();
-            assertThat(policy.enabled()).isFalse();
-        }
-        assertThat(new TestAccountPolicy(cloud("dev").withProperty("app.test-accounts.pool-id", " ")).cloud()).isFalse();
-        // The Local rule is unchanged by the identity property, and an unknown identity never starts.
-        var localCognito = local().withProperty("app.test-accounts.identity", "cognito");
-        var policy = new TestAccountPolicy(localCognito);
+        var devLocal = new TestAccountPolicy(new MockEnvironment().withProperty("app.deployment-environment", "dev")
+                .withProperty("app.test-accounts.identity", "local"));
+        assertThat(devLocal.cloud()).isFalse(); assertThat(devLocal.enabled()).isFalse();
+        // The Local rule is unchanged by the identity property, and an unknown identity (cognito included) never starts.
+        var localDev = local().withProperty("app.test-accounts.identity", "dev");
+        var policy = new TestAccountPolicy(localDev);
         assertThat(policy.local()).isTrue(); assertThat(policy.cloud()).isFalse(); assertThat(policy.enabled()).isTrue();
         assertThat(new TestAccountPolicy(local().withProperty("app.test-accounts.identity", "local")).local()).isTrue();
-        assertThatThrownBy(() -> new TestAccountPolicy(local().withProperty("app.test-accounts.identity", "Cognito")))
-                .isInstanceOf(IllegalStateException.class);
+        for (String unknown : new String[]{"cognito", "Dev"})
+            assertThatThrownBy(() -> new TestAccountPolicy(local().withProperty("app.test-accounts.identity", unknown)))
+                    .isInstanceOf(IllegalStateException.class);
     }
 }
