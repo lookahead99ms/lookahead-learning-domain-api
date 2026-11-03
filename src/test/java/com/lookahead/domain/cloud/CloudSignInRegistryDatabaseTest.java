@@ -34,6 +34,7 @@ class CloudSignInRegistryDatabaseTest {
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V6__staff_access.sql")));
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V7__cloud_account_preferences.sql")));
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V17__dev_access_admission.sql")));
+        jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V18__access_removal_and_staff_aliases.sql")));
         registry=service();
     }
     CloudSignInRegistry service(){return new CloudSignInRegistry(jdbc,new DataSourceTransactionManager(source));}
@@ -61,6 +62,29 @@ class CloudSignInRegistryDatabaseTest {
         registry.terminate(a,ap);
         assertThatThrownBy(()->registry.links(a,ap,links)).isInstanceOf(RuntimeException.class);
         assertThatThrownBy(()->registry.preferences(a,ap,"light")).isInstanceOf(RuntimeException.class);
+    }
+    /** DLV-969: an account made through Google says so and carries its Gmail; a password account says cognito. */
+    @Test void theProfileNamesGoogleSignInAndTheVerifiedEmail(){
+        var google=new CognitoIdentity(issuer,"google-subject",UUID.randomUUID().toString(),"Google_109384756","Gee Mail",Instant.now());
+        UUID gid=provision(google);String gp=proof();registry.admit(google,gp);
+        jdbc.update("UPDATE cloud_accounts SET verified_email='gee@gmail.invalid' WHERE account_id=?",gid);
+        var view=registry.profile(google,gp,null);
+        assertThat(view.get("signInMethod")).isEqualTo("google");assertThat(view.get("email")).isEqualTo("gee@gmail.invalid");
+        var password=identity("password-profile");provision(password);String pp=proof();registry.admit(password,pp);
+        var plain=registry.profile(password,pp,null);
+        assertThat(plain.get("signInMethod")).isEqualTo("cognito");assertThat(plain).doesNotContainKey("email");
+    }
+    /** DLV-969 (V18): an account the owner disabled or deleted has no sign-in, even before the pool is told; Enable gives it back. */
+    @Test void aDisabledOrDeletedAccountCannotSignInOrUseItsSignIn(){
+        var a=identity("owner-disabled");UUID id=provision(a);String ap=proof();
+        registry.admit(a,ap);assertThat(registry.authenticate(a,ap).accountId()).isEqualTo(id);
+        jdbc.update("INSERT INTO cloud_account_states(account_id,state,changed_by) VALUES (?,'disabled',?)",id,id);
+        assertThatThrownBy(()->registry.authenticate(a,ap)).isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(()->registry.admit(a,proof())).isInstanceOf(RuntimeException.class);
+        jdbc.update("DELETE FROM cloud_account_states WHERE account_id=?",id);
+        assertThat(registry.authenticate(a,ap).accountId()).isEqualTo(id);
+        jdbc.update("INSERT INTO cloud_account_states(account_id,state,changed_by) VALUES (?,'removed',?)",id,id);
+        assertThatThrownBy(()->registry.authenticate(a,ap)).isInstanceOf(RuntimeException.class);
     }
     @Test void mapsByIssuerSubjectNotEmailAndRequiresAdmission(){
         var a=identity("first");var b=identity("second");var aid=provision(a);var bid=provision(b);String ap=proof(),bp=proof();
@@ -238,13 +262,13 @@ class CloudSignInRegistryDatabaseTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE account_id=?",Integer.class,id)).isZero();
         assertThat(events(id,"expire")).isEqualTo(1);
     }
-    /** DLV-969: DEV readiness must accept the V17 grants (it once required the pre-V17 read-only shape and failed every task). */
-    @Test void cloudReadinessAcceptsTheV17RuntimeGrantsAndRejectsDrift(){
+    /** DLV-969: DEV readiness must accept the V17 and V18 grants (it once required the pre-V17 shape and failed every task). */
+    @Test void cloudReadinessAcceptsTheV18RuntimeGrantsAndRejectsDrift(){
         var tx=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source));
         // This suite builds the tables in its own schema; the readiness SQL names public, as the deployed database does.
         jdbc.execute("CREATE TABLE IF NOT EXISTS flyway_schema_history(version text, success boolean)");
         jdbc.execute("GRANT SELECT ON flyway_schema_history TO lookahead_platform_app");
-        jdbc.update("INSERT INTO flyway_schema_history VALUES ('4',true),('17',true)");
+        jdbc.update("INSERT INTO flyway_schema_history VALUES ('4',true),('17',true),('18',true)");
         String sql=com.lookahead.domain.DomainDatabaseHealthIndicator.CLOUD_SQL.replace("public.",schema+".");
         java.util.function.Supplier<Boolean> asApp=()->tx.execute(status->{jdbc.execute("SET LOCAL ROLE lookahead_platform_app");
             return jdbc.queryForObject(sql,Boolean.class);});
@@ -255,6 +279,15 @@ class CloudSignInRegistryDatabaseTest {
         try { assertThat(asApp.get()).isFalse(); } finally { jdbc.execute("GRANT INSERT ON cloud_accounts TO lookahead_platform_app"); }
         jdbc.execute("GRANT UPDATE ON cloud_admission_events TO lookahead_platform_app");
         try { assertThat(asApp.get()).isFalse(); } finally { jdbc.execute("REVOKE UPDATE ON cloud_admission_events FROM lookahead_platform_app"); }
+        // V18: the release after it needs the migration and exactly its grants.
+        jdbc.update("DELETE FROM flyway_schema_history WHERE version='18'");
+        assertThat(asApp.get()).isFalse();
+        jdbc.update("INSERT INTO flyway_schema_history VALUES ('18',true)");
+        assertThat(asApp.get()).isTrue();
+        jdbc.execute("GRANT UPDATE ON staff_aliases TO lookahead_platform_app");
+        try { assertThat(asApp.get()).isFalse(); } finally { jdbc.execute("REVOKE UPDATE ON staff_aliases FROM lookahead_platform_app"); }
+        jdbc.execute("REVOKE DELETE ON cloud_account_states FROM lookahead_platform_app");
+        try { assertThat(asApp.get()).isFalse(); } finally { jdbc.execute("GRANT DELETE ON cloud_account_states TO lookahead_platform_app"); }
         assertThat(asApp.get()).isTrue();
     }
     @Test void ownerAdmissionMarksTheRowAssignsRolesAndIsRecordedOnce(){

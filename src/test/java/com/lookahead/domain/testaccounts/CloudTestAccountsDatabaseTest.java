@@ -39,7 +39,7 @@ class CloudTestAccountsDatabaseTest {
   source=new DriverManagerDataSource(url+"?currentSchema="+schema,"postgres",password);jdbc=new JdbcTemplate(source);
   jdbc.execute("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='lookahead_platform_app') THEN CREATE ROLE lookahead_platform_app NOLOGIN; END IF; END $$");
   jdbc.execute("CREATE TABLE flyway_schema_history(installed_rank integer)");
-  for(String file:List.of("V1__platform.sql","V2__author_review_events.sql","V3__plan_names.sql","V4__cloud_identity_and_sign_ins.sql","V6__staff_access.sql","V8__memberships.sql","V9__plan_lifecycle.sql","V10__test_account_registry.sql","V11__free_plan_allowances.sql","V12__created_test_accounts.sql","V13__real_account_maintenance.sql","V14__managed_test_purchase_purge_grants.sql","V15__retain_runtime_audit.sql","V17__dev_access_admission.sql"))
+  for(String file:List.of("V1__platform.sql","V2__author_review_events.sql","V3__plan_names.sql","V4__cloud_identity_and_sign_ins.sql","V6__staff_access.sql","V8__memberships.sql","V9__plan_lifecycle.sql","V10__test_account_registry.sql","V11__free_plan_allowances.sql","V12__created_test_accounts.sql","V13__real_account_maintenance.sql","V14__managed_test_purchase_purge_grants.sql","V15__retain_runtime_audit.sql","V17__dev_access_admission.sql","V18__access_removal_and_staff_aliases.sql"))
    jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain",file)));
   jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",admin.accountId());
  }
@@ -123,6 +123,27 @@ class CloudTestAccountsDatabaseTest {
   // The lifetime allowance counts the deleted learner, as in Local.
   assertThat(created.allowance(admin)).isEqualTo(new CreatedTestAccounts.Allowance(10,1,9));
   assertThatThrownBy(()->created.create(admin,new CreatedTestAccounts.Create(UUID.randomUUID(),"short"))).hasMessageContaining("15 to 72");
+ }
+ /** DLV-969 (owner decision 2026-11-03): a co-author sees who created or changed a test account as a role label. */
+ @Test void onlyTheOwnerSeesWhoCreatedATestAccount(){
+  var learner=created.create(admin,new CreatedTestAccounts.Create(UUID.randomUUID(),"Synthetic-learner-password-1!"));
+  var coauthor=new AccountPrincipal(UUID.randomUUID(),"coauthor","Co",true,false);
+  var aliases=mock(StaffAliases.class);when(aliases.label(admin.accountId())).thenReturn("Admin 1");
+  var service=rosterService(Set.of("co-author"));service.configureAliases(aliases);
+  var seen=service.list(coauthor).stream().filter(row->row.get("accountId").asString().equals(learner.accountId().toString())).findFirst().orElseThrow();
+  assertThat(seen.get("creatorId").asString()).isEqualTo("Admin 1");
+  assertThat(seen.get("lastChangedBy").asString()).isEqualTo("Admin 1");
+  // The creator keeps their own id (the page says "You"), and an unreadable value is never shown as it is.
+  var own=service.list(admin).stream().filter(row->row.get("accountId").asString().equals(learner.accountId().toString())).findFirst().orElseThrow();
+  assertThat(own.get("creatorId").asString()).isEqualTo(admin.accountId().toString());
+  jdbc.update("UPDATE test_account_registry SET last_changed_by='not-an-account' WHERE account_id=?",learner.accountId());
+  assertThat(service.list(coauthor).stream().filter(row->row.get("accountId").asString().equals(learner.accountId().toString())).findFirst().orElseThrow()
+      .get("lastChangedBy").asString()).isEqualTo("Unknown");
+  // The owner sees the ids, which the page turns into names.
+  when(aliases.seesIdentities(coauthor)).thenReturn(true);
+  assertThat(service.list(coauthor).stream().filter(row->row.get("accountId").asString().equals(learner.accountId().toString())).findFirst().orElseThrow()
+      .get("creatorId").asString()).isEqualTo(admin.accountId().toString());
+  verify(aliases,never()).label(learner.accountId());
  }
  @Test void cloudModeListsOnlyCreatedLearnersAndRefusesTheRoster(){
   var service=rosterService(Set.of("admin"));

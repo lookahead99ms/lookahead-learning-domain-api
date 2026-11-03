@@ -12,7 +12,7 @@ import org.springframework.stereotype.Service;
 public class AdminAccountDirectory {
     public record Row(UUID accountId,String username,String displayName,String email,Set<String> roles,
         boolean testAccount,boolean fullCurriculum,AccessSummaryService.Summary access,
-        boolean canDowngrade,boolean canDelete) {}
+        boolean canDowngrade,boolean canDelete,String signIn,boolean canDisable,boolean canEnable,boolean canRemove) {}
     public record Page(List<Row> accounts,int page,boolean hasNext) {}
     private final AccountDirectory directory;
     private final StaffAccessService access;
@@ -20,9 +20,10 @@ public class AdminAccountDirectory {
     private final AccessSummaryService summaries;
     private final JdbcTemplate jdbc;
     private final TestAccountPolicy localPolicy;
+    private final AccountRemovalService removal;
     public AdminAccountDirectory(AccountDirectory directory,StaffAccessService access,StaffAccessRepository staff,
-            AccessSummaryService summaries,JdbcTemplate jdbc,TestAccountPolicy localPolicy) {
-        this.directory=directory;this.access=access;this.staff=staff;this.summaries=summaries;this.jdbc=jdbc;this.localPolicy=localPolicy;
+            AccessSummaryService summaries,JdbcTemplate jdbc,TestAccountPolicy localPolicy,AccountRemovalService removal) {
+        this.directory=directory;this.access=access;this.staff=staff;this.summaries=summaries;this.jdbc=jdbc;this.localPolicy=localPolicy;this.removal=removal;
     }
     public Page list(AccountPrincipal actor,String query,int page) {
         access.requireOwner(actor); // Before any identity request or database enumeration.
@@ -40,9 +41,12 @@ public class AdminAccountDirectory {
             boolean grants=Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM account_grants WHERE account_id=?)",Boolean.class,account.accountId()));
             boolean privileged=!roles.equals(Set.of("user")) || assignment!=null&&(assignment.fullCurriculum()||!assignment.topicGrants().isEmpty());
             boolean eligible=!owner&&!test;
+            // DLV-969: Disable, Enable and Delete for DEV sign-in accounts (never the owner, an author or a test account).
+            var options=owner?AccountRemovalService.Options.NONE:removal.options(actor.accountId(),account.accountId(),test);
             return new Row(account.accountId(),account.username(),account.displayName(),account.email(),roles,test,full,summary,
                 eligible&&(privileged||purchases||grants||!"Free".equals(summary.label())),
-                eligible&&localPolicy.local()&&!privileged&&!purchases&&!grants&&"Free".equals(summary.label()));
+                eligible&&localPolicy.local()&&!privileged&&!purchases&&!grants&&"Free".equals(summary.label()),
+                options.signIn(),options.canDisable(),options.canEnable(),options.canRemove());
         }).toList();
         return new Page(rows,source.page(),source.hasNext());
     }

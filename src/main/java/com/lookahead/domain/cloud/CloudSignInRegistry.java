@@ -116,8 +116,14 @@ public final class CloudSignInRegistry {
         var links=new java.util.LinkedHashMap<String,String>();
         for(String kind:ProfileLinkPolicy.KINDS)links.put(kind,null);
         jdbc.query("SELECT kind,url FROM cloud_account_profile_links WHERE account_id=?",(org.springframework.jdbc.core.RowCallbackHandler) row->links.put(row.getString(1),row.getString(2)),account.id);
-        return Map.of("accountId",account.id,"username",account.username,"displayName",name,"signInMethod","cognito",
-                "themePreference",theme.isEmpty()?"system":theme.getFirst(),"links",links);
+        // DLV-969: Cognito names an account made through Google "Google_<id>"; the page shows the Gmail and Google as
+        // connected. Linking Google to an existing password account is not offered (owner decision 2026-11-03).
+        boolean google=account.username.regionMatches(true,0,"google_",0,7);
+        var email=jdbc.queryForList("SELECT verified_email FROM cloud_accounts WHERE account_id=? AND verified_email IS NOT NULL",String.class,account.id);
+        var view=new java.util.LinkedHashMap<String,Object>(Map.of("accountId",account.id,"username",account.username,"displayName",name,
+                "signInMethod",google?"google":"cognito","themePreference",theme.isEmpty()?"system":theme.getFirst(),"links",links));
+        if(!email.isEmpty())view.put("email",email.getFirst());
+        return view;
     }
     public void changeCredentials(CognitoIdentity identity,String proof,Runnable providerChange){
         // Commit a fail-closed intent before crossing the provider/database boundary.
@@ -167,7 +173,8 @@ public final class CloudSignInRegistry {
                 r.getBoolean("enabled"),r.getBoolean("admitted"),r.getBoolean("credential_change_pending")),identity.issuer(),identity.subject());
             if(rows.size()!=1){if(!firstContact)throw admissionRequired();request(identity);waiting[0]=admissionRequired();return null;}
             Row row=rows.getFirst();
-            if(!row.enabled)throw denied();
+            // DLV-969: an account the owner disabled or deleted (V18) has no sign-in, even before the pool is told.
+            if(!row.enabled||!jdbc.queryForList("SELECT state FROM cloud_account_states WHERE account_id=?",String.class,row.account.id).isEmpty())throw denied();
             if(!row.admitted){if(!firstContact)throw denied();refresh(identity,row.account.id);waiting[0]=admissionRequired();return null;}
             if(!allowCredentialChange&&row.credentialChangePending)throw failure(503,"CREDENTIAL_CHANGE_PENDING");
             return action.apply(row.account);

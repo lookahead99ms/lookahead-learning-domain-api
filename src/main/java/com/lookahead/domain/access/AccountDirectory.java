@@ -30,11 +30,15 @@ public class AccountDirectory {
             throw new AccountFailure(422,"INVALID_ACCOUNT_DIRECTORY","Use a query up to 254 characters and a page from 0 to 100000.");
         String term=query.strip().toLowerCase(java.util.Locale.ROOT);
         if(identity==null) {
+            // DLV-969: disabled accounts stay listed (the owner can enable them); deleted ones are gone. The owner sees
+            // the provider-verified email (a Google account's Gmail).
             var rows=jdbc.query("""
-                SELECT account_id,username,display_name FROM cloud_accounts WHERE admitted AND enabled
-                AND (?='' OR position(? in lower(username))>0 OR position(? in lower(display_name))>0)
+                SELECT account_id,username,display_name,verified_email FROM cloud_accounts a WHERE admitted AND enabled
+                AND NOT EXISTS(SELECT 1 FROM cloud_account_states s WHERE s.account_id=a.account_id AND s.state='removed')
+                AND (?='' OR position(? in lower(username))>0 OR position(? in lower(display_name))>0
+                  OR position(? in lower(coalesce(verified_email,'')))>0)
                 ORDER BY lower(username),account_id LIMIT 51 OFFSET ?
-                """,(r,i)->new Account(r.getObject(1,UUID.class),r.getString(2),r.getString(3),null),term,term,term,page*50);
+                """,(r,i)->new Account(r.getObject(1,UUID.class),r.getString(2),r.getString(3),r.getString(4)),term,term,term,term,page*50);
             return new Page(java.util.List.copyOf(rows.subList(0,Math.min(50,rows.size()))),page,rows.size()>50);
         }
         try {
@@ -57,7 +61,7 @@ public class AccountDirectory {
         query=query.strip().toLowerCase(java.util.Locale.ROOT);
         if(identity==null) {
             // Cloud identities already admitted by the provider mapping; no email-based linking.
-            var rows=jdbc.query("SELECT account_id,username,display_name FROM cloud_accounts WHERE admitted AND enabled AND lower(username)=? LIMIT 2",
+            var rows=jdbc.query("SELECT account_id,username,display_name FROM cloud_accounts a WHERE admitted AND enabled AND lower(username)=? AND NOT EXISTS(SELECT 1 FROM cloud_account_states s WHERE s.account_id=a.account_id AND s.state='removed') LIMIT 2",
                 (r,i)->new Account(r.getObject(1,UUID.class),r.getString(2),r.getString(3),null),query);
             if(rows.size()!=1)throw missing();return rows.getFirst();
         }

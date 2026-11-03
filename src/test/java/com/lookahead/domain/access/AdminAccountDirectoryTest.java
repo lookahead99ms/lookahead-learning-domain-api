@@ -14,7 +14,7 @@ class AdminAccountDirectoryTest {
   var directory=mock(AccountDirectory.class);var access=mock(StaffAccessService.class);
   var actor=new AccountPrincipal(UUID.randomUUID(),"admin","Admin",true);
   doThrow(new AccountFailure(403,"OWNER_REQUIRED","Owner required")).when(access).requireOwner(actor);
-  var service=new AdminAccountDirectory(directory,access,mock(StaffAccessRepository.class),mock(AccessSummaryService.class),mock(JdbcTemplate.class),mock(TestAccountPolicy.class));
+  var service=new AdminAccountDirectory(directory,access,mock(StaffAccessRepository.class),mock(AccessSummaryService.class),mock(JdbcTemplate.class),mock(TestAccountPolicy.class),mock(AccountRemovalService.class));
   assertThatThrownBy(()->service.list(actor,"",0)).isInstanceOf(AccountFailure.class);verifyNoInteractions(directory);
  }
  @Test void joinsIdentityWithCurrentDomainRolesAndAccessWithoutWrites() {
@@ -29,7 +29,10 @@ class AdminAccountDirectoryTest {
   when(summaries.get(actor,real)).thenReturn(summary);
   when(summaries.get(actor,actor.accountId())).thenReturn(new AccessSummaryService.Summary("Free",List.of("Free"),List.of()));
   when(summaries.get(actor,admin)).thenReturn(new AccessSummaryService.Summary("Free",List.of("Free"),List.of()));
-  var result=new AdminAccountDirectory(directory,access,staff,summaries,jdbc,localPolicy).list(actor,"",0);
+  var removal=mock(AccountRemovalService.class);
+  when(removal.options(any(),any(),anyBoolean())).thenReturn(AccountRemovalService.Options.NONE);
+  when(removal.options(actor.accountId(),real,false)).thenReturn(new AccountRemovalService.Options("disabled",false,true,true));
+  var result=new AdminAccountDirectory(directory,access,staff,summaries,jdbc,localPolicy,removal).list(actor,"",0);
   assertThat(result.accounts()).hasSize(3);assertThat(result.accounts().get(0).roles()).containsExactly("owner");
   assertThat(result.accounts().get(0).fullCurriculum()).isTrue();
   assertThat(result.accounts().get(1).roles()).containsExactly("user");assertThat(result.accounts().get(1).access()).isEqualTo(summary);
@@ -37,6 +40,12 @@ class AdminAccountDirectoryTest {
   assertThat(result.accounts().get(1).canDowngrade()).isTrue();assertThat(result.accounts().get(1).canDelete()).isFalse();
   assertThat(result.accounts().get(2).canDowngrade()).isFalse();assertThat(result.accounts().get(2).canDelete()).isFalse();
   assertThat(result.accounts().get(2).fullCurriculum()).isTrue();verify(jdbc,never()).update(anyString(),any(Object[].class));
+  // DLV-969: the removal options come from the removal service; the owner's own row never asks for them.
+  var realRow=result.accounts().get(1);
+  assertThat(List.of(String.valueOf(realRow.signIn()),realRow.canDisable(),realRow.canEnable(),realRow.canRemove())).containsExactly("disabled",false,true,true);
+  var ownRow=result.accounts().get(0);
+  assertThat(List.of(String.valueOf(ownRow.signIn()),ownRow.canDisable(),ownRow.canEnable(),ownRow.canRemove())).containsExactly("null",false,false,false);
+  verify(removal,never()).options(eq(actor.accountId()),eq(actor.accountId()),anyBoolean());
  }
  @Test void controllerDisablesCaching() {
   var service=mock(AdminAccountDirectory.class);var response=new org.springframework.mock.web.MockHttpServletResponse();
