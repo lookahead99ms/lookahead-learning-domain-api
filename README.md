@@ -1,5 +1,35 @@
 # Look Ahead Learning Domain API
 
+## DynamoDB persistence candidate (DLV-970)
+
+Latest user decision: keep full account-owned study-plan snapshots in DynamoDB
+for now. The target has four tables: **User Account Details**, **Administrator
+Audit Events**, **User Study Plan Details** and **Protected Owner Identity**.
+Reusable source templates stay in Content; adopting a plan retains an independent
+complete snapshot and personal metadata/progress. The local chunked document
+store supports verified atomic publication, retry recovery and bounded abandonment
+cleanup. Published snapshots can now be atomically retired with audit/receipt and
+a retained tombstone, then purged through bounded job pages. Full plan/progress/
+lifecycle and whole-history deletion adapters remain unfinished.
+
+The S3 prototype and shared-template-reference proposal are deferred. Their source
+and tests are preserved but inactive. No Spring activation or service change;
+PostgreSQL remains the running backend. See [implementation and gates](docs/dynamodb-persistence.md).
+AWS deployment stays user-run; local tests do not establish AWS permissions.
+
+The inactive `DynamoStaffAliasStore` candidate allocates permanent account+role
+numbers through a conditional counter update and two immutable INSERT claims.
+It requires a reviewed bootstrap and fails closed on damaged state; it does not
+change runtime identity visibility. Current local gate: 138 tests pass (68 database),
+package line coverage 99.13%, allocator 99.06%; full Domain release and AWS permission
+proof remain open. See the guide for validation boundaries.
+The read-only `DynamoStaffAliasVerifier` candidate checks all alias/claim pairs,
+role initialization and high-water counters with bounded paginated reads. It is
+not wired to runtime readiness and requires externally stopped writers. Verifier
+line coverage is 100%; complete restore readiness remains open.
+`DynamoStaffAliasBootstrap` initializes an empty alias namespace atomically and
+reconciles retries without resetting counters; operator workflows/import remain open.
+
 ## Audit retention and Local fixture provisioning
 
 The local source candidate adds forward migration V15; V1–V14 remain immutable.
