@@ -80,6 +80,7 @@ public class DomainSecurityConfiguration {
                 .oauth2ResourceServer(resource -> resource.jwt(jwt -> jwt.decoder(decoder)
                         .jwtAuthenticationConverter(domainAuthenticationConverter))
                         .authenticationEntryPoint((request, response, error) -> {
+                            AuthenticationFailures.log(request, error);
                             boolean unavailable = error instanceof AuthenticationServiceException;
                             response.setStatus(unavailable ? 503 : 401);
                             if (!unavailable) response.setHeader("WWW-Authenticate", "Bearer");

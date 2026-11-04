@@ -322,6 +322,30 @@ source for the standalone JVM probe. The RDS trust verifier remains build-only.
 Wrapper distribution setup has a source-independent Docker layer; dependency
 versions and checksum verification are unchanged.
 
+### Why a task failed: the log explains it (DLV-969)
+
+The health answer carries no details, so the reason is written to the log instead
+(names, codes and exception types only; never values, hosts, tokens or exception
+messages). Search these loggers in CloudWatch:
+
+- `lookahead.health`: `Readiness DOWN: …` with a `reason` (for example
+  `MIGRATIONS_MISSING`, `GRANTS_DIFFER`, `CATALOG_MISSING`) and `health.component`
+  (`database` or `content publication`) when a readiness check fails, again every
+  minute while it lasts, and `Readiness UP: …` once on recovery.
+- `lookahead.startup`: `Startup refused: <setting> <what is wrong>` names the
+  environment variable, property or file that stopped startup (for example
+  `LOOKAHEAD_TLS_SERVER_KEY does not belong to LOOKAHEAD_TLS_SERVER_CERTIFICATE`), and
+  `Content release <tag> loaded …` or `… could not be loaded while <step>: …` for the
+  S3 content release.
+- `lookahead.lifecycle`: every liveness/readiness state change, one `Started: version …`
+  line when the task first accepts traffic, and one `Stopping: shutdown requested …`
+  line with the uptime, the readiness before the stop and the last readiness checks, so
+  an exit code 143 (SIGTERM after a failed container health check) is explained.
+- `lookahead.event`: fail-closed and fallback paths on hot request paths (content 503s,
+  storage and sign-in check outages, refused bearer tokens by reason code such as
+  `ISSUER_MISMATCH` or `GATEWAY_SECRET_MISMATCH`, refused Gateway client certificates)
+  are logged once per reason when they start and at most once a minute while they last.
+
 ## SAST gate diagnostics
 
 `python3 tools/security/check.py sarif` requires completed CodeQL invocations,

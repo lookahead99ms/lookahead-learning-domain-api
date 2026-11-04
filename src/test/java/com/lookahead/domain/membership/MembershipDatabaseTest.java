@@ -154,6 +154,32 @@ class MembershipDatabaseTest {
         }
     }
 
+    /** DLV-969 (owner, 2026-11-04): Local is unchanged: any account buys at once; no requests and nothing to decide. */
+    @Test void localPurchasesStayInstantWithoutOwnerApproval(){
+        var a=actor();var s=service("success");
+        assertThat(s.quote(a,buy("learn")).has("ownerApproval")).isFalse();
+        var p=s.buy(a,a.accountId(),buy("learn"),"local-instant",false);
+        assertThat(p.path("status").asText()).isEqualTo("succeeded");assertThat(p.path("providerStatus").asText()).isEqualTo("succeeded");
+        assertThat(s.pendingRequest(a.accountId())).isNull();
+        assertThatThrownBy(()->s.decide(a,new MembershipService.Decision(UUID.fromString(purchaseId(p)),"approve"),"owner",id->true))
+            .isInstanceOfSatisfying(com.lookahead.learning.content.exception.AccountFailure.class,f->{assertThat(f.status()).isEqualTo(403);assertThat(f.code()).isEqualTo("PURCHASE_APPROVAL_DISABLED");});
+        // Another pending purchase still answers the existing code.
+        var b=actor();var pending=service("requires-action").buy(b,b.accountId(),buy("learn"),"local-pending",false);
+        assertThat(pending.path("status").asText()).isEqualTo("pending");
+        assertThatThrownBy(()->service("success").buy(b,b.accountId(),buy("grow"),"local-second",false))
+            .isInstanceOfSatisfying(com.lookahead.learning.content.exception.AccountFailure.class,f->assertThat(f.code()).isEqualTo("PURCHASE_PENDING"));
+    }
+    @Test void theOwnerApprovalGatewayPaysNothingUntilApprovedAndThenOnceUnderTheKey(){
+        var gateway=new OwnerApprovalPaymentGateway(new MockStripePaymentGateway(jdbc,manager,"success"));
+        String key="membership-"+UUID.randomUUID();
+        assertThat(gateway.create(key,6999,"USD")).isEqualTo(new PaymentGateway.Result(null,"awaiting_owner_approval",6999,"USD"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM membership_mock_payments WHERE idempotency_key=?",Integer.class,key)).isZero();
+        var paid=gateway.approve(key,6999,"USD");
+        assertThat(paid.status()).isEqualTo("succeeded");assertThat(paid.id()).startsWith("pi_mock_");
+        assertThat(gateway.approve(key,6999,"USD")).isEqualTo(paid);
+        assertThat(gateway.status(paid.id())).isEqualTo(paid);assertThat(gateway.confirm(paid.id(),key)).isEqualTo(paid);
+        assertThatThrownBy(()->new OwnerApprovalPaymentGateway(null)).isInstanceOf(NullPointerException.class);
+    }
     @Test void membershipRuleRefusalsAndOwnerSaleActionsAreLogged(){
         var a=actor();var s=service("success");
         try(var log=com.lookahead.domain.LogCapture.start()){

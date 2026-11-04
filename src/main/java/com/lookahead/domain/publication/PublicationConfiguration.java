@@ -7,7 +7,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
-import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.context.annotation.*;
 import org.springframework.core.env.Environment;
@@ -83,10 +82,6 @@ public class PublicationConfiguration {
     @Bean("contentPublication") HealthIndicator contentPublication(PublicationLocation location,
             com.lookahead.learning.content.service.ProtectedContentPolicy policy,
             com.lookahead.learning.content.validator.SnapshotValidator catalog) {
-        return () -> location.cloud() && (policy.version().equals("disabled")
-                || !java.nio.file.Files.isRegularFile(java.nio.file.Path.of(location.manifest()))
-                || !java.nio.file.Files.isRegularFile(java.nio.file.Path.of(location.accountCatalog()))
-                || !java.nio.file.Files.isDirectory(java.nio.file.Path.of(location.contentRoot())))
-                ? Health.down().build() : Health.up().build();
+        return new ContentPublicationHealth(location, policy, java.time.Clock.systemUTC());
     }
 }

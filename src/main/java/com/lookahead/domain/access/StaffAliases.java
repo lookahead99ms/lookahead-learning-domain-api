@@ -38,8 +38,18 @@ public class StaffAliases {
     /** True when {@code viewer} may see real identities: the owner only. */
     public boolean seesIdentities(AccountPrincipal viewer) {
         try { return access.permissions(viewer).manageAccess(); }
-        catch (RuntimeException unknown) { return false; }
+        catch (com.lookahead.learning.content.exception.AccountFailure refused) { return false; }
+        catch (RuntimeException unknown) {
+            // DLV-969 (owner, 2026-11-04): fail closed, but say so: the owner would otherwise see role labels with no reason.
+            String types = Events.types(unknown);
+            if (PERMISSIONS.due(types)) Events.failed(Events.EVENT, "alias.identities", "PERMISSIONS_UNAVAILABLE")
+                    .addKeyValue("account.id", viewer == null ? null : viewer.accountId()).addKeyValue("error.type", types)
+                    .log("Could not check whether account {} may see identities ({}); showing role labels instead",
+                            viewer == null ? null : viewer.accountId(), types);
+            return false;
+        }
     }
+    private static final com.lookahead.domain.Throttle PERMISSIONS = new com.lookahead.domain.Throttle();
 
     /** The label other people see for {@code accountId}. */
     public String label(UUID accountId) {

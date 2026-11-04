@@ -68,23 +68,28 @@ public final class ReadyMadeAdoptionPreparation {
             throw new AccountFailure(409, "TEMPLATE_CHANGED", "The published template changed. Review its current version.");
         if (!asset.tier().equals("pro") || !asset.scopeMatch().equals("all")
                 || !asset.mediaType().equals("application/json") || !asset.contentIds().isEmpty())
-            throw unavailable();
+            throw defect(templateId, "TEMPLATE_ASSET_INVALID", "its manifest entry is not a pro JSON asset that needs all its scopes and grants no content IDs");
 
         ReadyMadeTemplateMapper.Mapping mapping;
         JsonNode template;
         try {
             // The production loader validates actual bytes, path boundaries and symlinks on every preparation.
             JsonNode source = mapper.readTree(publication.read(asset));
-            if (!templateId.equals(source.path("templateId").asText())) throw unavailable();
+            if (!templateId.equals(source.path("templateId").asText())) throw defect(templateId, "TEMPLATE_ID_MISMATCH", "its file names another templateId");
             // DLV-931: the mapper verifies the published bytes; catalog checks use blaze IDs.
             template = com.lookahead.learning.content.util.CatalogIds.normalize(source);
             catalog.validateTemplateReferences(template);
             mapping = templates.map(source, asset.sha256());
-            if (!mapping.topicIds().equals(asset.scopes())) throw unavailable();
+            if (!mapping.topicIds().equals(asset.scopes())) throw defect(templateId, "TEMPLATE_SCOPES_MISMATCH", "its topics differ from the scopes its manifest entry grants");
         } catch (AccountFailure failure) {
             throw failure;
         } catch (RuntimeException failure) {
             // Server-owned catalog defects must not expose source data or appear as a learner payload failure.
+            // DLV-969 (owner, 2026-11-04): the 503 names the template and the failure's types for the owner.
+            com.lookahead.domain.Events.failed(com.lookahead.domain.Events.EVENT, "plan.template.prepare", "TEMPLATE_UNAVAILABLE")
+                    .addKeyValue("template.id", templateId).addKeyValue("error.type", com.lookahead.domain.Events.types(failure))
+                    .log("Ready-made template {} of release {} could not be prepared ({}); answered 503", templateId, publication.version(),
+                            com.lookahead.domain.Events.types(failure));
             throw unavailable();
         }
 
@@ -103,6 +108,13 @@ public final class ReadyMadeAdoptionPreparation {
         // Exact IDs are bounded by source validation (100 topics / 10,000 references); never silently truncate.
         return new Prepared(accountId, path, asset.sha256(), publication.version(), coverage,
                 coverage.complete() ? mapping : null);
+    }
+
+    /** DLV-969 (owner, 2026-11-04): a published template that cannot be used is a release defect; the 503 says which. */
+    private AccountFailure defect(String templateId, String reason, String words) {
+        com.lookahead.domain.Events.failed(com.lookahead.domain.Events.EVENT, "plan.template.prepare", reason).addKeyValue("template.id", templateId)
+                .log("Ready-made template {} of release {} cannot be used: {}; answered 503", templateId, publication.version(), words);
+        return unavailable();
     }
 
     private static AccountFailure unavailable() {

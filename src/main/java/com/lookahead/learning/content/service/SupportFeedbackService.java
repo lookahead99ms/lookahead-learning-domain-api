@@ -1,5 +1,6 @@
 package com.lookahead.learning.content.service;
 
+import com.lookahead.domain.Events;
 import com.lookahead.learning.content.exception.AccountFailure;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
@@ -62,7 +63,13 @@ public class SupportFeedbackService {
             }
             String fingerprint = HexFormat.of().formatHex(digest.digest());
             JavaMailSender mail = sender.getIfAvailable();
-            if (mail == null || !email(from) || !email(inbox)) throw new AccountFailure(503,"SUPPORT_UNAVAILABLE","Support email is not configured. Your message has not been sent");
+            if (mail == null || !email(from) || !email(inbox)) {
+                // DLV-969 (owner, 2026-11-04): name the missing setting, never an address.
+                String missing = mail == null ? "spring.mail.host (no mail sender is configured)" : !email(from) ? "app.support.from" : "app.support.inbox";
+                Events.failed(Events.EVENT, "support.send", "SUPPORT_UNAVAILABLE").addKeyValue("setting", missing)
+                        .log("Support message refused with 503: {} is missing or not an email address", missing);
+                throw new AccountFailure(503,"SUPPORT_UNAVAILABLE","Support email is not configured. Your message has not been sent");
+            }
             var reservation = receipts.reserve(owner,key,fingerprint);
             if (!reservation.dispatch()) return reservation.receipt();
             String reference = reservation.receipt().reference();
@@ -76,12 +83,22 @@ public class SupportFeedbackService {
                 mail.send(mime);
                 receipts.accepted(owner,key);
                 receipt = new Receipt(reference,"accepted");
-            } catch (Exception unavailable) { /* Keep an unconfirmed receipt; a retry must not send twice. */ }
+            } catch (Exception unavailable) {
+                // Keep an unconfirmed receipt; a retry must not send twice. DLV-969: say the email did not go.
+                Events.failed(Events.EVENT, "support.send", "EMAIL_NOT_SENT").addKeyValue("support.reference", reference)
+                        .addKeyValue("error.type", Events.types(unavailable))
+                        .log("Support message {} was saved but its email was not sent ({}); the receipt stays unconfirmed", reference, Events.types(unavailable));
+            }
             return receipt;
         } catch (AccountFailure failure) { throw failure; }
         catch (org.springframework.dao.DataAccessException unavailable) { throw unavailable; }
         catch (org.springframework.transaction.TransactionException unavailable) { throw unavailable; }
-        catch (Exception invalid) { throw new AccountFailure(422,"FEEDBACK_INVALID","Check the message and PNG or JPEG attachments"); }
+        catch (Exception invalid) {
+            // Usually a damaged image; the types tell a damaged upload from a defect here.
+            Events.refused(Events.EVENT, "support.send", "FEEDBACK_INVALID").addKeyValue("error.type", Events.types(invalid))
+                    .log("Support message refused with 422: its fields or images could not be read ({})", Events.types(invalid));
+            throw new AccountFailure(422,"FEEDBACK_INVALID","Check the message and PNG or JPEG attachments");
+        }
     }
     private static void text(String value,int limit) { if (value == null || value.isBlank() || value.length() > limit) invalid("Message fields exceed their limits"); }
     private static boolean email(String value) { return value != null && value.length() <= 254 && value.matches("[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+"); }

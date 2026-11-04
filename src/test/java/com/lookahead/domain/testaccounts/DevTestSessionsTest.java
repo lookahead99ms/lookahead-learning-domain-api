@@ -59,6 +59,25 @@ class DevTestSessionsTest {
                 List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ANONYMOUS"))) : seen.get()) : null;
     }
 
+    /** DLV-969 (owner, 2026-11-04): a test session that cannot be checked answers 503 and says why, once a minute. */
+    @Test void aFailingTestSessionCheckIsLoggedWithItsTypes() throws Exception {
+        var sessions = mock(DevTestSessions.class);
+        when(sessions.requestAccount(any())).thenThrow(new org.springframework.dao.DataAccessResourceFailureException("db.internal",
+                new java.sql.SQLException("down", "08001")));
+        try (var log = com.lookahead.domain.LogCapture.start()) {
+            for (int i = 0; i < 2; i++) {
+                var response = new MockHttpServletResponse();
+                assertThat(run(sessions, request("secret", "holder", UUID.randomUUID().toString()), response)).isNull();
+                assertThat(response.getStatus()).isEqualTo(503);
+            }
+            var line = log.only("test-session.request");
+            assertThat(line.getFormattedMessage()).isEqualTo("Test session check failed (DataAccessResourceFailureException < SQLException, SQL state 08001);"
+                    + " answered 503 IDENTITY_UNAVAILABLE");
+            assertThat(com.lookahead.domain.LogCapture.keys(line)).containsEntry("reason", "TEST_SESSION_UNAVAILABLE").containsEntry("db.sqlState", "08001");
+            log.containsNone("db.internal");
+        }
+    }
+
     @Test void aRequestWithoutTheTestAccountHeaderPassesUntouched() throws Exception {
         var response = new MockHttpServletResponse();
         var seen = run(new Stub(), request(null, null, null), response);
@@ -113,7 +132,8 @@ class DevTestSessionsTest {
         var settings = withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS).strictness(Strictness.LENIENT);
         var created = mock(CreatedTestAccounts.class, settings);
         var roster = mock(DevTestRoster.class, settings);
-        var controller = new TestAccountsController(mock(TestAccountsService.class, settings), created, roster);
+        var accounts = mock(TestAccountsService.class, settings);
+        var controller = new TestAccountsController(accounts, created, roster);
         var owner = new AccountPrincipal(UUID.randomUUID(), "owner", "Owner", true, true);
         var status = new DevTestRoster.Status(35, 5, 0);
         when(roster.next(owner)).thenReturn(status);
@@ -128,5 +148,19 @@ class DevTestSessionsTest {
         assertThat(controller.allowance(owner).data()).isEqualTo(new CreatedTestAccounts.Allowance(1, 0, 1, status, null));
         assertThat(status.remaining()).isEqualTo(30);
         assertThat(new CreatedTestAccounts.Create(ACCOUNT, "x").toString()).isEqualTo("Create[redacted]");
+        // DLV-969 (owner, 2026-11-04): {"restoreRoster": true, "confirm": "RESTORE"} on the same route goes to the roster's Restore.
+        when(roster.restore(owner, new DevTestRoster.Restore("RESTORE"))).thenReturn(new DevTestRoster.Restored(2));
+        assertThat(controller.create(owner, new CreatedTestAccounts.Create(null, null, null, false, true, "RESTORE")).data()).isEqualTo(new DevTestRoster.Restored(2));
+        assertThat(controller.create(owner, new CreatedTestAccounts.Create(null, null, null, true, true, "RESTORE")).data()).isEqualTo(new DevTestRoster.Restored(2));
+        verify(roster, times(1)).next(owner);
+        verify(created, times(1)).create(any(), any());
+        // DLV-969 (owner, 2026-11-04): {"purchaseDecision": {...}} on the same route is a decision on a DEV purchase request.
+        var decision = new com.lookahead.domain.membership.MembershipService.Decision(UUID.randomUUID(), "approve");
+        var decided = new tools.jackson.databind.ObjectMapper().createObjectNode().put("decision", "approve");
+        when(accounts.decidePurchase(owner, decision)).thenReturn(decided);
+        assertThat(controller.create(owner, new CreatedTestAccounts.Create(null, null, null, true, true, "RESTORE", decision)).data()).isEqualTo(decided);
+        verify(roster, times(1)).next(owner);
+        verify(roster, times(2)).restore(any(), any());
+        verify(created, times(1)).create(any(), any());
     }
 }

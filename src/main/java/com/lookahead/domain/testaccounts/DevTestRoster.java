@@ -21,11 +21,19 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class DevTestRoster {
     static final int BATCH = 5;
-    /** {@code withoutPlan}: ready learners whose scenario has a study plan they don't have yet (DLV-969 S37). */
+    /**
+     * {@code withoutPlan}: ready learners whose scenario has a study plan they don't have yet (DLV-969 S37).
+     * {@code deleted}: roster accounts deleted before "roster accounts are never deleted", which is also how many the
+     * owner's Restore brings back ({@link #restore}).
+     */
     public record Status(int total, int ready, int deleted, int withoutPlan) {
         public Status(int total, int ready, int deleted) { this(total, ready, deleted, 0); }
         public int remaining() { return total - ready - deleted; }
     }
+    /** The owner types {@code RESTORE}. */
+    public record Restore(String confirm) {}
+    /** How many accounts this call restored: 0 when none was deleted. */
+    public record Restored(int restored) {}
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final TestAccountPolicy policy;
@@ -61,6 +69,38 @@ public class DevTestRoster {
                 .log("DEV test roster: {} account(s) created in this batch; {} of {} ready, {} deleted, {} still to create",
                     batch.size(), progress.ready(), progress.total(), progress.deleted(), progress.remaining());
         return progress;
+    }
+
+    /**
+     * DLV-969 (owner, 2026-11-04): the owner's Restore, DEV only. Every deleted roster account goes back to active and is
+     * rebuilt from its scenario like Reset, each in its own transaction; created test accounts are never restored. With
+     * nothing to restore it answers 0. Non-owner: 403 OWNER_REQUIRED.
+     */
+    public Restored restore(AccountPrincipal actor, Restore request) {
+        try {
+            policy.requireCloud();
+            if (actor == null || !actor.isEnabled()) throw new AccountFailure(401, "AUTHENTICATION_REQUIRED", "Sign in to continue.");
+            service.requireOwner(actor);
+            if (request == null || !"RESTORE".equals(request.confirm()))
+                throw new AccountFailure(422, "ACCOUNT_CONFIRMATION_REQUIRED", "Type the required confirmation word.");
+        } catch (AccountFailure refused) {
+            Events.refused(Events.EVENT, "test-account.restore", refused.code()).addKeyValue("account.id", actor == null ? null : actor.accountId())
+                    .log("Restore of deleted roster accounts refused: {}", refused.code());
+            throw refused;
+        }
+        var deleted = new HashSet<>(jdbc.queryForList(
+                "SELECT account_id FROM test_account_registry WHERE creation_state='deleted' AND creator_id IS NOT NULL AND initialization<>'created'", UUID.class));
+        int restored = 0;
+        for (var entry : TestAccountRoster.entries()) {
+            if (!deleted.contains(entry.accountId())) continue;
+            if (!Boolean.TRUE.equals(transactions.execute(status -> service.restoreRosterEntry(actor, entry)))) continue;
+            restored++;
+            Events.success(Events.EVENT, "test-account.restore").addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", entry.accountId())
+                    .log("Roster test account {} restored to its scenario by account {}", entry.accountId(), actor.accountId());
+        }
+        if (restored == 0) Events.success(Events.EVENT, "test-account.restore").addKeyValue("account.id", actor.accountId()).addKeyValue("count", 0)
+                .log("Restore of deleted roster accounts: nothing to restore");
+        return new Restored(restored);
     }
 
     private Status status() {

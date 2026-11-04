@@ -342,16 +342,34 @@ public class PlatformReviewService {
     private DayFile parse(byte[] bytes) {
         try {
             var file = mapper.readValue(bytes, DayFile.class);
-            if (!DAY_SCHEMA.equals(file.schema()) || file.items() == null) throw unavailable();
+            if (!DAY_SCHEMA.equals(file.schema()) || file.items() == null) {
+                damaged("DAY_FILE_SCHEMA", file.day(), "it is not a " + DAY_SCHEMA + " file with items", null);
+                throw unavailable();
+            }
             // DLV-931: items saved before the rename read as "Blaze Catalog"; the next write of the day stores it.
             if (file.items().stream().noneMatch(i -> LEGACY_BLAZE_PAGE.equals(i.page()))) return file;
             return new DayFile(file.schema(), file.day(), file.items().stream().map(i -> !LEGACY_BLAZE_PAGE.equals(i.page()) ? i
                     : new StoredItem(i.id(), i.reviewerAccountId(), i.reviewerId(), i.reviewerName(), i.category(),
                             currentPage(i.page()), i.pageUrl(), i.title(), i.details(), i.priority(), i.attachments(), i.status(),
                             i.ownerNote(), i.createdAt(), i.updatedAt(), i.createKey(), i.createHash(), i.lastWriteKey(), i.submitterRole())).toList());
-        } catch (JacksonException damaged) {
+        } catch (JacksonException broken) {
+            damaged("DAY_FILE_UNREADABLE", null, "it is not valid JSON for a review day file", broken);
             throw unavailable();
         }
+    }
+
+    /**
+     * DLV-969 (owner, 2026-11-04): a damaged day file makes every review page answer 503; one WARN per reason a minute
+     * says so (the day when it can be read, the exception types), never the file's contents.
+     */
+    private static final com.lookahead.domain.Throttle DAMAGED = new com.lookahead.domain.Throttle();
+    private static void damaged(String reason, String day, String words, Exception failure) {
+        String types = failure == null ? null : Events.types(failure);
+        if (!DAMAGED.due(reason + "|" + day)) return;
+        var line = Events.failed(Events.EVENT, "platform-review.read", reason);
+        if (types != null) line = line.addKeyValue("error.type", types);
+        line.log("A platform review day file{} cannot be read: {}{}; review pages answer 503 until it is repaired",
+                day == null ? "" : " (" + Events.safe(day) + ")", words, types == null ? "" : " (" + types + ")");
     }
 
     private byte[] serialize(DayFile file) {

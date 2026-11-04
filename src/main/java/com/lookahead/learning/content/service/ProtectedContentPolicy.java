@@ -77,17 +77,38 @@ public class ProtectedContentPolicy {
     }
     public Optional<Asset> find(String path){return Optional.ofNullable(assets.get(path));}
     public byte[] read(Asset asset) {
-        if (!asset.equals(assets.get(asset.path()))) throw new AccountFailure(503,"CONTENT_UNAVAILABLE","Content is unavailable.");
+        if (!asset.equals(assets.get(asset.path()))) {
+            unreadable("ASSET_NOT_PUBLISHED", asset, "it is not the asset this release published", null);
+            throw new AccountFailure(503,"CONTENT_UNAVAILABLE","Content is unavailable.");
+        }
         if (cache != null) return cache.read(asset.path() + ":" + asset.sha256(), () -> readVerified(asset));
         return readVerified(asset);
     }
     private byte[] readVerified(Asset asset) {
+        String reason="ASSET_UNREADABLE",words="its file could not be read from the content release on disk";
         try {
             Path file=root.resolve(asset.path().substring("/content/".length())).normalize();
-            for(Path current=file;current!=null && current.startsWith(root);current=current.getParent())if(Files.isSymbolicLink(current))throw new IllegalStateException("Symbolic asset path");
-            if(!file.toRealPath().startsWith(root) || Files.size(file)>32*1024*1024)throw new IllegalStateException("Invalid asset boundary");
+            for(Path current=file;current!=null && current.startsWith(root);current=current.getParent())if(Files.isSymbolicLink(current)){reason="ASSET_SYMLINK";words="its path holds a symbolic link";throw new IllegalStateException("Symbolic asset path");}
+            if(!file.toRealPath().startsWith(root) || Files.size(file)>32*1024*1024){reason="ASSET_OUTSIDE_RELEASE";words="it resolves outside the content folder or is larger than 32 MB";throw new IllegalStateException("Invalid asset boundary");}
             byte[] bytes=Files.readAllBytes(file);String actual=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
-            if(!actual.equals(asset.sha256()))throw new IllegalStateException("Changed publication bytes");return bytes;
-        }catch(Exception failure){throw new AccountFailure(503,"CONTENT_UNAVAILABLE","This content is temporarily unavailable. Retry shortly.");}
+            if(!actual.equals(asset.sha256())){reason="ASSET_CHANGED";words="its bytes differ from the SHA-256 the manifest published";throw new IllegalStateException("Changed publication bytes");}return bytes;
+        }catch(Exception failure){
+            unreadable(reason,asset,words,reason.equals("ASSET_UNREADABLE")?failure:null);
+            throw new AccountFailure(503,"CONTENT_UNAVAILABLE","This content is temporarily unavailable. Retry shortly.");
+        }
+    }
+
+    /**
+     * DLV-969 (owner, 2026-11-04): a 503 for content used to say only CONTENT_UNAVAILABLE. One WARN per reason (and
+     * failure types) when it starts and once a minute while it lasts names the asset path, never a disk path.
+     */
+    private static final com.lookahead.domain.Throttle UNREADABLE = new com.lookahead.domain.Throttle();
+    private void unreadable(String reason,Asset asset,String words,Exception failure) {
+        String types=failure==null?null:com.lookahead.domain.Events.types(failure);
+        if(!UNREADABLE.due(reason+"|"+types))return;
+        var line=com.lookahead.domain.Events.failed(com.lookahead.domain.Events.EVENT,"content.read",reason).addKeyValue("content.path",asset.path())
+                .addKeyValue("release.version",version);
+        if(types!=null)line=line.addKeyValue("error.type",types);
+        line.log("Content {} of release {} answered 503: {}{}",asset.path(),version,words,types==null?"":" ("+types+")");
     }
 }

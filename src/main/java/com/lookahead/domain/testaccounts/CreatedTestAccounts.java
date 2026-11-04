@@ -23,11 +23,19 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class CreatedTestAccounts {
     /**
-     * {@code scenario}: DLV-969 S35, a {@link TestAccountTemplates} id the account starts from (none: a learner without
-     * access, as before). {@code roster}: the owner's DEV roster ({@link DevTestRoster}) through the same route.
-     * {@code password}: Local only.
+     * {@code scenario}: DLV-969 S35, a learner {@link TestAccountTemplates#creatable} id the account starts from (none: a
+     * learner without access, as before). {@code roster}: the owner's DEV roster ({@link DevTestRoster}) through the same route.
+     * {@code password}: Local only. {@code restoreRoster} with {@code confirm} "RESTORE": the owner's Restore of deleted
+     * DEV roster accounts ({@link DevTestRoster#restore}), on the route the Gateway already forwards.
+     * {@code purchaseDecision}: DLV-969 (owner, 2026-11-04), the owner's or an admin's decision on a DEV purchase
+     * request ({@link TestAccountsService#decidePurchase}), on the same route.
      */
-    public record Create(UUID key, String password, String scenario, boolean roster) {
+    public record Create(UUID key, String password, String scenario, boolean roster, boolean restoreRoster, String confirm,
+            com.lookahead.domain.membership.MembershipService.Decision purchaseDecision) {
+        public Create(UUID key, String password, String scenario, boolean roster, boolean restoreRoster, String confirm) {
+            this(key, password, scenario, roster, restoreRoster, confirm, null);
+        }
+        public Create(UUID key, String password, String scenario, boolean roster) { this(key, password, scenario, roster, false, null); }
         public Create(UUID key, String password) { this(key, password, null, false); }
         @Override public String toString() { return "Create[redacted]"; }
     }
@@ -61,12 +69,11 @@ public class CreatedTestAccounts {
     @org.springframework.beans.factory.annotation.Autowired
     public void configureAccounts(TestAccountsService accounts) { this.accounts=accounts; }
     private TestIdentity identity() { return policy.cloud() ? NO_SIGN_IN : local; }
-    /** The creator's role for scenario limits; a dual-role actor gets the lower one, as for the allowance. */
+    /** The creator's place in {@link TestAccountTemplates#allows}; a dual-role actor gets the lower one, as for the allowance. */
     private String role(AccountPrincipal actor) {
         if (owner.allowed(actor)) return "owner";
         var assignment=staff.forAccount(actor.accountId());
-        Set<String> roles=assignment==null?Set.of():assignment.roles();
-        return roles.contains("admin") ? "admin" : roles.contains("co-author") ? "co-author" : "";
+        return TestAccountTemplates.role(false,assignment==null?Set.of():assignment.roles());
     }
     private int limit(AccountPrincipal actor) {
         policy.requireEnabled();
@@ -83,7 +90,8 @@ public class CreatedTestAccounts {
         int cap=limit(actor);
         int used=jdbc.queryForObject("SELECT count(*) FROM test_account_creations WHERE creator_id=? AND state IN ('active','deleted')",Integer.class,actor.accountId());
         String role=role(actor);
-        var scenarios=TestAccountTemplates.all().stream().filter(t->TestAccountTemplates.allows(role,Set.copyOf(t.roles()))).toList();
+        // DLV-969 (owner, 2026-11-04): learner scenarios only, for every role; staff test accounts come from the roster.
+        var scenarios=TestAccountTemplates.creatable().stream().filter(t->TestAccountTemplates.allows(role,Set.copyOf(t.roles()))).toList();
         return new Allowance(cap,used,cap==Integer.MAX_VALUE?Integer.MAX_VALUE:Math.max(0,cap-used),null,scenarios);
     }
     public Created create(AccountPrincipal actor, Create request) {
@@ -110,6 +118,9 @@ public class CreatedTestAccounts {
         if (scenario!=null) {
             if (!TestAccountTemplates.known(scenario)) throw new AccountFailure(422,"UNKNOWN_SCENARIO","Choose one of the listed scenarios.");
             limit(actor);
+            // DLV-969 (owner, 2026-11-04): only learner test accounts are created, whoever asks, the owner included.
+            if (!TestAccountTemplates.creatable(scenario))
+                throw new AccountFailure(403,"TEST_ACCOUNT_LEARNER_ONLY","Only learner test accounts can be created. Staff test accounts come from the roster.");
             if (!TestAccountTemplates.allows(role(actor),TestAccountTemplates.roles(scenario)))
                 throw new AccountFailure(403,"SCENARIO_FORBIDDEN","Your role cannot create a test account with this role.");
         }

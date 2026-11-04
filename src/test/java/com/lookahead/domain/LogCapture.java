@@ -22,9 +22,9 @@ public final class LogCapture implements AutoCloseable {
     private final List<Logger> loggers = new ArrayList<>();
     private final List<Level> levels = new ArrayList<>();
 
-    private LogCapture() {
+    private LogCapture(String... names) {
         appender.start();
-        for (String name : NAMES) {
+        for (String name : names) {
             var logger = (Logger) LoggerFactory.getLogger(name);
             loggers.add(logger); levels.add(logger.getLevel());
             logger.setLevel(Level.INFO);
@@ -32,7 +32,19 @@ public final class LogCapture implements AutoCloseable {
         }
     }
 
-    public static LogCapture start() { return new LogCapture(); }
+    /** Every {@link Throttle} forgets what it wrote, so a line another test already wrote is written again here. */
+    public static LogCapture start() { Throttle.forgetAll(); return new LogCapture(NAMES); }
+
+    /**
+     * DLV-969: captures the given loggers too (for example {@code lookahead.health}, {@code lookahead.startup},
+     * {@code lookahead.lifecycle}), also after {@link Throttle#forgetAll()}.
+     */
+    public static LogCapture start(String... extra) {
+        Throttle.forgetAll();
+        var names = new ArrayList<>(List.of(NAMES));
+        names.addAll(List.of(extra));
+        return new LogCapture(names.toArray(String[]::new));
+    }
 
     /** Every captured line, oldest first (copied: the appender may still be written by another thread). */
     public List<ILoggingEvent> lines() { synchronized (appender) { return List.copyOf(appender.list); } }

@@ -50,6 +50,29 @@ class SupportFeedbackServiceTest {
     assertThat(service.submit("owner","request-1234567890",feedback)).isEqualTo(receipt);
     verify(sender,times(1)).send(any(MimeMessage.class));
   }
+  /** DLV-969 (owner, 2026-11-04): an email that did not go, a missing setting and an unreadable upload are explained. */
+  @SuppressWarnings("unchecked")
+  @Test void failuresAreLoggedWithoutAddressesOrMessages() {
+    var sender=mock(JavaMailSender.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)); ObjectProvider<JavaMailSender> provider=mock(ObjectProvider.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
+    when(provider.getIfAvailable()).thenReturn(sender);
+    when(sender.createMimeMessage()).thenReturn(new MimeMessage(Session.getInstance(new Properties())));
+    doThrow(new org.springframework.mail.MailSendException("smtp.internal refused reply@example.test")).when(sender).send(any(MimeMessage.class));
+    var feedback=new SupportFeedbackService.Feedback("problem","A subject","A private message","reply@example.test",List.of());
+    try(var log=com.lookahead.domain.LogCapture.start()){
+      var receipt=new SupportFeedbackService(provider,"sender@example.test","support@example.test",new TestReceiptStore()).submit("owner","request-1234567890",feedback);
+      assertThatThrownBy(()->new SupportFeedbackService(provider,"sender@example.test","",new TestReceiptStore()).submit("owner","request-1234567890",feedback))
+        .hasMessageContaining("not configured");
+      var broken=new SupportFeedbackService.Feedback("problem","A subject","A message","reply@example.test",List.of(new SupportFeedbackService.Attachment("x.png","%%% not base64")));
+      assertThatThrownBy(()->new SupportFeedbackService(provider,"sender@example.test","support@example.test",new TestReceiptStore()).submit("owner","request-1234567890",broken))
+        .hasMessageContaining("PNG or JPEG");
+      assertThat(log.messages()).containsExactly(
+        "Support message "+receipt.reference()+" was saved but its email was not sent (MailSendException); the receipt stays unconfirmed",
+        "Support message refused with 503: app.support.inbox is missing or not an email address",
+        "Support message refused with 422: its fields or images could not be read (IllegalArgumentException)");
+      assertThat(log.lines()).extracting(line->com.lookahead.domain.LogCapture.keys(line).get("reason")).containsExactly("EMAIL_NOT_SENT","SUPPORT_UNAVAILABLE","FEEDBACK_INVALID");
+      log.containsNone("reply@example.test","sender@example.test","support@example.test","smtp.internal","A private message");
+    }
+  }
   @SuppressWarnings("unchecked")
   @Test void rejectsHeaderInjectionAndNonImagesBeforeSending() {
     ObjectProvider<JavaMailSender> provider=mock(ObjectProvider.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));

@@ -71,6 +71,29 @@ class ProtectedContentServiceTest {
         when(accounts.isEnabled(learner.accountId())).thenReturn(false);
         denied(()->service.read("/content/pro.json",learner),401,"AUTHENTICATION_REQUIRED");
     }
+    /** DLV-969 (owner, 2026-11-04): a content 503 says why in the log, once per reason a minute, never a disk path. */
+    @Test void unavailableContentIsExplainedOncePerReason() throws Exception {
+        var policy=policy();var service=new ProtectedContentService(policy,accounts);
+        try(var log=com.lookahead.domain.LogCapture.start()){
+            Files.writeString(directory.resolve("public.json"),"changed");
+            denied(()->service.read("/content/public.json",null),503,"CONTENT_UNAVAILABLE");
+            denied(()->service.read("/content/public.json",null),503,"CONTENT_UNAVAILABLE");
+            Files.delete(directory.resolve("public.json"));
+            denied(()->service.read("/content/public.json",null),503,"CONTENT_UNAVAILABLE");
+            Files.createSymbolicLink(directory.resolve("public.json"),directory.resolve("free.json"));
+            denied(()->service.read("/content/public.json",null),503,"CONTENT_UNAVAILABLE");
+            var stale=new ProtectedContentPolicy.Asset("/content/public.json","0".repeat(64),"application/json","public",Set.of(),Set.of(),"any");
+            assertThatThrownBy(()->policy.read(stale)).isInstanceOf(AccountFailure.class);
+            assertThat(log.lines("content.read")).extracting(line->com.lookahead.domain.LogCapture.keys(line).get("reason"))
+                    .containsExactly("ASSET_CHANGED","ASSET_UNREADABLE","ASSET_SYMLINK","ASSET_NOT_PUBLISHED");
+            assertThat(log.lines("content.read").getFirst().getFormattedMessage())
+                    .isEqualTo("Content /content/public.json of release test-v1 answered 503: its bytes differ from the SHA-256 the manifest published");
+            assertThat(log.lines("content.read").get(1).getFormattedMessage()).startsWith("Content /content/public.json of release test-v1 answered 503:"
+                    + " its file could not be read from the content release on disk (NoSuchFileException");
+            assertThat(log.lines("content.read")).allSatisfy(line->assertThat(line.getLevel()).isEqualTo(ch.qos.logback.classic.Level.WARN));
+            log.containsNone(directory.toString());
+        }
+    }
     @Test void excludesUnlistedFilesAndRejectsTraversalAndChangedBytes() throws Exception {
         var policy=policy();var service=new ProtectedContentService(policy,accounts);
         for(String path:List.of("/content/manifest.json","/content/../public.json","/content/%2e%2e/public.json","/content/public.json/","/content/public.json%00"))denied(()->service.read(path,null),404,"CONTENT_NOT_FOUND");

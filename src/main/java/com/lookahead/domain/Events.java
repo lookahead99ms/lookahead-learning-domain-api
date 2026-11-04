@@ -126,9 +126,16 @@ public final class Events {
     }
 
     /** The AWS error code (for example {@code NotAuthorizedException}); never the provider's message. */
-    static String code(Throwable failure) {
+    public static String code(Throwable failure) {
         if (failure instanceof software.amazon.awssdk.awscore.exception.AwsServiceException aws && aws.awsErrorDetails() != null)
             return safe(aws.awsErrorDetails().errorCode());
+        return null;
+    }
+
+    /** The first SQL state in the failure's causes (e.g. {@code 08001}, a connection failure), or null; never the SQL or message. */
+    public static String sqlState(Throwable failure) {
+        for (Throwable at = failure; at != null; at = at.getCause())
+            if (at instanceof java.sql.SQLException sql && sql.getSQLState() != null) return safe(sql.getSQLState());
         return null;
     }
 
