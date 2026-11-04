@@ -1,5 +1,6 @@
 package com.lookahead.learning.content.filter;
 
+import com.lookahead.domain.Events;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletException;
@@ -30,11 +31,16 @@ public class AccountRequestLimitsFilter extends OncePerRequestFilter {
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         int limit = request.getRequestURI().startsWith("/api/v1/author/review-artifacts/") ? 16 * 1024 : request.getRequestURI().equals("/api/v1/auth/register") ? 8192 : request.getRequestURI().endsWith("/activity") ? 256 * 1024 : MAX_BYTES;
-        if (request.getContentLengthLong() > limit) { fail(response, 413, "PAYLOAD_TOO_LARGE"); return; }
+        if (request.getContentLengthLong() > limit) { tooLarge(request, limit); fail(response, 413, "PAYLOAD_TOO_LARGE"); return; }
         byte[] bytes = request.getInputStream().readNBytes(limit + 1);
-        if (bytes.length > limit) { fail(response, 413, "PAYLOAD_TOO_LARGE"); return; }
+        if (bytes.length > limit) { tooLarge(request, limit); fail(response, 413, "PAYLOAD_TOO_LARGE"); return; }
         try (var parser = json.createParser(bytes)) { while (parser.nextToken() != null) { /* bounded syntax/depth scan */ } }
-        catch (Exception ex) { fail(response, 400, "MALFORMED_JSON"); return; }
+        catch (Exception ex) {
+            Events.refused(Events.EVENT, "request.json", "MALFORMED_JSON").addKeyValue("url.path", Events.path(request)).addKeyValue("http.status", 400)
+                    .addKeyValue("error.type", ex.getClass().getSimpleName())
+                    .log("Request body on {} refused with 400: not valid JSON or nested deeper than 32 levels ({})", Events.path(request), ex.getClass().getSimpleName());
+            fail(response, 400, "MALFORMED_JSON"); return;
+        }
         chain.doFilter(new HttpServletRequestWrapper(request) {
             @Override public ServletInputStream getInputStream() {
                 ByteArrayInputStream input = new ByteArrayInputStream(bytes);
@@ -47,6 +53,11 @@ public class AccountRequestLimitsFilter extends OncePerRequestFilter {
                 };
             }
         }, response);
+    }
+    private static void tooLarge(HttpServletRequest request, int limit) {
+        Events.limit("request.body", "PAYLOAD_TOO_LARGE", "request-body-bytes", limit, "per request").addKeyValue("url.path", Events.path(request))
+                .addKeyValue("http.status", 413)
+                .log("Request body limit hit on {}: more than {} bytes; refused with 413", Events.path(request), limit);
     }
     private void fail(HttpServletResponse response, int status, String code) throws IOException {
         response.setStatus(status); response.setContentType("application/json"); response.setHeader("Cache-Control", "no-store");

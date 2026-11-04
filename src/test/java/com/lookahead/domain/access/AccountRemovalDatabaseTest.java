@@ -192,10 +192,20 @@ class AccountRemovalDatabaseTest {
         UUID id=account("pool-down","down@example.invalid",true,false);
         doThrow(new AccountFailure(503,"SIGN_IN_PROVIDER_UNAVAILABLE","retry")).doNothing().when(pool).disable("down@example.invalid");
         var service=service(pool);
-        failsWith(()->service.disable(owner,id,new AccountRemovalService.Confirmation("DISABLE")),503,"SIGN_IN_PROVIDER_UNAVAILABLE");
-        assertThat(state(id)).isEqualTo("disabled");
-        service.disable(owner,id,new AccountRemovalService.Confirmation("DISABLE"));
-        verify(pool,times(2)).disable("down@example.invalid");assertThat(events(id,"disable")).isEqualTo(1);
+        try(var log=com.lookahead.domain.LogCapture.start()){
+            failsWith(()->service.disable(owner,id,new AccountRemovalService.Confirmation("DISABLE")),503,"SIGN_IN_PROVIDER_UNAVAILABLE");
+            assertThat(state(id)).isEqualTo("disabled");
+            service.disable(owner,id,new AccountRemovalService.Confirmation("DISABLE"));
+            verify(pool,times(2)).disable("down@example.invalid");assertThat(events(id,"disable")).isEqualTo(1);
+            // DLV-969: the half-done case says what was saved and that a retry repeats only the pool call; the retry says it was repeated.
+            assertThat(log.lines("account.disable")).extracting(line->line.getFormattedMessage()).containsExactly(
+                "Account "+id+": disable saved in the database, but the sign-in pool call failed; a retry of the same action repeats only the pool call",
+                "Account "+id+" was already disabled; the sign-in pool call was repeated and confirmed");
+            assertThat(com.lookahead.domain.LogCapture.keys(log.lines("account.disable").getFirst())).containsEntry("event.outcome","failure")
+                .containsEntry("reason","SIGN_IN_PROVIDER_UNAVAILABLE").containsEntry("target.id",id).containsEntry("account.id",ownerId);
+            assertThat(log.lines("account.disable").getFirst().getLevel()).isEqualTo(ch.qos.logback.classic.Level.WARN);
+            log.containsNone("down@example.invalid","pool-down");
+        }
     }
 
     @Test void theDirectoryListsDisabledAccountsWithTheirGmailButNeverDeletedOnes(){

@@ -25,11 +25,14 @@ public class IdentityVerificationClient {
     public Verification verify(String accessToken) {
         var form = new LinkedMultiValueMap<String, String>();
         form.add("token", accessToken);
+        long started = com.lookahead.domain.Events.started();
+        int[] status = {0};
         try {
-            return http.post().uri(settings.upstream() + "/internal/v1/tokens/verify")
+            var verification = http.post().uri(settings.upstream() + "/internal/v1/tokens/verify")
                     .headers(headers -> headers.setBasicAuth("lookahead-domain-verifier", settings.verifierSecret()))
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED).accept(MediaType.APPLICATION_JSON).body(form)
                     .exchange((request, response) -> {
+                        status[0] = response.getStatusCode().value();
                         if (response.getStatusCode().value() != 200) throw new IdentityUnavailableException();
                         byte[] body = response.getBody().readNBytes(16 * 1024 + 1);
                         if (body.length > 16 * 1024) throw new IdentityUnavailableException();
@@ -40,8 +43,15 @@ public class IdentityVerificationClient {
                         String name = text(node, "displayName", 160), clientId = text(node, "clientId", 80);
                         return new Verification(true, subject, username, name, clientId);
                     });
+            if (verification.active()) com.lookahead.domain.Events.upstreamDone("Identity", "VerifyToken", started);
+            else com.lookahead.domain.Events.upstreamRefused("Identity", "VerifyToken", started, "TOKEN_INACTIVE");
+            return verification;
         } catch (Exception error) {
-            // Never retain the HTTP exception: it may include an upstream body or submitted credentials.
+            // Never retain the HTTP exception: it may include an upstream body or submitted credentials. Its type is logged.
+            Integer answered = status[0] == 0 ? com.lookahead.domain.Events.status(error) : Integer.valueOf(status[0]);
+            com.lookahead.domain.Events.upstreamFailed("Identity", "VerifyToken", started,
+                    error instanceof IdentityUnavailableException ? null : error, answered,
+                    error instanceof IdentityUnavailableException && Integer.valueOf(200).equals(answered) ? "INVALID_RESPONSE" : null);
             throw new IdentityUnavailableException();
         }
     }

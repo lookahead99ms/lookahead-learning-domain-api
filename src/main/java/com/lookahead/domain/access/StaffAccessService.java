@@ -1,5 +1,6 @@
 package com.lookahead.domain.access;
 
+import com.lookahead.domain.Events;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.security.AccountPrincipal;
 import com.lookahead.learning.content.security.LocalAuthorAccess;
@@ -30,7 +31,11 @@ public class StaffAccessService {
     }
     public void requireOwner(AccountPrincipal actor) {
         requireIdentity(actor);
-        if(!owner.allowed(actor))throw new AccountFailure(403,"OWNER_REQUIRED","Only the owner can manage access.");
+        if(!owner.allowed(actor)){
+            Events.refused(Events.EVENT,"access.owner-check","OWNER_REQUIRED").addKeyValue("account.id",actor.accountId())
+                .log("Owner-only action refused for account {}: not the owner",actor.accountId());
+            throw new AccountFailure(403,"OWNER_REQUIRED","Only the owner can manage access.");
+        }
     }
     public void requireAccessReader(AccountPrincipal actor) {
         var current = permissions(actor);
@@ -43,6 +48,15 @@ public class StaffAccessService {
     @Transactional
     public Assignment save(AccountPrincipal actor, Change change) {
         requireOwner(actor);
+        try { return saveChecked(actor, change); }
+        catch(AccountFailure refused) {
+            Events.refused(Events.EVENT,"access.save",refused.code()).addKeyValue("account.id",actor.accountId())
+                .addKeyValue("target.id",change==null?null:change.accountId())
+                .log("Access change refused for {}: {}",change==null||change.accountId()==null?"a pending invitation":"account "+change.accountId(),refused.code());
+            throw refused;
+        }
+    }
+    private Assignment saveChecked(AccountPrincipal actor, Change change) {
         if(change==null||change.id()==null||change.roles()==null||!StaffPermissions.ROLES.containsAll(change.roles())
                 ||change.topicGrants()==null||!catalog.allTopicIds().containsAll(change.topicGrants())||change.revision()<0)
             throw invalid();
@@ -59,6 +73,13 @@ public class StaffAccessService {
         try { if(old==null)repository.insert(next);else repository.update(next); }
         catch(DuplicateKeyException duplicate){throw conflict();}
         repository.event(actor.accountId(),"assign",old,next);
+        Set<String> before=old==null?Set.of():old.roles();
+        Events.afterCommit(()->Events.success(Events.EVENT,next.accountId()==null?"access.invitation-saved":"access.saved")
+            .addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",next.accountId()==null?next.id():next.accountId())
+            .addKeyValue("roles",new java.util.TreeSet<>(next.roles())).addKeyValue("roles.before",new java.util.TreeSet<>(before))
+            .log("Owner saved access for {}: roles {} -> {}, {} topic grant(s), full curriculum {}",
+                next.accountId()==null?"pending invitation "+next.id():"account "+next.accountId(),
+                new java.util.TreeSet<>(before),new java.util.TreeSet<>(next.roles()),next.topicGrants().size(),next.fullCurriculum()?"on":"off"));
         return next;
     }
 
@@ -74,6 +95,9 @@ public class StaffAccessService {
         var next=new Assignment(pending.id(),actor.accountId(),null,pending.roles(),pending.topicGrants(),pending.fullCurriculum(),pending.revision()+1);
         repository.mutationActor(actor.accountId());
         repository.update(next);repository.event(actor.accountId(),"claim",pending,next);
+        Events.afterCommit(()->Events.success(Events.EVENT,"access.invitation-claimed").addKeyValue("account.id",actor.accountId())
+            .addKeyValue("target.id",pending.id()).addKeyValue("roles",new java.util.TreeSet<>(next.roles()))
+            .log("Account {} claimed pending access invitation {}: roles {}",actor.accountId(),pending.id(),new java.util.TreeSet<>(next.roles())));
     }
     public static String normalizeEmail(String email) {
         String clean=email.strip().toLowerCase(Locale.ROOT);

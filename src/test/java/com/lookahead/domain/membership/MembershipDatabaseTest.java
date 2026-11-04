@@ -11,6 +11,7 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.*;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
@@ -60,4 +61,120 @@ class MembershipDatabaseTest {
                 learner.accountId())).isEqualTo(1);
     }
 
+
+    // ---- DLV-969: the payment flow in the log (lookahead.payment), one line per attempt and one per outcome.
+
+    static String purchaseId(ObjectNode purchase){return purchase.path("id").asText();}
+    static java.util.List<String> attemptLines(com.lookahead.domain.LogCapture log){return log.lines("payment.attempt").stream().map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage).toList();}
+
+    @Test void aRetryableFailureThenSuccessIsLoggedAttemptByAttempt(){
+        var a=actor();
+        try(var log=com.lookahead.domain.LogCapture.start()){
+            var p=service("timeout-after-success").buy(a,a.accountId(),buy("complete"),"log-retry-ok",false);String id=purchaseId(p);
+            var attempts=attemptLines(log);
+            assertThat(attempts).hasSize(2);
+            assertThat(attempts.get(0)).matches("Payment attempt 1 of 3 for purchase "+id+" failed: timeout \\(retryable\\); retrying in \\d+ ms");
+            assertThat(attempts.get(1)).isEqualTo("Payment for purchase "+id+" succeeded on attempt 2 of 3");
+            var retry=log.lines("payment.attempt").getFirst();
+            assertThat(retry.getLevel()).isEqualTo(ch.qos.logback.classic.Level.WARN);
+            assertThat(com.lookahead.domain.LogCapture.keys(retry)).containsEntry("retry.attempt",1).containsEntry("retry.max",3).containsEntry("reason","timeout")
+                .containsEntry("purchase.id",UUID.fromString(id)).containsEntry("event.outcome","failure");
+            var requested=log.only("purchase.requested");
+            assertThat(requested.getFormattedMessage()).isEqualTo("Purchase "+id+" requested for account "+a.accountId()+" by account "+a.accountId()+": plan complete (new), price "+p.path("pricePaidCents").asInt()+" cents");
+            var activated=log.only("membership.activated");
+            assertThat(activated.getFormattedMessage()).isEqualTo("Membership activated for account "+a.accountId()+": plan complete until "+p.path("endsAt").asText()+" (purchase "+id+")");
+            assertThat(log.lines()).allSatisfy(line->assertThat(line.getLevel()).isNotEqualTo(ch.qos.logback.classic.Level.ERROR));
+            log.containsNone("synthetic","log-retry-ok");
+        }
+    }
+
+    @Test void threeRetryableFailuresGiveUpWithAWarningAndARetryWithTheSameKeyDoesNotPayAgain(){
+        var a=actor();var s=service("server-error");
+        try(var log=com.lookahead.domain.LogCapture.start()){
+            String id=purchaseId(s.buy(a,a.accountId(),buy("learn"),"log-retry-fail",false));
+            var attempts=attemptLines(log);
+            assertThat(attempts).hasSize(3);
+            assertThat(attempts.get(0)).matches("Payment attempt 1 of 3 for purchase "+id+" failed: server-error \\(retryable\\); retrying in \\d+ ms");
+            assertThat(attempts.get(1)).matches("Payment attempt 2 of 3 for purchase "+id+" failed: server-error \\(retryable\\); retrying in \\d+ ms");
+            assertThat(attempts.get(2)).isEqualTo("Payment for purchase "+id+" failed after 3 attempts: server-error; purchase stays pending, no access granted");
+            assertThat(log.lines("payment.attempt")).allSatisfy(line->assertThat(line.getLevel()).isEqualTo(ch.qos.logback.classic.Level.WARN));
+            assertThat(log.lines("membership.activated")).isEmpty();
+            s.buy(a,a.accountId(),buy("learn"),"log-retry-fail",false);
+            assertThat(log.only("purchase.reused").getFormattedMessage()).isEqualTo("Purchase "+id+" for account "+a.accountId()+" requested again with the same Idempotency-Key: the existing purchase is used");
+            assertThat(attemptLines(log).getLast()).isEqualTo("Payment for purchase "+id+" not tried again: all 3 attempts were used earlier; purchase stays pending");
+        }
+    }
+
+    @Test void aDeclineAndANonRetryableFailureAreLoggedOnceAndNeverRetried(){
+        var a=actor();
+        try(var log=com.lookahead.domain.LogCapture.start()){
+            String declined=purchaseId(service("decline").buy(a,a.accountId(),buy("learn"),"log-decline",false));
+            assertThat(attemptLines(log)).containsExactly("Payment for purchase "+declined+" declined by the provider on attempt 1 of 3 (requires_payment_method): not retried; purchase failed, no access granted");
+            assertThat(com.lookahead.domain.LogCapture.keys(log.lines("payment.attempt").getFirst())).containsEntry("reason","DECLINED").containsEntry("event.outcome","refused");
+        }
+        var b=actor();
+        PaymentGateway broken=new PaymentGateway(){
+            public Result create(String key,int amount,String currency){throw new Failure("card-invalid",false);}
+            public Result confirm(String id,String key){throw new UnsupportedOperationException();}
+            public Result status(String id){throw new UnsupportedOperationException();}
+        };
+        try(var log=com.lookahead.domain.LogCapture.start()){
+            var p=new MembershipService(jdbc,json,manager,broken,staff,clock).buy(b,b.accountId(),buy("learn"),"log-not-retryable",false);
+            assertThat(p.path("status").asText()).isEqualTo("failed");
+            assertThat(attemptLines(log)).containsExactly("Payment attempt 1 of 3 for purchase "+purchaseId(p)+" failed: card-invalid (not retryable); purchase failed, no access granted");
+        }
+        var c=actor();
+        try(var log=com.lookahead.domain.LogCapture.start()){
+            String pending=purchaseId(service("requires-action").buy(c,c.accountId(),buy("learn"),"log-action",false));
+            assertThat(attemptLines(log)).containsExactly("Payment for purchase "+pending+" needs customer action on attempt 1 of 3 (requires_action); purchase stays pending, no access yet");
+        }
+    }
+
+    @Test void aBusyPaymentSlotIsALimitLine() throws Exception {
+        var a=actor();var b=actor();
+        var entered=new java.util.concurrent.CountDownLatch(1);var release=new java.util.concurrent.CountDownLatch(1);
+        PaymentGateway slow=new PaymentGateway(){
+            public Result create(String key,int amount,String currency){entered.countDown();try{release.await(10,java.util.concurrent.TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}return new Result("pi_slow_"+key,"succeeded",amount,currency);}
+            public Result confirm(String id,String key){throw new UnsupportedOperationException();}
+            public Result status(String id){throw new UnsupportedOperationException();}
+        };
+        var s=new MembershipService(jdbc,json,manager,slow,staff,clock);
+        try(var log=com.lookahead.domain.LogCapture.start();var pool=java.util.concurrent.Executors.newSingleThreadExecutor()){
+            var first=pool.submit(()->s.buy(a,a.accountId(),buy("learn"),"log-busy-first",false));
+            assertThat(entered.await(10,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThatThrownBy(()->s.buy(b,b.accountId(),buy("learn"),"log-busy-second",false))
+                .isInstanceOfSatisfying(com.lookahead.learning.content.exception.AccountFailure.class,f->assertThat(f.code()).isEqualTo("PAYMENT_BUSY"));
+            release.countDown();first.get(10,java.util.concurrent.TimeUnit.SECONDS);
+            var busy=log.lines("purchase.request").stream().filter(line->"PAYMENT_BUSY".equals(com.lookahead.domain.LogCapture.keys(line).get("reason"))).toList();
+            assertThat(busy).singleElement().satisfies(line->{
+                assertThat(line.getLoggerName()).isEqualTo("lookahead.limit");
+                assertThat(line.getFormattedMessage()).isEqualTo("Payment busy for account "+b.accountId()+": one payment runs at a time and none finished within 3 s; refused with 429, retry with the same key");
+                assertThat(com.lookahead.domain.LogCapture.keys(line)).containsEntry("limit.name","payment-slot").containsEntry("limit.max",1L).containsEntry("limit.window","3s");
+            });
+        }
+    }
+
+    @Test void membershipRuleRefusalsAndOwnerSaleActionsAreLogged(){
+        var a=actor();var s=service("success");
+        try(var log=com.lookahead.domain.LogCapture.start()){
+            var first=s.buy(a,a.accountId(),buy("advance"),"log-change-base",false);
+            assertThatThrownBy(()->s.buy(a,a.accountId(),new MembershipService.Buy("grow",UUID.fromString(purchaseId(first)),List.of()),"log-change-early",false)).hasMessageContaining("final seven");
+            var refused=log.lines("purchase.request").getLast();
+            assertThat(refused.getFormattedMessage()).isEqualTo("Purchase for account "+a.accountId()+" refused: CHANGE_WINDOW_CLOSED (Choose a different plan in the final seven days)");
+            assertThat(com.lookahead.domain.LogCapture.keys(refused)).containsEntry("plan.code","grow").containsEntry("event.outcome","refused");
+            var upgrade=s.buy(a,a.accountId(),new MembershipService.Buy("complete",UUID.fromString(purchaseId(first)),List.of()),"log-upgrade",false);
+            assertThat(log.only("membership.upgraded").getFormattedMessage()).isEqualTo("Membership of account "+a.accountId()+" upgraded to plan complete until "
+                +upgrade.path("endsAt").asText()+": purchase "+purchaseId(upgrade)+" replaces purchase "+purchaseId(first));
+            assertThat(log.lines("purchase.requested").getLast().getFormattedMessage()).contains("plan complete (upgrade), price "+upgrade.path("pricePaidCents").asInt()+" cents, prorated from a difference of ");
+            var sale=s.startSale(a,new MembershipService.Sale("spring","Private greeting",clock.instant().minusSeconds(1),clock.instant().plusSeconds(60),List.of("monthly-promo")));
+            s.stopSale(a,UUID.fromString(sale.path("id").asText()));
+            assertThat(log.only("sale.started").getFormattedMessage()).startsWith("Owner started sale "+sale.path("id").asText()+" (spring) for plan(s) [monthly-promo]");
+            assertThat(log.only("sale.stopped").getFormattedMessage()).isEqualTo("Owner stopped sale "+sale.path("id").asText());
+            int before=s.catalog().stream().filter(p->p.path("id").asText().equals("learn")).findFirst().orElseThrow().path("priceCents").asInt();
+            s.price(a,"learn",before+100);
+            assertThat(log.only("plan.price-changed").getFormattedMessage()).isEqualTo("Owner changed the price of plan learn from "+before+" to "+(before+100)+" cents");
+            s.price(a,"learn",before);
+            log.containsNone("Private greeting","synthetic");
+        }
+    }
 }

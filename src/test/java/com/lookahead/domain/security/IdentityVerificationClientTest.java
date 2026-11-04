@@ -59,6 +59,27 @@ class IdentityVerificationClientTest {
             } finally { server.stop(0); }
         }
     }
+    /** DLV-969: one lookahead.upstream line per token check; a failure names the status, never the token. */
+    @Test void eachTokenCheckIsOneUpstreamLineWithoutTheToken() throws Exception {
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var status = new AtomicInteger(200);
+        server.createContext("/internal/v1/tokens/verify", exchange -> {
+            byte[] body = "{\"active\":false}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(status.get(), body.length); exchange.getResponseBody().write(body); exchange.close();
+        });
+        server.start();
+        try (var log = com.lookahead.domain.LogCapture.start()) {
+            var client = new IdentityVerificationClient(settings(server), new ObjectMapper());
+            client.verify("secret-token");
+            status.set(503);
+            assertThatThrownBy(() -> client.verify("secret-token")).isInstanceOf(IdentityUnavailableException.class);
+            assertThat(log.messages()).hasSize(2);
+            assertThat(log.messages().get(0)).matches("Identity VerifyToken refused in \\d+ ms: TOKEN_INACTIVE");
+            assertThat(log.messages().get(1)).matches("Identity VerifyToken failed in \\d+ ms: HTTP 503");
+            assertThat(com.lookahead.domain.LogCapture.keys(log.lines().get(1))).containsEntry("upstream.status", 503).containsEntry("event.outcome", "failure");
+            log.containsNone("secret-token", "synthetic-verifier-secret");
+        } finally { server.stop(0); }
+    }
     private IdentitySettings settings(HttpServer server) {
         return new IdentitySettings("http://127.0.0.1:4380", "http://127.0.0.1:" + server.getAddress().getPort(),
                 "lookahead-web-gateway", "synthetic-verifier-secret-for-unit-tests", Duration.ofSeconds(1), Duration.ofSeconds(1));

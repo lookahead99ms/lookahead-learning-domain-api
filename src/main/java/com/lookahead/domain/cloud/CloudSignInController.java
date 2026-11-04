@@ -1,5 +1,6 @@
 package com.lookahead.domain.cloud;
 
+import com.lookahead.domain.Events;
 import com.lookahead.learning.content.dto.ApiResponse;
 import com.lookahead.learning.content.exception.AccountFailure;
 import jakarta.servlet.http.HttpServletRequest;
@@ -53,16 +54,19 @@ public class CloudSignInController {
                 if(next.equals(old))throw new AccountFailure(422,"PASSWORD_UNCHANGED","Choose a different password.");
                 String token=request.getHeader("Authorization").substring(7);
                 registry.changeCredentials(identity,proof,()->{
+                    long started=Events.started();
                     try {
                         cognito.changePassword(r->r.accessToken(token).previousPassword(old).proposedPassword(next));
-                    } catch(software.amazon.awssdk.services.cognitoidentityprovider.model.NotAuthorizedException rejected){throw new AccountFailure(401,"INVALID_CURRENT_PASSWORD","Current password could not be verified.");}
-                    catch(software.amazon.awssdk.services.cognitoidentityprovider.model.InvalidPasswordException rejected){throw new AccountFailure(422,"INVALID_PASSWORD","Password does not meet the account policy.");}
-                    catch(RuntimeException uncertain){throw new AccountFailure(503,"SERVICE_UNAVAILABLE","Password change or sign-out could not be confirmed. Try signing in before retrying.");}
+                        Events.upstreamDone("Cognito","ChangePassword",started);
+                    } catch(software.amazon.awssdk.services.cognitoidentityprovider.model.NotAuthorizedException rejected){Events.upstreamRefused("Cognito","ChangePassword",started,"INVALID_CURRENT_PASSWORD");throw new AccountFailure(401,"INVALID_CURRENT_PASSWORD","Current password could not be verified.");}
+                    catch(software.amazon.awssdk.services.cognitoidentityprovider.model.InvalidPasswordException rejected){Events.upstreamRefused("Cognito","ChangePassword",started,"INVALID_PASSWORD");throw new AccountFailure(422,"INVALID_PASSWORD","Password does not meet the account policy.");}
+                    catch(RuntimeException uncertain){Events.upstreamFailed("Cognito","ChangePassword",started,uncertain);throw new AccountFailure(503,"SERVICE_UNAVAILABLE","Password change or sign-out could not be confirmed. Try signing in before retrying.");}
                 });
                 // Commit Domain revocation before the second provider operation: a provider
                 // sign-out outage must not roll back the application's durable revocation.
-                try {cognito.globalSignOut(r->r.accessToken(token));}
-                catch(RuntimeException uncertain){throw new AccountFailure(503,"SERVICE_UNAVAILABLE","Password changed and application sign-ins ended, but provider sign-out could not be confirmed. Sign in again.");}
+                long started=Events.started();
+                try {cognito.globalSignOut(r->r.accessToken(token));Events.upstreamDone("Cognito","GlobalSignOut",started);}
+                catch(RuntimeException uncertain){Events.upstreamFailed("Cognito","GlobalSignOut",started,uncertain);throw new AccountFailure(503,"SERVICE_UNAVAILABLE","Password changed and application sign-ins ended, but provider sign-out could not be confirmed. Sign in again.");}
                 yield ApiResponse.success(Map.of("reauthenticationRequired",true));
             }
             case "admit" -> ApiResponse.success(registry.admit(identity,proof));

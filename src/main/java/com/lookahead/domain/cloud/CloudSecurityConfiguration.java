@@ -52,7 +52,19 @@ public class CloudSecurityConfiguration {
     @Bean JwtDecoder cloudDecoder(CognitoSettings settings){
         var client=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).followRedirects(HttpClient.Redirect.NEVER).build();
         var factory=new JdkClientHttpRequestFactory(client);factory.setReadTimeout(Duration.ofSeconds(5));
-        var decoder=NimbusJwtDecoder.withJwkSetUri(settings.issuer()+"/.well-known/jwks.json").restOperations(new RestTemplate(factory)).build();
+        var keys=new RestTemplate(factory);
+        // One lookahead.upstream line per signing-key download (Nimbus caches the keys between downloads).
+        keys.getInterceptors().add((request,body,execution)->{
+            long started=com.lookahead.domain.Events.started();
+            try {
+                var response=execution.execute(request,body);
+                int status=response.getStatusCode().value();
+                if(status==200)com.lookahead.domain.Events.upstreamDone("Cognito","GetSigningKeys",started);
+                else com.lookahead.domain.Events.upstreamFailed("Cognito","GetSigningKeys",started,null,status,null);
+                return response;
+            } catch(java.io.IOException|RuntimeException failure){com.lookahead.domain.Events.upstreamFailed("Cognito","GetSigningKeys",started,failure);throw failure;}
+        });
+        var decoder=NimbusJwtDecoder.withJwkSetUri(settings.issuer()+"/.well-known/jwks.json").restOperations(keys).build();
         decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(settings.issuer()));return decoder;
     }
     @Bean @Order(1) SecurityFilterChain cloudSignInSecurity(HttpSecurity http,JwtDecoder decoder,CognitoTokenVerifier verifier,CognitoSettings settings,HttpServletRequest request)throws Exception {

@@ -1,5 +1,6 @@
 package com.lookahead.domain.testaccounts;
 
+import com.lookahead.domain.Events;
 import com.lookahead.domain.access.*;
 import com.lookahead.domain.membership.AccessSummaryService;
 import com.lookahead.learning.content.exception.AccountFailure;
@@ -56,7 +57,10 @@ public class TestAccountsService {
         }
         UUID operator=TestAccountRoster.entries().stream().filter(e->e.username().equals("admin01")).findFirst().orElseThrow().accountId();
         Instant now=Instant.now();for(var entry:fresh)defaults(entry,operator,"scenario",now);
-        return fresh.size();
+        int created=fresh.size();
+        Events.afterCommit(()->Events.success(Events.EVENT,"test-account.seed").addKeyValue("count",created)
+            .log("Local test roster seeded: {} new account(s) of {}",created,TestAccountRoster.entries().size()));
+        return created;
     }
     @Transactional(readOnly=true)
     public List<ObjectNode> list(AccountPrincipal actor){reader(actor);var actorRole=staff.permissions(actor).feedbackRole();
@@ -85,6 +89,20 @@ public class TestAccountsService {
     });}
     @Transactional
     public void reset(AccountPrincipal actor,UUID id,Reset request){
+        try{
+            boolean repeated=resetChecked(actor,id,request);
+            Events.afterCommit(()->Events.success(Events.EVENT,"test-account.reset").addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",id)
+                .addKeyValue("preset",request.preset()).addKeyValue("repeated",repeated)
+                .log(repeated?"Test account {} reset retried with the same key; it was already reset to its {} preset by account {}"
+                    :"Test account {} reset to its {} preset by account {}",id,request.preset(),actor.accountId()));
+        }catch(AccountFailure refused){
+            Events.refused(Events.EVENT,"test-account.reset",refused.code()).addKeyValue("account.id",actor==null?null:actor.accountId()).addKeyValue("target.id",id)
+                .log("Reset of test account {} refused: {}",id,refused.code());
+            throw refused;
+        }
+    }
+    /** @return true when this key already reset the account (a retry), false when it was reset now. */
+    private boolean resetChecked(AccountPrincipal actor,UUID id,Reset request){
         reader(actor);var permissions=staff.permissions(actor);
         // DLV-969 S35: in DEV only the owner-created roster resets, and only to its scenario; Local keeps both presets.
         if(policy.cloud()){
@@ -101,7 +119,7 @@ public class TestAccountsService {
         var retries=jdbc.queryForList("SELECT actor_id::text || ':' || preset FROM test_account_resets WHERE account_id=? AND mutation_key=?",String.class,id,request.key());
         if(!retries.isEmpty()){
             if(!retries.getFirst().equals(actor.accountId()+":"+request.preset()))throw new AccountFailure(409,"IDEMPOTENCY_CONFLICT","Reset key belongs to another request");
-            return;
+            return true;
         }
         var revisions=jdbc.queryForList("SELECT revision FROM test_account_registry WHERE account_id=? AND creation_state='active' FOR UPDATE",Long.class,id);
         if(revisions.isEmpty())throw new AccountFailure(404,"TEST_ACCOUNT_NOT_FOUND","Managed test account not found");
@@ -116,6 +134,7 @@ public class TestAccountsService {
         defaults(entry,actor.accountId(),request.preset(),Instant.now());
         jdbc.update("UPDATE test_account_registry SET initialization=?,revision=revision+1,last_changed_by=?,last_changed_at=clock_timestamp() WHERE account_id=?",request.preset(),actor.accountId().toString(),id);
         jdbc.update("INSERT INTO test_account_resets(account_id,mutation_key,actor_id,preset) VALUES (?,?,?,?)",id,request.key(),actor.accountId(),request.preset());
+        return false;
     }
     private void defaults(TestAccountRoster.Entry entry,UUID actor,String preset,Instant now){
         applyTemplate(entry.accountId(),entry.template(),actor,preset,now);
@@ -172,6 +191,8 @@ public class TestAccountsService {
             // DLV-969 S37: DEV before its study plans are published. The account keeps its membership, purchases and
             // role; Reset adds the plan once the content release has the template. Local still requires it.
             if(!policy.cloud())throw missing;
+            Events.failed(Events.EVENT,"test-account.scenario","TEMPLATE_MISSING").addKeyValue("target.id",id)
+                .log("Test account {} set up without its study plan: the content release has no {} template yet; Reset adds it later",id,scenario.planKind());
         }
     }
 }

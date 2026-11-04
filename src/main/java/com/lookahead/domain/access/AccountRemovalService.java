@@ -1,5 +1,6 @@
 package com.lookahead.domain.access;
 
+import com.lookahead.domain.Events;
 import com.lookahead.domain.cloud.CognitoSignInAccounts;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.security.AccountPrincipal;
@@ -21,6 +22,9 @@ public class AccountRemovalService {
     public record Confirmation(String confirmation) {}
     public record Result(UUID accountId, String state) {}
     private record Target(String issuer, String subject, String username, boolean admitted, boolean author, String state) {}
+    /** {@code changed}: the database row changed now; false when an earlier call already made the change. */
+    private record Changed(Target target, boolean changed) {}
+    static final String POOL_UNAVAILABLE = "SIGN_IN_PROVIDER_UNAVAILABLE";
     private final JdbcTemplate jdbc;
     private final StaffAccessService staff;
     private final CognitoSignInAccounts signIns;
@@ -47,6 +51,21 @@ public class AccountRemovalService {
     }
 
     public Result disable(AccountPrincipal actor, UUID id, Confirmation request) {
+        try { return disableChecked(actor, id, request); }
+        catch (AccountFailure refused) { throw refusal("disable", actor, id, refused); }
+    }
+
+    public Result enable(AccountPrincipal actor, UUID id) {
+        try { return enableChecked(actor, id); }
+        catch (AccountFailure refused) { throw refusal("enable", actor, id, refused); }
+    }
+
+    public Result remove(AccountPrincipal actor, UUID id, Confirmation request) {
+        try { return removeChecked(actor, id, request); }
+        catch (AccountFailure refused) { throw refusal("delete", actor, id, refused); }
+    }
+
+    private Result disableChecked(AccountPrincipal actor, UUID id, Confirmation request) {
         staff.requireOwner(actor);
         confirm(request, "DISABLE");
         var target = change(actor, id, "disable", t -> {
@@ -58,20 +77,24 @@ public class AccountRemovalService {
             }
             return false;
         });
-        signIns.disable(target.username());
+        pool("disable", actor, id, target, () -> signIns.disable(target.target().username()));
+        done("disable", actor, id, target.changed(), "Owner disabled account {}: no sign-in at all until Enable; its sign-ins ended and the sign-in pool confirmed",
+            "Account {} was already disabled; the sign-in pool call was repeated and confirmed");
         return new Result(id, "disabled");
     }
 
-    public Result enable(AccountPrincipal actor, UUID id) {
+    private Result enableChecked(AccountPrincipal actor, UUID id) {
         var target = change(actor, id, "enable", t -> {
             if ("removed".equals(t.state())) throw removed();
             return jdbc.update("DELETE FROM cloud_account_states WHERE account_id=? AND state='disabled'", id) == 1;
         });
-        signIns.enable(target.username());
+        pool("enable", actor, id, target, () -> signIns.enable(target.target().username()));
+        done("enable", actor, id, target.changed(), "Owner enabled account {}: it can sign in again and the sign-in pool confirmed",
+            "Account {} was already enabled; the sign-in pool call was repeated and confirmed");
         return new Result(id, "active");
     }
 
-    public Result remove(AccountPrincipal actor, UUID id, Confirmation request) {
+    private Result removeChecked(AccountPrincipal actor, UUID id, Confirmation request) {
         staff.requireOwner(actor);
         confirm(request, "DELETE");
         var target = change(actor, id, "remove", t -> {
@@ -84,12 +107,37 @@ public class AccountRemovalService {
             erase(actor, id);
             return true;
         });
-        signIns.remove(target.username());
+        pool("delete", actor, id, target, () -> signIns.remove(target.target().username()));
+        done("delete", actor, id, target.changed(), "Owner deleted account {}: learning data erased, sign-ins ended and the sign-in pool user deleted",
+            "Account {} was already deleted; the sign-in pool call was repeated and confirmed");
         return new Result(id, "removed");
     }
 
+    /** The database change has committed; a pool failure is logged here and is not a refusal. */
+    private void pool(String action, AccountPrincipal actor, UUID id, Changed target, Runnable call) {
+        try { call.run(); }
+        catch (AccountFailure unconfirmed) {
+            Events.failed(Events.EVENT, "account." + action, unconfirmed.code()).addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", id)
+                .log("Account {}: {} saved in the database, but the sign-in pool call failed; a retry of the same action repeats only the pool call",
+                    id, action);
+            throw unconfirmed;
+        }
+    }
+
+    private static void done(String action, AccountPrincipal actor, UUID id, boolean changed, String now, String again) {
+        Events.success(Events.EVENT, "account." + action).addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", id)
+            .addKeyValue("repeated", !changed).log(changed ? now : again, id);
+    }
+
+    private static AccountFailure refusal(String action, AccountPrincipal actor, UUID id, AccountFailure refused) {
+        if (!POOL_UNAVAILABLE.equals(refused.code()))
+            Events.refused(Events.EVENT, "account." + action, refused.code()).addKeyValue("account.id", actor == null ? null : actor.accountId())
+                .addKeyValue("target.id", id).log("{} of account {} refused: {}", Character.toUpperCase(action.charAt(0)) + action.substring(1), id, refused.code());
+        return refused;
+    }
+
     /** Checks, then one transaction under the account's row lock; an event is recorded only when something changed. */
-    private Target change(AccountPrincipal actor, UUID id, String action, java.util.function.Function<Target, Boolean> apply) {
+    private Changed change(AccountPrincipal actor, UUID id, String action, java.util.function.Function<Target, Boolean> apply) {
         staff.requireOwner(actor);
         if (id == null || id.equals(actor.accountId())) throw new AccountFailure(403, "OWNER_ACCOUNT_PROTECTED", "The owner account cannot be changed here.");
         if (signIns == null) throw notSignIn();
@@ -103,10 +151,11 @@ public class AccountRemovalService {
             if (target.author()) throw new AccountFailure(403, "OWNER_ACCOUNT_PROTECTED", "An author account cannot be changed here.");
             if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM test_account_registry WHERE account_id=?)", Boolean.class, id)))
                 throw new AccountFailure(403, "TEST_ACCOUNT_ROUTE_REQUIRED", "Use the Test accounts page for managed accounts.");
-            if (apply.apply(target))
+            boolean changed = apply.apply(target);
+            if (changed)
                 jdbc.update("INSERT INTO cloud_admission_events(id,account_id,issuer,subject,actor_id,action) VALUES (?,?,?,?,?,?)",
                     UUID.randomUUID(), id, target.issuer(), target.subject(), actor.accountId(), action);
-            return target;
+            return new Changed(target, changed);
         });
     }
 

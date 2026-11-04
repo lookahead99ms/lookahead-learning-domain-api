@@ -1,5 +1,6 @@
 package com.lookahead.domain.access;
 
+import com.lookahead.domain.Events;
 import com.lookahead.domain.cloud.CloudAdmissionCleanup;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.security.AccountPrincipal;
@@ -39,6 +40,19 @@ public class AccountAdmissionService {
 
     @Transactional
     public Admitted admit(AccountPrincipal actor,Request request) {
+        try {
+            var admitted=admitChecked(actor,request);
+            Events.afterCommit(()->Events.success(Events.EVENT,"admission.admitted").addKeyValue("account.id",actor.accountId())
+                .addKeyValue("target.id",admitted.accountId()).addKeyValue("roles",admitted.roles())
+                .log("Owner admitted account {} with roles {}",admitted.accountId(),admitted.roles().isEmpty()?"none (learner)":admitted.roles()));
+            return admitted;
+        } catch(AccountFailure refused) {
+            Events.refused(Events.EVENT,"admission.admit",refused.code()).addKeyValue("account.id",actor==null?null:actor.accountId())
+                .log("Admission refused: {}",refused.code());
+            throw refused;
+        }
+    }
+    private Admitted admitChecked(AccountPrincipal actor,Request request) {
         access.requireOwner(actor);
         if(request==null||request.roles()==null||!StaffPermissions.ROLES.containsAll(request.roles()))throw invalid();
         UUID accountId=accountId(request.accountId());

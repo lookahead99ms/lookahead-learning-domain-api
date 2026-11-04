@@ -35,12 +35,21 @@ public class TestIdentityOperator implements TestIdentity {
     @Override public void disable(UUID id, String username) { call("disable", Map.of("accountId", id, "username", username)); }
     public void disableReal(UUID id) { call("disable-real", Map.of("accountId", id)); }
     private void call(String operation, Map<String, ?> body) {
-        if (client == null || secret.length() < 32) throw unavailable();
+        long started = com.lookahead.domain.Events.started();
+        String name = "TestAccount." + operation;
+        if (client == null || secret.length() < 32) {
+            com.lookahead.domain.Events.upstreamRefused("Identity", name, started, "OPERATOR_NOT_CONFIGURED");
+            throw unavailable();
+        }
         try {
             client.post().uri(upstream + "/internal/v1/test-accounts/" + operation)
                     .headers(headers -> headers.setBasicAuth("lookahead-test-account-operator", secret))
                     .body(body).retrieve().toBodilessEntity();
-        } catch (RuntimeException failure) { throw unavailable(); }
+            com.lookahead.domain.Events.upstreamDone("Identity", name, started);
+        } catch (RuntimeException failure) {
+            com.lookahead.domain.Events.upstreamFailed("Identity", name, started, failure);
+            throw unavailable();
+        }
     }
     static AccountFailure unavailable() {
         return new AccountFailure(503, "TEST_IDENTITY_UNAVAILABLE", "Identity did not confirm test-account maintenance. Retry the same action.");

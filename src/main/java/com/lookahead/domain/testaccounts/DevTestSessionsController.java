@@ -26,7 +26,7 @@ public class DevTestSessionsController {
             @RequestBody(required = false) Start request, HttpServletResponse response) {
         response.setHeader("Cache-Control", "no-store");
         // actAs refuses a missing account id (422); the holder and the account are checked in the database.
-        var principal = sessions.actAs(holder, request == null ? null : request.accountId());
+        var principal = sessions.start(holder, request == null ? null : request.accountId());
         return ApiResponse.success(Map.of("accountId", principal.accountId(), "username", principal.username(), "displayName", principal.displayName()));
     }
 }

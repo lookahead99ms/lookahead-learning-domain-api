@@ -1,5 +1,6 @@
 package com.lookahead.domain.access;
 
+import com.lookahead.domain.Events;
 import com.lookahead.domain.testaccounts.TestAccountPolicy;
 import com.lookahead.domain.testaccounts.TestIdentityOperator;
 import com.lookahead.learning.content.exception.AccountFailure;
@@ -30,6 +31,27 @@ public class RealAccountMaintenance {
 
     @Transactional
     public void downgrade(AccountPrincipal actor, UUID id, Confirmation request) {
+        try { downgradeChecked(actor, id, request); }
+        catch (AccountFailure refused) { throw refusal("downgrade", actor, id, refused); }
+        Events.afterCommit(() -> Events.success(Events.EVENT, "account.downgrade").addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", id)
+            .log("Owner downgraded account {} to a free learner: roles, course grants and memberships removed", id));
+    }
+
+    public void deleteLearner(AccountPrincipal actor, UUID id, Confirmation request) {
+        try { deleteChecked(actor, id, request); }
+        catch (AccountFailure refused) { throw refusal("delete-learner", actor, id, refused); }
+    }
+
+    private static AccountFailure refusal(String action, AccountPrincipal actor, UUID id, AccountFailure refused) {
+        if ("TEST_IDENTITY_UNAVAILABLE".equals(refused.code()))
+            Events.failed(Events.EVENT, "account." + action, refused.code()).addKeyValue("account.id", actor == null ? null : actor.accountId())
+                .addKeyValue("target.id", id).log("Deleting account {} stopped: Identity did not confirm the sign-in was disabled; nothing was erased, retry the same action", id);
+        else Events.refused(Events.EVENT, "account." + action, refused.code()).addKeyValue("account.id", actor == null ? null : actor.accountId())
+                .addKeyValue("target.id", id).log("Account {} {} refused: {}", id, action, refused.code());
+        return refused;
+    }
+
+    private void downgradeChecked(AccountPrincipal actor, UUID id, Confirmation request) {
         staff.requireOwner(actor);
         requireOther(actor,id);
         if(request==null||!"DOWNGRADE".equals(request.confirmation()))throw confirmation();
@@ -43,13 +65,17 @@ public class RealAccountMaintenance {
         jdbc.update("INSERT INTO real_account_maintenance(id,account_id,actor_id,action) VALUES (?,?,?,'downgrade')",UUID.randomUUID(),id,actor.accountId());
     }
 
-    public void deleteLearner(AccountPrincipal actor, UUID id, Confirmation request) {
+    private void deleteChecked(AccountPrincipal actor, UUID id, Confirmation request) {
         localPolicy.requireLocal();
         staff.requireOwner(actor);
         requireOther(actor,id);
         if(request==null||!"DELETE".equals(request.confirmation()))throw confirmation();
         Boolean alreadyDeleted=jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM real_account_maintenance WHERE account_id=? AND action='delete')",Boolean.class,id);
-        if(Boolean.TRUE.equals(alreadyDeleted))return;
+        if(Boolean.TRUE.equals(alreadyDeleted)){
+            Events.success(Events.EVENT,"account.delete-learner").addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",id).addKeyValue("repeated",true)
+                .log("Account {} was already deleted; nothing to do",id);
+            return;
+        }
         if(!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM platform_subjects WHERE id=?)",Boolean.class,id))) {
             directory.byId(id);
             jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT DO NOTHING",id);
@@ -67,6 +93,8 @@ public class RealAccountMaintenance {
             jdbc.update("DELETE FROM account_grants WHERE account_id=?",id);
             jdbc.update("DELETE FROM support_receipts WHERE account_id=?",id);
             jdbc.update("INSERT INTO real_account_maintenance(id,account_id,actor_id,action) VALUES (?,?,?,'delete')",UUID.randomUUID(),id,actor.accountId());
+            Events.afterCommit(()->Events.success(Events.EVENT,"account.delete-learner").addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",id)
+                .log("Owner deleted learner account {}: sign-in disabled in Identity, plans, grants and receipts erased",id));
         });
     }
 

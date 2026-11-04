@@ -61,4 +61,35 @@ class CloudAdmissionCleanupTest {
         when(rs.getObject("account_id",UUID.class)).thenReturn(id);when(rs.getString("issuer")).thenReturn("https://issuer.invalid");when(rs.getString("subject")).thenReturn("subject-"+id);
         return rs;
     }
+
+    /** DLV-969: one line per expired waiting account, one line per run with the count, and failures by type only. */
+    @Test @SuppressWarnings("unchecked") void eachRunAndEachExpiredAccountIsOneLine() throws Exception {
+        lockAcquired(true);
+        UUID first=UUID.randomUUID(),second=UUID.randomUUID();var rows=List.of(resultSet(first),resultSet(second));
+        when(jdbc.query(contains("FOR UPDATE SKIP LOCKED"),any(RowMapper.class),eq(48))).thenAnswer(call->{
+            var mapper=(RowMapper<Object>)call.getArgument(1);var mapped=new java.util.ArrayList<>();for(var rs:rows)mapped.add(mapper.mapRow(rs,mapped.size()));return mapped;
+        });
+        try(var log=com.lookahead.domain.LogCapture.start()){
+            cleanup.run();
+            assertThat(log.lines("admission.expired")).extracting(line->com.lookahead.domain.LogCapture.keys(line).get("target.id")).containsExactly(first,second);
+            assertThat(log.lines("admission.expired").getFirst().getFormattedMessage()).isEqualTo("Waiting account "+first+" expired: not admitted within 48 h, removed");
+            var run=log.only("admission.cleanup");
+            assertThat(run.getFormattedMessage()).isEqualTo("Admission cleanup removed 2 expired waiting account(s)");
+            assertThat(com.lookahead.domain.LogCapture.keys(run)).containsEntry("count",2).containsEntry("event.outcome","success");
+            log.containsNone("issuer.invalid","subject-");
+        }
+        try(var log=com.lookahead.domain.LogCapture.start()){
+            lockAcquired(false);
+            cleanup.run();
+            assertThat(log.messages()).containsExactly("Admission cleanup skipped: another task is running it");
+        }
+        try(var log=com.lookahead.domain.LogCapture.start()){
+            when(jdbc.queryForObject(anyString(),eq(Boolean.class),any(Object[].class))).thenThrow(new IllegalStateException("password=synthetic-secret"));
+            cleanup.run();
+            var failed=log.only("admission.cleanup");
+            assertThat(failed.getLevel()).isEqualTo(ch.qos.logback.classic.Level.WARN);
+            assertThat(failed.getFormattedMessage()).isEqualTo("Admission cleanup skipped this hour: IllegalStateException; the next run tries again");
+            log.containsNone("synthetic-secret");
+        }
+    }
 }

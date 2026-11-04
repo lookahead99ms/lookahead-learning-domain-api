@@ -40,4 +40,31 @@ class CognitoSignInAccountsTest {
             assertThat(built.serviceClientConfiguration().region().id()).isEqualTo("us-east-2");
         }
     }
+
+    /** DLV-969: one lookahead.upstream line per Cognito call; a failure names its type, status and code, never the username. */
+    @Test void everyPoolCallIsOneUpstreamLineWithoutTheUsername() {
+        try (var log = com.lookahead.domain.LogCapture.start()) {
+            accounts.disable("google_123");
+            assertThat(log.lines("upstream.call")).extracting(line -> com.lookahead.domain.LogCapture.keys(line).get("upstream.operation"))
+                    .containsExactly("AdminDisableUser", "AdminUserGlobalSignOut");
+            assertThat(log.messages()).allMatch(message -> message.matches("Cognito Admin\\w+ succeeded in \\d+ ms"));
+
+            when(client.adminEnableUser(any(AdminEnableUserRequest.class))).thenThrow(NotAuthorizedException.builder().message("denied for google_123")
+                    .statusCode(400).awsErrorDetails(software.amazon.awssdk.awscore.exception.AwsErrorDetails.builder()
+                            .errorCode("NotAuthorizedException").errorMessage("denied for google_123").build()).build());
+            assertThatThrownBy(() -> accounts.enable("google_123")).isInstanceOf(AccountFailure.class);
+            var failed = log.lines().getLast();
+            assertThat(failed.getLevel()).isEqualTo(ch.qos.logback.classic.Level.WARN);
+            assertThat(failed.getLoggerName()).isEqualTo("lookahead.upstream");
+            assertThat(failed.getFormattedMessage()).matches("Cognito AdminEnableUser failed in \\d+ ms: NotAuthorizedException \\(HTTP 400, NotAuthorizedException\\)");
+            assertThat(com.lookahead.domain.LogCapture.keys(failed)).containsEntry("event.outcome", "failure").containsEntry("upstream.service", "cognito")
+                    .containsEntry("upstream.status", 400).containsEntry("upstream.code", "NotAuthorizedException")
+                    .containsEntry("error.type", "NotAuthorizedException").containsKey("durationMs");
+
+            when(client.adminDeleteUser(any(AdminDeleteUserRequest.class))).thenThrow(UserNotFoundException.builder().message("gone").build());
+            accounts.remove("google_123");
+            assertThat(com.lookahead.domain.LogCapture.keys(log.lines().getLast())).containsEntry("event.outcome", "refused").containsEntry("reason", "USER_ALREADY_GONE");
+            log.containsNone("google_123", "denied");
+        }
+    }
 }

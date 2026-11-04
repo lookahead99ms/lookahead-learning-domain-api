@@ -95,7 +95,12 @@ public final class CognitoTokenVerifier {
         Instant at=clock.instant();
         var kept=reuse?answers.get(key):null;
         if(kept!=null && at.isBefore(kept.until()))return kept;
-        var user=client.getUser(r->r.accessToken(jwt.getTokenValue()));
+        long started=com.lookahead.domain.Events.started();
+        software.amazon.awssdk.services.cognitoidentityprovider.model.GetUserResponse user;
+        try {user=client.getUser(r->r.accessToken(jwt.getTokenValue()));}
+        catch(NotAuthorizedException|UserNotFoundException rejected){com.lookahead.domain.Events.upstreamRefused("Cognito","GetUser",started,"TOKEN_REJECTED");throw rejected;}
+        catch(RuntimeException failure){com.lookahead.domain.Events.upstreamFailed("Cognito","GetUser",started,failure);throw failure;}
+        com.lookahead.domain.Events.upstreamDone("Cognito","GetUser",started);
         var attributes=user.userAttributes().stream().collect(Collectors.toMap(a->a.name(),a->a.value(),(a,b)->a));
         Instant until=at.plus(REUSE);
         if(jwt.getExpiresAt()!=null && jwt.getExpiresAt().isBefore(until))until=jwt.getExpiresAt();

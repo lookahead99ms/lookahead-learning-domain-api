@@ -1,5 +1,6 @@
 package com.lookahead.domain.testaccounts;
 
+import com.lookahead.domain.Events;
 import com.lookahead.domain.access.StaffAccessRepository;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.security.AccountPrincipal;
@@ -86,6 +87,20 @@ public class CreatedTestAccounts {
         return new Allowance(cap,used,cap==Integer.MAX_VALUE?Integer.MAX_VALUE:Math.max(0,cap-used),null,scenarios);
     }
     public Created create(AccountPrincipal actor, Create request) {
+        try {
+            var created=createChecked(actor,request);
+            Events.success(Events.EVENT,"test-account.create").addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",created.accountId())
+                .addKeyValue("scenario",request.scenario())
+                .log("Test account {} created by account {} (scenario {})",created.accountId(),actor.accountId(),request.scenario()==null?"none":request.scenario());
+            return created;
+        } catch(AccountFailure refused) {
+            if(!"TEST_ACCOUNT_LIMIT".equals(refused.code()))
+                Events.refused(Events.EVENT,"test-account.create",refused.code()).addKeyValue("account.id",actor==null?null:actor.accountId())
+                    .log("Test account creation refused: {}",refused.code());
+            throw refused;
+        }
+    }
+    private Created createChecked(AccountPrincipal actor, Create request) {
         boolean cloud=policy.cloud();
         if (request==null || request.key()==null || !cloud && (request.password()==null
                 || request.password().codePointCount(0,request.password().length())<15
@@ -122,7 +137,7 @@ public class CreatedTestAccounts {
                 SELECT count(*) FROM test_account_creations WHERE creator_id=?
                 AND (state IN ('active','deleted') OR (state='pending' AND created_at>clock_timestamp()-interval '15 minutes'))
                 """,Integer.class,actor.accountId());
-        if (used>=cap) throw new AccountFailure(409,"TEST_ACCOUNT_LIMIT","Lifetime test-account creation limit reached.");
+        if (used>=cap) throw limitReached(actor,cap);
         UUID id=UUID.nameUUIDFromBytes(("lookahead-created-test:"+actor.accountId()+":"+key).getBytes(StandardCharsets.UTF_8));
         String hex=id.toString().replace("-","");
         // DEV (DLV-969 S35): an address on the owner's domain, like the roster; it never signs in. 29 characters fits
@@ -142,7 +157,7 @@ public class CreatedTestAccounts {
         int cap=limit(actor);
         int spent=jdbc.queryForObject("SELECT count(*) FROM test_account_creations WHERE creator_id=? AND state IN ('active','deleted')",
                 Integer.class,actor.accountId());
-        if (spent>=cap) throw new AccountFailure(409,"TEST_ACCOUNT_LIMIT","Lifetime test-account creation limit reached.");
+        if (spent>=cap) throw limitReached(actor,cap);
         jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT DO NOTHING",reserved.accountId());
         jdbc.update("INSERT INTO test_account_registry(account_id,username,initialization,creator_id,last_changed_by) VALUES (?,?,'created',?,?)",
                 reserved.accountId(),reserved.username(),actor.accountId(),actor.accountId().toString());
@@ -151,11 +166,26 @@ public class CreatedTestAccounts {
         if (scenario!=null) accounts.applyCreated(reserved.accountId(),scenario,actor.accountId());
         jdbc.update("UPDATE test_account_creations SET state='active' WHERE creator_id=? AND account_id=?",actor.accountId(),reserved.accountId());
     }
+    /** A lifetime creation limit hit: one {@code lookahead.limit} line (admin 10, co-author 20; the owner has none). */
+    private static AccountFailure limitReached(AccountPrincipal actor, int cap) {
+        Events.limit("test-account.create","TEST_ACCOUNT_LIMIT","test-account-creations",cap,"lifetime").addKeyValue("account.id",actor.accountId())
+            .log("Test account limit hit for account {}: {} creations in its lifetime are allowed and all are used",actor.accountId(),cap);
+        return new AccountFailure(409,"TEST_ACCOUNT_LIMIT","Lifetime test-account creation limit reached.");
+    }
     public void delete(AccountPrincipal actor, UUID id) {
-        var target=transactions.execute(status -> authorizedTarget(actor,id));
-        if (target==null) throw new AccountFailure(404,"TEST_ACCOUNT_NOT_FOUND","Managed test account not found.");
-        identity().disable(id,target.username());
-        transactions.executeWithoutResult(status -> erase(actor,id));
+        try {
+            var target=transactions.execute(status -> authorizedTarget(actor,id));
+            if (target==null) throw new AccountFailure(404,"TEST_ACCOUNT_NOT_FOUND","Managed test account not found.");
+            identity().disable(id,target.username());
+            transactions.executeWithoutResult(status -> erase(actor,id));
+            Events.success(Events.EVENT,"test-account.delete").addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",id)
+                .addKeyValue("repeated","deleted".equals(target.state()))
+                .log("deleted".equals(target.state())?"Test account {} was already deleted; nothing more to do":"Test account {} deleted by account {}",id,actor.accountId());
+        } catch(AccountFailure refused) {
+            Events.refused(Events.EVENT,"test-account.delete",refused.code()).addKeyValue("account.id",actor==null?null:actor.accountId()).addKeyValue("target.id",id)
+                .log("Deleting test account {} refused: {}",id,refused.code());
+            throw refused;
+        }
     }
     private Reservation authorizedTarget(AccountPrincipal actor, UUID id) {
         policy.requireEnabled();
