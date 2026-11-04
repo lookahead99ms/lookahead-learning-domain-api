@@ -1,5 +1,6 @@
 """Tests for the per-application DEV deploy tool (one ECS service per application, ECS rolling updates); AWS and GitHub are
 injected fakes, nothing is called for real."""
+from datetime import timedelta
 import json
 from pathlib import Path
 import shutil
@@ -366,9 +367,47 @@ class ApprovalTests(DeployFixture):
 
     def test_approve_times_out_without_an_owner_comment(self):
         planned = self.planned()
+        # A deploy approval waits 10 minutes (a duplicate image 5); the issue says so and the receipt expiry matches.
+        self.assertEqual(timedelta(minutes=10), m.approvalWindow(planned))
+        self.assertEqual(timedelta(minutes=5), m.approvalWindow({**planned, 'unchanged': True}))
+        self.assertIn('Approve within 10 minutes of this issue being created; the approval comment is then valid for 15 minutes.', m.gist(planned))
         self.github.comment = lambda: {'id': 7, 'user': {'login': 'someone'}, 'body': 'APPROVE DEPLOY ' + planned['imageTag'], 'created_at': '2026-01-01T00:00:00+00:00', 'updated_at': '2026-01-01T00:00:00+00:00'}
+        sleeps = []
         with self.assertRaises(TimeoutError):
-            self.approved(planned)
+            m.approve(planned, self.env, self.root, self.get, now=self.clock, sleep=sleeps.append)
+        self.assertEqual([20] * 30, sleeps)  # 10 minutes of 20-second polls
+        # The repository variables tune both windows; the duplicate-image wait stays fixed at 5 minutes.
+        tuned = {'APPROVAL_WAIT_MINUTES': '3', 'APPROVAL_VALID_MINUTES': '45'}
+        self.assertEqual((timedelta(minutes=3), timedelta(minutes=5)), (m.approvalWindow(planned, tuned), m.approvalWindow({**planned, 'unchanged': True}, tuned)))
+        self.assertIn('Approve within 3 minutes of this issue being created; the approval comment is then valid for 45 minutes.', m.gist(planned, tuned))
+        sleeps = []
+        with self.assertRaises(TimeoutError):
+            m.approve(planned, dict(self.env, **tuned), self.root, self.get, now=self.clock, sleep=sleeps.append)
+        self.assertEqual([20] * 9, sleeps)
+        with self.assertRaisesRegex(ValueError, 'APPROVAL_WAIT_MINUTES must be a whole number of minutes from 2 to 15'):
+            m.approve(planned, dict(self.env, APPROVAL_WAIT_MINUTES='16'), self.root, self.get, now=self.clock, sleep=lambda s: None)
+
+    def test_late_approval_is_rechecked_fifteen_minutes_from_the_comment(self):
+        planned = self.planned()
+        T = self.now; late = (T + timedelta(minutes=9)).isoformat()
+        self.github.autoApprove = False
+        self.github.comment = lambda: {'id': 7, 'user': {'login': owner.OWNER}, 'body': 'APPROVE DEPLOY ' + planned['imageTag'], 'created_at': late, 'updated_at': late}
+        clock = [T]
+        def sleep(seconds):
+            clock[0] = T + timedelta(minutes=9); self.github.comments = [self.github.comment()]
+        receipt = m.approve(planned, self.env, self.root, self.get, now=lambda: clock[0], sleep=sleep)
+        self.assertEqual((7, 'deploy', late), (receipt['commentId'], receipt['mode'], receipt['approvedAt']))
+        approvedAt = T + timedelta(minutes=9)
+        m.verify(planned, receipt, self.env, self.root, self.get, T + timedelta(minutes=20))  # approval at minute 9 still valid at minute 20
+        m.verify(planned, receipt, self.env, self.root, self.get, approvedAt + timedelta(minutes=14, seconds=59))
+        with self.assertRaisesRegex(ValueError, 'older than 15 minutes'):
+            m.verify(planned, receipt, self.env, self.root, self.get, approvedAt + timedelta(minutes=15))
+        legacy = {k: v for k, v in receipt.items() if k != 'approvedAt'}  # receipt without approvedAt: taken from the live comment
+        m.verify(planned, legacy, self.env, self.root, self.get, approvedAt + timedelta(minutes=14, seconds=59))
+        with self.assertRaisesRegex(ValueError, 'older than 15 minutes'):
+            m.verify(planned, legacy, self.env, self.root, self.get, approvedAt + timedelta(minutes=15))
+        with self.assertRaisesRegex(ValueError, 'differs from the receipt'):
+            m.verify(planned, {**receipt, 'approvedAt': T.isoformat()}, self.env, self.root, self.get, T + timedelta(minutes=20))
 
 
 class ExecuteTests(DeployFixture):

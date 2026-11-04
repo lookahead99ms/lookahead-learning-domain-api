@@ -27,6 +27,16 @@ leaves `01 · Full` skipped at its first job: no tag, no build, no approval wait
 Actions minutes. Manual `01`, `02`, `03` and `04` are unaffected. Delete the variable or set it to
 `true` to resume merge-driven publication. Images are published only when a deploy is wanted.
 
+**Approval windows.** Two optional repository variables tune the owner-approval clocks without a code
+change; the defaults live in `owner_approval.WINDOWS`. `APPROVAL_WAIT_MINUTES` (default 10, allowed 2..15
+so the 20-minute approve-job cap always fits) is how long a publish, deploy or recovery approval issue waits
+for the owner's comment from its creation. `APPROVAL_VALID_MINUTES` (default 15, allowed 5..60) is how long
+a posted approval stays valid for the rechecks that follow, counted from the comment itself, and is also the
+keep-or-rollback decision window of `candidate.py decide`. Unset or empty means the default; a value that is
+not a whole number of minutes inside its bound stops the job before any issue is opened, naming the variable.
+The duplicate-image wait stays fixed at 5 minutes. The issue text prints the effective numbers and the receipt
+records the effective times; set both variables before a run, not between its jobs, or the recheck fails closed.
+
 ## Stages of `01 · Full`
 
 1. **Security gate** (`validate`): the release and deploy tooling's own tests with at least 85 percent coverage.
@@ -41,10 +51,11 @@ Actions minutes. Manual `01`, `02`, `03` and `04` are unaffected. Delete the var
 4. **Approve ECR publish** (`approve`): no credentials, no environment. `owner_release.py gate`
    re-resolves the tag from the frozen record and `owner_release.py approve` opens the owner issue
    bound to the exact image: `APPROVE IMAGE <version>` (the ECR image tag, for example
-   `web-v2026.10.28.15.01`) within 40 minutes, `REJECT` stops; edited comments, a moved tag or main,
-   or a changed issue fail closed.
+   `web-v2026.10.28.15.01`) within 10 minutes of the issue being created, `REJECT` stops; edited comments,
+   a moved tag or main, or a changed issue fail closed. The receipt records the comment time (`approvedAt`).
 5. **Publish to ECR** (`publish`, environment `dev`, no required reviewers): rechecks the live
-   approval and the tag before OIDC, imports the scanned image without rebuilding, assumes the
+   approval (valid for 15 minutes from the approval comment, so an answer at minute 9 of the wait still
+   leaves this job its whole window) and the tag before OIDC, imports the scanned image without rebuilding, assumes the
    publisher role for one 15-minute ECR-only session (`image-publish-<run>-1`), pushes once to the
    immutable `lookahead-dev-ecr` tag `<app>-<release>`, reads the digest back and retains
    `registry-image-<S>` and `image-publication-outcome`.
@@ -77,16 +88,17 @@ scheduled scale-down from 2026-11-05). `01 · Full` always passes `1`.
    `refresh` and `verify` instead of `deploy` (`verify` only when the duplicate is a parked service).
 3. **Approve DEV deploy** (`approve-deploy`): no credentials; `deploy.py approve` opens the owner
    issue bound to that plan: `APPROVE DEPLOY <image tag>` (for example `web-v2026.11.01.14.00`)
-   within 40 minutes, `REJECT` stops; the plan digest is in the issue body and the receipt. For a
+   within 10 minutes of the issue being created, `REJECT` stops; the plan digest is in the issue body and the receipt. For a
    **duplicate image** the issue title and first line carry a warning, the window is **5 minutes**, and
    the answers are `APPROVE REFRESH <image tag>` (restart on the same image: the change set sets the
    template parameter `RefreshToken` to `run-<run id>`, CloudFormation registers a new task definition
    revision and ECS performs the rolling update; the new task re-reads its configuration and, for Domain,
    the content release in S3), `APPROVE VERIFY <image tag>` (no AWS change, verification only, no
    observation) or `REJECT`; no answer closes the issue with nothing done (user decision 2026-11-02).
-   The receipt records the chosen mode and the deploy job executes only that mode.
-4. **Deploy to DEV** (`deploy-dev`, environment `dev`): `deploy.py verify` rechecks the approval,
-   the plan digest, the template and the configuration before OIDC; the deploy session
+   The receipt records the chosen mode and the comment time (`approvedAt`); the deploy job executes only that mode.
+4. **Deploy to DEV** (`deploy-dev`, environment `dev`): `deploy.py verify` rechecks the approval
+   (valid for 15 minutes from the approval comment, not from the issue, so an answer late in the wait
+   still leaves this job its whole window), the plan digest, the template and the configuration before OIDC; the deploy session
    `<app>-deploy-<run>-1` (60 minutes) runs `deploy.py execute`: one change set `app-<run>`
    (CREATE for the first stack, UPDATE afterwards; its preview must show only the task definition
    and the service), execution, then for `desired_count` 1 the ECS rollout `COMPLETED` with exactly
@@ -152,8 +164,9 @@ concurrency group, so it never runs beside a deploy. Use `04 · Deploy DEV` for 
    the target itself). With neither, the plan stops and asks for the input. The fallback tag is frozen the same way;
    then `recover.py plan` writes one `deploy.py` plan per stage (artifact `recover-plan`).
 3. **Approve DEV recovery**: one issue lists every stage, both releases and the park steps; the owner answers
-   `APPROVE RECOVER <app>-<tag>` within 40 minutes (`REJECT` stops the run).
-4. **Recover DEV** (environment `dev`): the live approval is rechecked before any credentials; then each stage assumes
+   `APPROVE RECOVER <app>-<tag>` within 10 minutes of the issue being created (`REJECT` stops the run).
+4. **Recover DEV** (environment `dev`): the live approval is rechecked before any credentials (valid for 15 minutes from
+   the approval comment); then each stage assumes
    its own deploy session `<app>-deploy-<run>-<n>` (60 minutes each) and runs `recover.py stage`:
    - `park` (session 1): DesiredCount 0 for the target release. On a stack in `UPDATE_IN_PROGRESS` /
      `UPDATE_ROLLBACK_IN_PROGRESS` it uses the busy-stack park above (direct scale-down, wait, park change set).

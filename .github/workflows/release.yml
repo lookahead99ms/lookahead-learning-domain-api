@@ -157,7 +157,7 @@
       ],
       "if": "always() && needs.build.result == 'success' && ((inputs.action || 'full') == 'full' || (inputs.action || 'full') == 'publish')",
       "runs-on": "ubuntu-24.04",
-      "timeout-minutes": 45,
+      "timeout-minutes": 20,
       "permissions": {
         "contents": "read",
         "actions": "read",
@@ -166,6 +166,8 @@
       },
       "env": {
         "GH_TOKEN": "${{ github.token }}",
+        "APPROVAL_WAIT_MINUTES": "${{ vars.APPROVAL_WAIT_MINUTES }}",
+        "APPROVAL_VALID_MINUTES": "${{ vars.APPROVAL_VALID_MINUTES }}",
         "RELEASE_VERSION": "${{ needs.release.outputs.release-version }}",
         "SOURCE_SHA": "${{ needs.release.outputs.source-sha }}"
       },
@@ -252,6 +254,8 @@
       },
       "env": {
         "GH_TOKEN": "${{ github.token }}",
+        "APPROVAL_WAIT_MINUTES": "${{ vars.APPROVAL_WAIT_MINUTES }}",
+        "APPROVAL_VALID_MINUTES": "${{ vars.APPROVAL_VALID_MINUTES }}",
         "RELEASE_VERSION": "${{ needs.release.outputs.release-version }}",
         "SOURCE_SHA": "${{ needs.release.outputs.source-sha }}",
         "AWS_MAX_ATTEMPTS": "1",

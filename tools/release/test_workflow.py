@@ -88,6 +88,18 @@ class StandardShapeTests(unittest.TestCase):
         self.assertEqual("github.event_name != 'push' || vars.RELEASE_ON_MERGE != 'false'", validate['if'])
         self.assertNotIn('if', load('deploy-dev.yml')['jobs']['validate'])
 
+    def test_every_approval_wait_and_recheck_job_receives_the_window_variables(self):
+        # APPROVAL_WAIT_MINUTES / APPROVAL_VALID_MINUTES are repository variables read by the tooling; an unset variable reaches the
+        # job as an empty string and gives the defaults in code (10 / 15). Every job that waits for or rechecks an approval gets both.
+        wired = ('${{ vars.APPROVAL_WAIT_MINUTES }}', '${{ vars.APPROVAL_VALID_MINUTES }}')
+        for file, jobs in (('release.yml', ('approve', 'publish')), ('deploy-dev.yml', ('approve-deploy', 'deploy-dev')), ('recover-dev.yml', ('approve-recovery', 'recover-dev'))):
+            for name, job in load(file)['jobs'].items():
+                env = job.get('env', {})
+                if name in jobs:
+                    self.assertEqual(wired, (env.get('APPROVAL_WAIT_MINUTES'), env.get('APPROVAL_VALID_MINUTES')), (file, name))
+                else:
+                    self.assertNotIn('APPROVAL_', json.dumps(env), (file, name))
+
     def test_every_issue_close_step_is_fail_safe(self):
         # Closing a consumed approval issue must never fail the stage: a hand-closed or hand-edited issue, or a GitHub
         # error, is a warning and the job stays green (user decision 2026-10-29). The helper exits 0 for a closed issue.
@@ -174,7 +186,9 @@ class StageContractTests(unittest.TestCase):
         self.assertEqual({'contents': 'read', 'actions': 'read', 'issues': 'write', 'pull-requests': 'read'}, approve['permissions'])
         self.assertNotIn('environment', approve)
         self.assertEqual([], uses(approve, 'aws-actions/'))
-        self.assertEqual({'RELEASE_VERSION': '${{ needs.release.outputs.release-version }}', 'SOURCE_SHA': '${{ needs.release.outputs.source-sha }}', 'GH_TOKEN': '${{ github.token }}'}, approve['env'])
+        self.assertEqual(20, approve['timeout-minutes'])  # a hung poll bills at most 20 runner minutes: 10-minute owner wait plus checkout
+        self.assertEqual({'RELEASE_VERSION': '${{ needs.release.outputs.release-version }}', 'SOURCE_SHA': '${{ needs.release.outputs.source-sha }}', 'GH_TOKEN': '${{ github.token }}',
+                          'APPROVAL_WAIT_MINUTES': '${{ vars.APPROVAL_WAIT_MINUTES }}', 'APPROVAL_VALID_MINUTES': '${{ vars.APPROVAL_VALID_MINUTES }}'}, approve['env'])
         downloads = {s['with']['name']: s['with']['path'] for s in uses(approve, 'actions/download-artifact@')}
         self.assertEqual({'release-source': '${{ runner.temp }}', 'release-image-${{ needs.release.outputs.source-sha }}': '${{ runner.temp }}/release-image'}, downloads)
         checkouts = [(s['with']['ref'], s['with'].get('path'), s['with']['persist-credentials']) for s in uses(approve, 'actions/checkout@')]
@@ -271,6 +285,8 @@ class RecoverWorkflowTests(unittest.TestCase):
         approve, recover = self.jobs['approve-recovery'], self.jobs['recover-dev']
         self.assertNotIn('environment', approve); self.assertEqual([], uses(approve, 'aws-actions/'))
         self.assertIn('--match "Recover"', approve['steps'][-1]['run'])
+        self.assertEqual('Open one approval issue for the whole sequence and wait for the owner comment (10 minutes)', next(s['name'] for s in approve['steps'] if s.get('id') == 'approve'))
+        self.assertEqual(20, approve['timeout-minutes'])  # a hung poll bills at most 20 runner minutes
         self.assertEqual((['plan-recovery', 'approve-recovery'], 'dev'), (recover['needs'], recover['environment']))
         order = names(recover)
         first = order.index(next(s['name'] for s in recover['steps'] if str(s.get('uses', '')).startswith('aws-actions/')))
@@ -349,6 +365,8 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertEqual({'contents': 'read', 'actions': 'read', 'issues': 'write', 'pull-requests': 'read'}, approve['permissions'])
         self.assertNotIn('environment', approve); self.assertEqual([], uses(approve, 'aws-actions/'))
         self.assertIn('deploy.py approve --plan "$RUNNER_TEMP/deploy-plan/plan.json" --receipt "$RUNNER_TEMP/deploy-approval/approval.json"', '\n'.join(runs(approve)))
+        self.assertEqual('Open the approval issue and wait for the owner comment (10 minutes)', next(s['name'] for s in approve['steps'] if s.get('id') == 'approve'))
+        self.assertEqual(20, approve['timeout-minutes'])  # a hung poll bills at most 20 runner minutes
         self.assertEqual({'deploy-plan': '${{ runner.temp }}/deploy-plan'}, {s['with']['name']: s['with']['path'] for s in uses(approve, 'actions/download-artifact@')})
         self.assertEqual({'deploy-approval': '${{ runner.temp }}/deploy-approval/'}, {s['with']['name']: s['with']['path'] for s in uses(approve, 'actions/upload-artifact@')})
         self.assertEqual(('failure()', True), (approve['steps'][-1]['if'], '--match "Deploy"' in approve['steps'][-1]['run']))

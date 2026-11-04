@@ -286,9 +286,10 @@ def approvalCommand(planned):
     return approvalCommands(planned)[planned['choices'][0]]
 
 
-def approvalWindow(planned):
-    """A duplicate image is usually an accident: five minutes to answer, then the issue closes with nothing done (user decision 2026-11-02)."""
-    return timedelta(minutes=5 if planned['unchanged'] else 40)
+def approvalWindow(planned, env=None):
+    """A duplicate image is usually an accident: five minutes to answer, then the issue closes with nothing done (user decision 2026-11-02).
+    Otherwise the repository variable APPROVAL_WAIT_MINUTES (default 10)."""
+    return timedelta(minutes=5) if planned['unchanged'] else owner.approvalWait(env)
 
 
 def headline(planned):
@@ -302,7 +303,7 @@ def headline(planned):
     return {'env': 'DEV', 'action': action, 'subject': planned['imageTag'], 'change': change}
 
 
-def gist(planned):
+def gist(planned, env=None):
     t = issueTemplate.text
     serving = ('1. Recheck the tag, the plan digest, the template and the configuration; then assume `' + t(planned['deployRoleArn']) + '` as session `'
                + t(planned['sessionName']) + '` (at most 60 minutes).',
@@ -337,15 +338,16 @@ def gist(planned):
         lines.append('- `REJECT`: this was an accident; nothing happens.')
         return '\n'.join(lines)
     return head + ' No IAM, network, database or secret changes.\n\n' + '\n'.join(serving if planned['desiredCount'] == 1 else parked) \
-        + '\n\nRollback is a new run of this workflow with the previous tag. Approval expires 40 minutes after this issue is created.'
+        + '\n\nRollback is a new run of this workflow with the previous tag. Approve within ' + owner.minutesText(approvalWindow(planned, env)) \
+        + ' minutes of this issue being created; the approval comment is then valid for ' + owner.minutesText(owner.approvalValid(env)) + ' minutes.'
 
 
-def body(planned, receipt):
+def body(planned, receipt, env=None):
     fields = ('releaseVersion', 'imageTag', 'image', 'desiredCount', 'sourceSha', 'workflowSha', 'stack', 'currentImage', 'currentDesiredCount', 'sessionName', 'repository', 'account', 'region')
     shown = [('**' + key + '**', owner.commitLink(planned, planned[key]) if key in ('sourceSha', 'workflowSha') else '`' + issueTemplate.text(str(planned[key])) + '`')
              for key in fields if planned.get(key) is not None]
     return issueTemplate.render(
-        headline=headline(planned), gist=gist(planned), resources=planned['resources'],
+        headline=headline(planned), gist=gist(planned, env), resources=planned['resources'],
         overview=('**Duplicate image: choose refresh, verify or reject**\n\nThe stack already serves this image. `' + approvalCommands(planned)[planned['choices'][0]]
                   + '` is the primary answer shown below' + ('; `' + approvalCommands(planned)['verify'] + '` verifies without changing AWS' if 'refresh' in planned['choices'] else '')
                   + '; `REJECT` or no answer within 5 minutes closes this issue with nothing done.') if planned['unchanged'] else
@@ -365,22 +367,24 @@ def body(planned, receipt):
         command=approvalCommand(planned), payload=planned)
 
 
-def decision(planned, receipt, env, root, get=owner.api, now=None):
+def decision(planned, receipt, env, root, get=owner.api, now=None, recheck=False):
     validatePlan(planned, env, root, get)
-    return selectedApproval(planned, receipt, get, now)
+    return selectedApproval(planned, receipt, get, now, recheck=recheck, env=env)
 
 
-def selectedApproval(planned, receipt, get=owner.api, now=None, render=None, commands=None, window=None):
-    """The owner's live answer on the approval issue of this receipt, or None while there is none. `render`, `commands` and `window`
-    default to this deploy's issue body, commands and window; `05 · Recover DEV` passes its own."""
+def selectedApproval(planned, receipt, get=owner.api, now=None, render=None, commands=None, window=None, recheck=False, env=None):
+    """The owner's live answer on the approval issue of this receipt as (comment id, mode, comment time), or None while there is none.
+    `render(planned, receipt, env)`, `commands(planned)` and `window(planned, env)` default to this deploy's issue body, commands and
+    window; `05 · Recover DEV` passes its own. While waiting, `now` must lie inside the comment window; a `recheck` after the wait is
+    bounded by `verify` from the comment instead. `env` carries the window variables (the process environment when None)."""
     render, commands, window = render or body, commands or approvalCommands, window or approvalWindow
     now = now or utc()
     created, expires = owner.timestamp(receipt['createdAt']), owner.timestamp(receipt['expiresAt'])
     require(receipt.get('schema') == SCHEMA_RECEIPT and receipt.get('planDigest') == planned['planDigest'] and receipt.get('runId') == planned['runId']
-            and created <= now < expires and timedelta(0) < expires - created <= window(planned), 'Approval expired or binding changed')
+            and created <= now and (recheck or now < expires) and timedelta(0) < expires - created <= window(planned, env), 'Approval expired or binding changed')
     issue = get(planned['repository'], 'issues/' + str(receipt['issue']))
     require(issue.get('state') == 'open' and not issue.get('pull_request') and issue.get('user', {}).get('login') == 'github-actions[bot]'
-            and issue.get('body') == render(planned, receipt), 'Approval issue changed')
+            and issue.get('body') == render(planned, receipt, env), 'Approval issue changed')
     require(created <= owner.timestamp(issue['created_at']) < expires, 'Approval issue creation time outside review window')
     comments = get(planned['repository'], 'issues/' + str(receipt['issue']) + '/comments?per_page=100')
     require(isinstance(comments, list) and len(comments) < 100, 'Incomplete approval comment inventory')
@@ -394,31 +398,33 @@ def selectedApproval(planned, receipt, get=owner.api, now=None, render=None, com
             continue
         when = owner.timestamp(comment['created_at'])
         if created <= when <= now and when < expires and command in commands:
-            selected = (comment['id'], commands[command])
+            selected = (comment['id'], commands[command], comment['created_at'])
     return selected
 
 
 def approve(planned, env, root, get=owner.api, now=lambda: utc(), sleep=time.sleep):
     validatePlan(planned, env, root, get)
-    start = now().replace(microsecond=0)
+    start, wait = now().replace(microsecond=0), approvalWindow(planned, env)
     receipt = {'schema': SCHEMA_RECEIPT, 'runId': planned['runId'], 'planDigest': planned['planDigest'],
-               'createdAt': start.isoformat(), 'expiresAt': (start + approvalWindow(planned)).isoformat()}
-    preview = body(planned, receipt)
+               'createdAt': start.isoformat(), 'expiresAt': (start + wait).isoformat()}
+    preview = body(planned, receipt, env)
     require(len(preview) < 60000, 'Approval preview too large')
     issue = get(planned['repository'], 'issues', {'title': issueTemplate.title(headline(planned), planned['runId']), 'body': preview})
     receipt['issue'] = issue['number']
     print('https://github.com/' + planned['repository'] + '/issues/' + str(receipt['issue']), flush=True)
-    for _ in range(int(approvalWindow(planned).total_seconds()) // 20):
+    for _ in range(int(wait.total_seconds()) // 20):
         selected = decision(planned, receipt, env, root, get, now())
         if selected is not None:
-            return {**receipt, 'commentId': selected[0], 'mode': selected[1]}
+            return {**receipt, 'commentId': selected[0], 'mode': selected[1], 'approvedAt': selected[2]}
         sleep(20)
     raise TimeoutError('Deploy approval timed out; start a new reviewed run')
 
 
 def verify(planned, receipt, env, root, get=owner.api, now=None):
-    selected = decision(planned, receipt, env, root, get, now)
-    require(selected is not None and selected == (receipt.get('commentId'), receipt.get('mode')), 'Exact live owner approval required')
+    now = now or utc()
+    selected = decision(planned, receipt, env, root, get, now, recheck=True)
+    require(selected is not None and selected[:2] == (receipt.get('commentId'), receipt.get('mode')), 'Exact live owner approval required')
+    owner.stillValid(receipt, selected[2], now, env)
 
 
 class Deployer:
