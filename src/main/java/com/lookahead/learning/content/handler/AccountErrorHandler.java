@@ -13,6 +13,8 @@ import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.transaction.TransactionSystemException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 
@@ -20,6 +22,8 @@ import java.util.LinkedHashMap;
 @Profile("accounts")
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public class AccountErrorHandler {
+    private static final Logger log = LoggerFactory.getLogger(AccountErrorHandler.class);
+
     @ExceptionHandler(AccountFailure.class)
     ResponseEntity<?> failure(AccountFailure ex, HttpServletRequest request) {
         var body = new LinkedHashMap<String, Object>();
@@ -40,6 +44,9 @@ public class AccountErrorHandler {
     @ExceptionHandler({DataAccessException.class, CannotCreateTransactionException.class,
             TransactionSystemException.class})
     ResponseEntity<?> unavailable(RuntimeException ex, HttpServletRequest request) {
+        // The caller never sees the driver's detail; the log keeps it so an outage can be diagnosed.
+        log.warn("Account storage unavailable: {} {}", GlobalExceptionHandler.forLog(request.getMethod()),
+                GlobalExceptionHandler.forLog(request.getRequestURI()), ex);
         return failure(new AccountFailure(503, "ACCOUNT_STORAGE_UNAVAILABLE", "Account storage is unavailable; retain your draft and retry the same request"), request);
     }
 }
