@@ -1,5 +1,6 @@
 package com.lookahead.learning.content.handler;
 
+import com.lookahead.domain.RequestLog;
 import com.lookahead.learning.content.dto.ApiError;
 
 import jakarta.servlet.http.HttpServletRequest;
@@ -14,7 +15,6 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.UUID;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -45,7 +45,7 @@ public class GlobalExceptionHandler {
                     exception.getClass().getSimpleName());
             return error(refused, refused.getReasonPhrase(), request, List.of());
         }
-        String reference = UUID.randomUUID().toString();
+        String reference = RequestLog.reference();
         log.error("Unexpected failure reference={} {} {}", reference, forLog(request.getMethod()),
                 forLog(request.getRequestURI()), exception);
         return error(HttpStatus.INTERNAL_SERVER_ERROR, "An unexpected error occurred", request,

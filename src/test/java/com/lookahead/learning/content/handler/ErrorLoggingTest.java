@@ -55,6 +55,22 @@ class ErrorLoggingTest {
         });
     }
 
+    /** DLV-969 (owner, 2026-11-04): the reference the caller quotes is the request ID on every line of the request. */
+    @Test
+    void theReferenceIsTheRequestIdOfTheRequestBeingServed() {
+        String requestId = "6f1c2b9e-4d3a-4e8b-9c7d-0a1b2c3d4e5f";
+        org.slf4j.MDC.put("requestId", requestId);
+        try {
+            var response = global.handleUnexpected(new IllegalStateException("boom"), request("GET", "/api/v1/plans"));
+
+            assertThat(response.getBody().details()).containsExactly("Reference: " + requestId);
+            assertThat(logged.list).singleElement().extracting(ILoggingEvent::getFormattedMessage)
+                    .isEqualTo("Unexpected failure reference=" + requestId + " GET /api/v1/plans");
+        } finally {
+            org.slf4j.MDC.remove("requestId");
+        }
+    }
+
     @Test
     void theCallersOwnMistakesKeepTheir4xxAndLogOneWarningWithoutAStack() throws Exception {
         var missing = global.handleUnexpected(new NoResourceFoundException(org.springframework.http.HttpMethod.GET, "/nowhere", null),
