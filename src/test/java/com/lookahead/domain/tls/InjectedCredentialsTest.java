@@ -201,4 +201,49 @@ class InjectedCredentialsTest {
         assertThrows(IllegalStateException.class,()->InjectedCredentialValidator.properties(values,"domain"));
         assertThrows(IllegalStateException.class,()->InjectedCredentialValidator.properties(values,"web"));
     }
+
+    /** DLV-969 (owner, 2026-11-04): a refused injected credential is named by its variable in the log, never by its value. */
+    @Test void aRefusedCredentialIsNamedInTheLogWithoutItsValue() throws Exception {
+        var cases=new LinkedHashMap<String[],String>();
+        cases.put(new String[]{"LOOKAHEAD_TLS_SCHEMA","lookahead-tls/v0"},"LOOKAHEAD_TLS_SCHEMA is missing or is not lookahead-tls/v1");
+        cases.put(new String[]{"LOOKAHEAD_TLS_SERVER_NAME","wrong.example.com"},"LOOKAHEAD_TLS_SERVER_CERTIFICATE does not list LOOKAHEAD_TLS_SERVER_NAME among its DNS names");
+        cases.put(new String[]{"LOOKAHEAD_TLS_SERVER_KEY",text("ca.key")},"LOOKAHEAD_TLS_SERVER_KEY does not belong to LOOKAHEAD_TLS_SERVER_CERTIFICATE");
+        cases.put(new String[]{"LOOKAHEAD_TLS_SERVER_KEY",null},"LOOKAHEAD_TLS_SERVER_KEY is missing or is not exactly one complete unencrypted PKCS#8 PEM private key");
+        cases.put(new String[]{"LOOKAHEAD_TLS_TRUST",text("server.pem")},"LOOKAHEAD_TLS_TRUST is missing, or is not 1 to 8 valid self-signed CA certificates in PEM");
+        cases.put(new String[]{"LOOKAHEAD_TLS_SERVER_CERTIFICATE","not a certificate"},"LOOKAHEAD_TLS_SERVER_CERTIFICATE is missing, is not 1 to 8 PEM certificates");
+        cases.put(new String[]{"LOOKAHEAD_DOMAIN_GATEWAY_SECRET","short"},"LOOKAHEAD_DOMAIN_GATEWAY_SECRET is missing, shorter than 16");
+        cases.put(new String[]{"LOOKAHEAD_DOMAIN_DB_PASSWORD","synthetic-database-password-of-wrong-shape"},"LOOKAHEAD_DOMAIN_DB_PASSWORD is missing or is not exactly 48 letters and digits");
+        for(var entry:cases.entrySet()) {
+            var values=input();values.put(entry.getKey()[0],entry.getKey()[1]);
+            try(var log=com.lookahead.domain.LogCapture.start("lookahead.startup")) {
+                var failure=assertThrows(IllegalStateException.class,()->InjectedCredentialValidator.properties(values,"domain"));
+                assertEquals(InjectedCredentialValidator.DENIED,failure.getMessage());assertNull(failure.getCause());
+                var line=log.only("startup.check");
+                assertEquals(ch.qos.logback.classic.Level.WARN,line.getLevel());
+                assertTrue(line.getFormattedMessage().startsWith("Startup refused: "+entry.getValue()),line.getFormattedMessage());
+                assertEquals("INJECTED_CREDENTIAL_INVALID",com.lookahead.domain.LogCapture.keys(line).get("reason"));
+                log.containsNone("wrong.example.com","dev.example.com","-----BEGIN","synthetic-gateway-secret","synthetic-database-password","lookahead-tls/v0");
+            }
+        }
+        var values=input();values.put("LOOKAHEAD_TLS_CLIENT_KEY",text("server.key"));
+        try(var log=com.lookahead.domain.LogCapture.start("lookahead.startup")) {
+            assertThrows(IllegalStateException.class,()->InjectedCredentialValidator.properties(values,"gateway"));
+            assertTrue(log.only("startup.check").getFormattedMessage().startsWith("Startup refused: LOOKAHEAD_TLS_CLIENT_KEY does not belong to LOOKAHEAD_TLS_CLIENT_CERTIFICATE"));
+        }
+        try(var log=com.lookahead.domain.LogCapture.start("lookahead.startup")) {
+            assertThrows(IllegalStateException.class,()->InjectedCredentialValidator.properties(input(),"web"));
+            assertTrue(log.only("startup.check").getFormattedMessage().startsWith("Startup refused: service is not gateway or domain"));
+        }
+    }
+    @Test void anUnresolvedInjectedValueIsNamedBeforeStartupStops() {
+        try(var context=new GenericApplicationContext(); var log=com.lookahead.domain.LogCapture.start("lookahead.startup")) {
+            context.getEnvironment().setActiveProfiles("lower-cost-dev");
+            context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("synthetic",Map.of("LOOKAHEAD_TLS_TRUST","${private-marker}")));
+            assertThrows(IllegalStateException.class,()->new InjectedCredentials().initialize(context));
+            var line=log.only("startup.check");
+            assertTrue(line.getFormattedMessage().startsWith("Startup refused: LOOKAHEAD_TLS_TRUST could not be read: it holds a ${...} placeholder with no value"),line.getFormattedMessage());
+            assertEquals("INJECTED_CREDENTIAL_UNRESOLVED",com.lookahead.domain.LogCapture.keys(line).get("reason"));
+            log.containsNone("private-marker");
+        }
+    }
 }

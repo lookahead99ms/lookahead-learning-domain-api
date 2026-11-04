@@ -248,8 +248,15 @@ public class CloudMergeService {
             var card=PlanCardMetadata.from(JSON.readTree(snapshot),JSON.readTree(progress),JSON);
             int total=card.path("totalSessionCount").asInt(0);
             return total<=0?0:Math.min(100,card.path("completedSessionCount").asInt(0)*100/total);
-        }catch(RuntimeException unreadable){return 0;}
+        }catch(RuntimeException unreadable){
+            // DLV-969 (owner, 2026-11-04): the merge page would show 0% with no reason.
+            String types=Events.types(unreadable);
+            if(PERCENT.due(types))Events.failed(Events.EVENT,"merge.candidates","PLAN_CARD_UNREADABLE").addKeyValue("error.type",types)
+                .log("A study plan's progress could not be read for the merge page ({}); it shows 0%",types);
+            return 0;
+        }
     }
+    private static final com.lookahead.domain.Throttle PERCENT=new com.lookahead.domain.Throttle();
     private static Instant instant(Object value){return value instanceof java.sql.Timestamp t?t.toInstant():value instanceof java.time.OffsetDateTime o?o.toInstant():null;}
     private Link link(String token,boolean lock){
         if(token==null||!token.matches("[A-Za-z0-9_-]{43}"))throw invalidToken();

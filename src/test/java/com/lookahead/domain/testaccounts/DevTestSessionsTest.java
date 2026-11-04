@@ -59,6 +59,25 @@ class DevTestSessionsTest {
                 List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ANONYMOUS"))) : seen.get()) : null;
     }
 
+    /** DLV-969 (owner, 2026-11-04): a test session that cannot be checked answers 503 and says why, once a minute. */
+    @Test void aFailingTestSessionCheckIsLoggedWithItsTypes() throws Exception {
+        var sessions = mock(DevTestSessions.class);
+        when(sessions.requestAccount(any())).thenThrow(new org.springframework.dao.DataAccessResourceFailureException("db.internal",
+                new java.sql.SQLException("down", "08001")));
+        try (var log = com.lookahead.domain.LogCapture.start()) {
+            for (int i = 0; i < 2; i++) {
+                var response = new MockHttpServletResponse();
+                assertThat(run(sessions, request("secret", "holder", UUID.randomUUID().toString()), response)).isNull();
+                assertThat(response.getStatus()).isEqualTo(503);
+            }
+            var line = log.only("test-session.request");
+            assertThat(line.getFormattedMessage()).isEqualTo("Test session check failed (DataAccessResourceFailureException < SQLException, SQL state 08001);"
+                    + " answered 503 IDENTITY_UNAVAILABLE");
+            assertThat(com.lookahead.domain.LogCapture.keys(line)).containsEntry("reason", "TEST_SESSION_UNAVAILABLE").containsEntry("db.sqlState", "08001");
+            log.containsNone("db.internal");
+        }
+    }
+
     @Test void aRequestWithoutTheTestAccountHeaderPassesUntouched() throws Exception {
         var response = new MockHttpServletResponse();
         var seen = run(new Stub(), request(null, null, null), response);

@@ -18,6 +18,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * DLV-969 (owner, 2026-11-04): in the DEV profile every log line is one ECS JSON record, so CloudWatch shows one
@@ -93,6 +94,36 @@ class StructuredLoggingTest {
 
         assertThat(local.getProperty("logging.structured.format.console")).isNull();
         assertThat(devEnvironment().getProperty("logging.structured.format.console")).isEqualTo("ecs");
+    }
+
+    /**
+     * DLV-969 (2026-11-04): a key that collides with a member ECS writes itself (service.*, log.*, process.*, ecs.*, or
+     * error.* next to an exception) makes the encoder fail and the appender drop the whole line without a trace. The
+     * new lines are rendered here through the real DEV encoder, so a colliding key cannot come back unnoticed.
+     */
+    @Test
+    void theNewLifecycleHealthAndRefusalLinesRenderAndACollidingKeyIsCaught() throws Exception {
+        var dev = devEncoder();
+        var started = event(dev.context(), "lookahead.lifecycle", Level.INFO, "Started: version 2026.11.04.19.00", null);
+        started.setKeyValuePairs(List.of(new KeyValuePair("event.action", "startup"), new KeyValuePair("event.outcome", "success"),
+                new KeyValuePair("domain.version", "2026.11.04.19.00"), new KeyValuePair("release.tag", "v2026.11.04.19.00"),
+                new KeyValuePair("source.revision", "abc1234"), new KeyValuePair("profiles", "accounts,resource,lower-cost-dev"),
+                new KeyValuePair("availability.readiness", "ACCEPTING_TRAFFIC")));
+        assertThat(oneRecord(dev.encoder().encode(started)).at("/domain/version").asString()).isEqualTo("2026.11.04.19.00");
+
+        var down = event(dev.context(), "lookahead.health", Level.WARN, "Readiness DOWN: the database is missing migration(s) 19, 20", null);
+        down.setKeyValuePairs(List.of(new KeyValuePair("event.action", "readiness"), new KeyValuePair("event.outcome", "failure"),
+                new KeyValuePair("reason", "MIGRATIONS_MISSING"), new KeyValuePair("health.component", "database")));
+        assertThat(oneRecord(dev.encoder().encode(down)).at("/reason").asString()).isEqualTo("MIGRATIONS_MISSING");
+
+        var refused = event(dev.context(), "lookahead.startup", Level.WARN, "Startup refused: LOOKAHEAD_DATABASE_URL is not valid", null);
+        refused.setKeyValuePairs(List.of(new KeyValuePair("event.action", "startup"), new KeyValuePair("reason", "JDBC_URL_INVALID"),
+                new KeyValuePair("error.type", "IllegalArgumentException")));
+        assertThat(oneRecord(dev.encoder().encode(refused)).at("/error/type").asString()).isEqualTo("IllegalArgumentException");
+
+        var colliding = event(dev.context(), "lookahead.lifecycle", Level.INFO, "Started", null);
+        colliding.setKeyValuePairs(List.of(new KeyValuePair("service.version", "x")));
+        assertThatThrownBy(() -> dev.encoder().encode(colliding)).isInstanceOf(RuntimeException.class);
     }
 
     private record Dev(LoggerContext context, StructuredLogEncoder encoder) { }

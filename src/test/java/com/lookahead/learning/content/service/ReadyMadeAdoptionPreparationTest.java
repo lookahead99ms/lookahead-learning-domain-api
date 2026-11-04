@@ -244,6 +244,31 @@ class ReadyMadeAdoptionPreparationTest {
         verify(accounts, never()).findTopicGrants(any());
     }
 
+    /** DLV-969 (owner, 2026-11-04): a published template that cannot be used names the template and why in the log. */
+    @Test void anUnusableTemplateIsExplainedInTheLog() throws Exception {
+        try (var log = com.lookahead.domain.LogCapture.start()) {
+            publish(template, allTopics, "public", "all", "application/json");
+            failure(503, "TEMPLATE_UNAVAILABLE", this::prepare);
+            Set<String> extra = new TreeSet<>(allTopics);
+            extra.add("grow:unrelated-course");
+            publish(template, extra, "pro", "all", "application/json");
+            failure(503, "TEMPLATE_UNAVAILABLE", this::prepare);
+            assertInvalidTemplate(copy -> copy.put("templateId", "another-synthetic-d7-h1"));
+            assertInvalidCatalogTemplate(copy -> ((ObjectNode) copy.path("references").get(0)).putArray("route")
+                    .add("https://untrusted.invalid/private-route"));
+            var lines = log.lines("plan.template.prepare");
+            assertEquals(List.of("TEMPLATE_ASSET_INVALID", "TEMPLATE_SCOPES_MISMATCH", "TEMPLATE_ID_MISMATCH", "TEMPLATE_UNAVAILABLE"),
+                    lines.stream().map(line -> com.lookahead.domain.LogCapture.keys(line).get("reason")).toList());
+            assertEquals("Ready-made template " + templateId + " of release " + PUBLICATION_VERSION
+                    + " cannot be used: its manifest entry is not a pro JSON asset that needs all its scopes and grants no content IDs; answered 503",
+                    lines.getFirst().getFormattedMessage());
+            assertEquals("Ready-made template " + templateId + " of release " + PUBLICATION_VERSION + " could not be prepared (IllegalArgumentException); answered 503",
+                    lines.getLast().getFormattedMessage());
+            lines.forEach(line -> assertEquals(ch.qos.logback.classic.Level.WARN, line.getLevel()));
+            log.containsNone("untrusted.invalid", "private-route");
+        }
+    }
+
     @Test void allowlistedFileCannotPretendToBeADifferentTemplate() throws Exception {
         assertInvalidTemplate(copy -> copy.put("templateId", "another-synthetic-d7-h1"));
     }

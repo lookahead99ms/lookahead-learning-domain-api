@@ -243,6 +243,25 @@ class PlatformReviewServiceTest {
         assertThat(Files.readString(day)).contains("\"Blaze Catalog\"").doesNotContain("Look Ahead Catalog");
     }
 
+    /** DLV-969 (owner, 2026-11-04): a damaged day file makes the review pages answer 503; the log says which file and why. */
+    @Test void aDamagedDayFileIsExplainedOnceWithoutItsContents() throws Exception {
+        Files.createDirectories(root.resolve("reviews"));
+        Files.writeString(root.resolve("reviews/2026-10-12.json"), "{\"schema\":\"other/v1\",\"day\":\"2026-10-12\",\"items\":[]}");
+        try (var log = com.lookahead.domain.LogCapture.start()) {
+            assertFailure(() -> reviews.list(owner, null), 503);
+            assertFailure(() -> reviews.list(owner, null), 503);
+            Files.writeString(root.resolve("reviews/2026-10-12.json"), "{ not json private-review-text");
+            assertFailure(() -> reviews.list(owner, null), 503);
+            var lines = log.lines("platform-review.read");
+            assertThat(lines).extracting(line -> com.lookahead.domain.LogCapture.keys(line).get("reason")).containsExactly("DAY_FILE_SCHEMA", "DAY_FILE_UNREADABLE");
+            assertThat(lines.getFirst().getFormattedMessage()).startsWith("A platform review day file (2026-10-12) cannot be read: it is not a ")
+                    .endsWith("; review pages answer 503 until it is repaired");
+            assertThat(lines.getLast().getFormattedMessage()).startsWith("A platform review day file cannot be read: it is not valid JSON for a review day file (");
+            assertThat(lines).allSatisfy(line -> assertThat(line.getLevel()).isEqualTo(ch.qos.logback.classic.Level.WARN));
+            log.containsNone("private-review-text");
+        }
+    }
+
     @Test void unconfiguredStorageAnswersUnavailable() {
         var author = mock(LocalAuthorAccess.class);
         when(author.allowed(owner)).thenReturn(true);

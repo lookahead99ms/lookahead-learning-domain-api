@@ -53,7 +53,7 @@ public final class CognitoTokenVerifier {
     private CognitoIdentity verify(Jwt jwt,boolean gatewayProven,boolean reuse) {
         try { return verifyClaims(jwt,gatewayProven,reuse); }
         catch(OAuth2AuthenticationException|IdentityUnavailableException expected){throw expected;}
-        catch(RuntimeException malformed){throw invalid();}
+        catch(RuntimeException malformed){unexpected("TOKEN_MALFORMED","the token's claims could not be checked; refused with 401",malformed);throw invalid("TOKEN_MALFORMED");}
     }
     /** The full OAuth scope set, or exactly the API sign-in scope when the Gateway is proven. */
     boolean scopesAccepted(Set<String> scopes,boolean gatewayProven){
@@ -64,30 +64,38 @@ public final class CognitoTokenVerifier {
         Set<String> scopes=Set.of();
         String scope=jwt.getClaimAsString("scope");
         if(scope!=null)scopes=Arrays.stream(scope.split(" ")).filter(s->!s.isEmpty()).collect(Collectors.toSet());
-        if(jwt.hasClaim("aud") || jwt.getTokenValue().length()>16384 || !settings.issuer().equals(jwt.getIssuer().toString())
-                || !"access".equals(jwt.getClaimAsString("token_use")) || !settings.clientId().equals(jwt.getClaimAsString("client_id"))
-                || !scopesAccepted(scopes,gatewayProven))throw invalid();
+        if(jwt.hasClaim("aud"))throw invalid("AUDIENCE_PRESENT");
+        if(jwt.getTokenValue().length()>16384)throw invalid("TOKEN_TOO_LONG");
+        if(!settings.issuer().equals(jwt.getIssuer().toString()))throw invalid("ISSUER_MISMATCH");
+        if(!"access".equals(jwt.getClaimAsString("token_use")))throw invalid("NOT_ACCESS_TOKEN");
+        if(!settings.clientId().equals(jwt.getClaimAsString("client_id")))throw invalid("CLIENT_MISMATCH");
+        if(!scopesAccepted(scopes,gatewayProven))throw invalid("SCOPES_MISSING");
         String subject=bounded(jwt.getSubject(),256),family=bounded(jwt.getClaimAsString("origin_jti"),256);
         Instant now=Instant.now(),auth=jwt.getClaimAsInstant("auth_time");
         if(jwt.getIssuedAt()==null || jwt.getExpiresAt()==null || !jwt.getExpiresAt().isAfter(now)
                 || jwt.getIssuedAt().isAfter(now.plusSeconds(60)) || !jwt.getExpiresAt().isAfter(jwt.getIssuedAt())
-                || auth==null || auth.isAfter(now.plusSeconds(60)))throw invalid();
+                || auth==null || auth.isAfter(now.plusSeconds(60)))throw invalid("TOKEN_TIMES_INVALID");
         try {
             var answer=providerAnswer(jwt,reuse);
             var attributes=answer.attributes();
-            if(!subject.equals(attributes.get("sub")))throw invalid();
+            if(!subject.equals(attributes.get("sub")))throw invalid("SUBJECT_MISMATCH");
             String username=bounded(answer.username(),320);
             String display=attributes.getOrDefault("name",username);
             if(display.length()>160)display=username.substring(0,Math.min(username.length(),160));
             String verifiedEmail=null;
             if("true".equals(attributes.get("email_verified")) && attributes.get("email")!=null) {
                 try {verifiedEmail=com.lookahead.domain.access.StaffAccessService.normalizeEmail(attributes.get("email"));}
-                catch(com.lookahead.learning.content.exception.AccountFailure invalidEmail){throw invalid();}
+                catch(com.lookahead.learning.content.exception.AccountFailure invalidEmail){throw invalid("EMAIL_INVALID");}
             }
             return new CognitoIdentity(settings.issuer(),subject,family,username,display,auth,verifiedEmail);
-        } catch(NotAuthorizedException|UserNotFoundException rejected){throw invalid();}
+        } catch(NotAuthorizedException|UserNotFoundException rejected){throw invalid("TOKEN_REJECTED");}
         catch(OAuth2AuthenticationException rejected){throw rejected;}
-        catch(RuntimeException unavailable){throw new IdentityUnavailableException();}
+        catch(RuntimeException unavailable){
+            // A failed GetUser already has its lookahead.upstream line; anything else would leave the 503 unexplained.
+            if(!(unavailable instanceof software.amazon.awssdk.core.exception.SdkException))
+                unexpected("IDENTITY_CHECK_FAILED","Cognito's answer could not be used; answered 503",unavailable);
+            throw new IdentityUnavailableException();
+        }
     }
     /** Cognito's GetUser for this token; with {@code reuse}, asked at most once a minute per token. Only successes are kept. */
     private Answer providerAnswer(Jwt jwt,boolean reuse){
@@ -113,6 +121,17 @@ public final class CognitoTokenVerifier {
         try {return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(token.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}
         catch(java.security.NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}
     }
-    private static String bounded(String value,int size){if(value==null||value.isBlank()||value.length()>size||value.codePoints().anyMatch(Character::isISOControl))throw invalid();return value;}
+    private static String bounded(String value,int size){if(value==null||value.isBlank()||value.length()>size||value.codePoints().anyMatch(Character::isISOControl))throw invalid("CLAIM_INVALID");return value;}
     public static OAuth2AuthenticationException invalid(){return new OAuth2AuthenticationException(new OAuth2Error("invalid_token"),"Invalid access token");}
+    /**
+     * DLV-969 (owner, 2026-11-04): as {@link #invalid()}, carrying a stable reason code (the error's description) that
+     * the 401 entry point logs ({@link com.lookahead.domain.security.AuthenticationFailures}); the caller never sees it.
+     */
+    public static OAuth2AuthenticationException invalid(String reason){return new OAuth2AuthenticationException(new OAuth2Error("invalid_token",reason,null),"Invalid access token");}
+    private static final com.lookahead.domain.Throttle UNEXPECTED=new com.lookahead.domain.Throttle();
+    private static void unexpected(String reason,String words,RuntimeException failure){
+        String types=com.lookahead.domain.Events.types(failure);
+        if(UNEXPECTED.due(reason+"|"+types))com.lookahead.domain.Events.failed(com.lookahead.domain.Events.EVENT,"sign-in.check",reason)
+            .addKeyValue("error.type",types).log("Sign-in token check failed: {} ({})",words,types);
+    }
 }

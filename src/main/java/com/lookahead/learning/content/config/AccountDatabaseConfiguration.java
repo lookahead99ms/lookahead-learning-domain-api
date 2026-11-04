@@ -1,5 +1,6 @@
 package com.lookahead.learning.content.config;
 
+import com.lookahead.domain.StartupChecks;
 import com.lookahead.domain.compatibility.LegacyStorageNames;
 import com.zaxxer.hikari.HikariDataSource;
 import org.springframework.beans.factory.annotation.Value;
@@ -75,15 +76,20 @@ public class AccountDatabaseConfiguration {
             @Value("${spring.datasource.hikari.connection-timeout:3000}") long connectionTimeout,
             @Value("${spring.datasource.hikari.validation-timeout:2000}") long validationTimeout,
             @Value("${app.deployment-environment:local}") String environment) {
-        if (!LegacyStorageNames.RUNTIME_ROLE.equals(username) || password == null || password.isBlank())
-            throw new IllegalStateException("Accounts require the dedicated runtime database role");
+        if (!LegacyStorageNames.RUNTIME_ROLE.equals(username))
+            throw StartupChecks.refuse("spring.datasource.username", "DATABASE_ROLE_INVALID", "is not the dedicated runtime role; leave it unset",
+                    "Accounts require the dedicated runtime database role");
+        if (password == null || password.isBlank())
+            throw StartupChecks.refuse("spring.datasource.password (LOOKAHEAD_DOMAIN_DB_PASSWORD)", "SECRET_MISSING", "is empty",
+                    "Accounts require the dedicated runtime database role");
         validateJdbcUrl(url);
         HikariDataSource source = new HikariDataSource();
         source.setJdbcUrl(url);
         source.setUsername(username);
         source.setPassword(password);
         if (!Set.of("local", "dev", "prod").contains(environment))
-            throw new IllegalStateException("Explicit database environment required");
+            throw StartupChecks.refuse("app.deployment-environment (LOOKAHEAD_ENVIRONMENT)", "ENVIRONMENT_INVALID", "must be local, dev or prod",
+                    "Explicit database environment required");
         source.setConnectionInitSql(CONNECTION_GUARD_SQL + ("local".equals(environment) ? "" : CLOUD_AUDIT_GUARD_SQL));
         // Pool acquisition does not bound an already borrowed connection's socket read.
         source.setDataSourceProperties(com.lookahead.domain.database.DomainDatabaseConnections.timeoutProperties());
@@ -95,9 +101,13 @@ public class AccountDatabaseConfiguration {
 
     /** URL properties take precedence over pgJDBC's separate credentials and timeout properties. */
     public static void validateJdbcUrl(String url) {
+        // DLV-969 (owner, 2026-11-04): the refusal names the rule broken; never the URL or a parameter (it may hold a secret).
+        String problem = "does not start with jdbc:postgresql://";
         try {
             if (url == null || !url.startsWith("jdbc:postgresql://")) throw new IllegalArgumentException();
+            problem = "could not be parsed as a URL";
             URI parsed = URI.create(url.substring("jdbc:".length()));
+            problem = "must name one host, an optional port, a database name and no user or password";
             if (parsed.getHost() == null || parsed.getUserInfo() != null || parsed.getRawFragment() != null
                     || parsed.getPort() == 0 || parsed.getPort() > 65535
                     || !parsed.getRawPath().matches("/[A-Za-z0-9_][A-Za-z0-9_-]{0,62}"))
@@ -106,21 +116,25 @@ public class AccountDatabaseConfiguration {
             if (query == null) return;
             Set<String> names = new HashSet<>();
             for (String parameter : query.split("&", -1)) {
+                problem = "has a query parameter other than one sslmode and one sslrootcert, or one without a value";
                 String[] parts = parameter.split("=", -1);
                 if (parts.length != 2 || parts[1].isEmpty()) throw new IllegalArgumentException();
                 String name = URLDecoder.decode(parts[0], StandardCharsets.UTF_8);
                 String value = URLDecoder.decode(parts[1], StandardCharsets.UTF_8);
                 if (!parts[0].equals(name) || !names.add(name)) throw new IllegalArgumentException();
                 if (name.equals("sslmode")) {
+                    problem = "has an sslmode other than disable, allow, prefer, require, verify-ca or verify-full";
                     if (!Set.of("disable", "allow", "prefer", "require", "verify-ca", "verify-full").contains(value))
                         throw new IllegalArgumentException();
                 } else if (name.equals("sslrootcert")) {
+                    problem = "has an sslrootcert that is not an absolute path";
                     if (!value.startsWith("/") || value.codePoints().anyMatch(Character::isISOControl))
                         throw new IllegalArgumentException();
                 } else throw new IllegalArgumentException();
             }
         } catch (IllegalArgumentException invalid) {
             // Do not retain an exception or URL that could contain injected credentials.
+            StartupChecks.refused(com.lookahead.domain.database.DomainDatabaseConnections.URL_SETTING, "JDBC_URL_INVALID", problem);
             throw new IllegalStateException("Use an explicit single-host PostgreSQL JDBC URL; only sslmode and an absolute sslrootcert path are supported");
         }
     }

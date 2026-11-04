@@ -24,8 +24,10 @@ public final class CloudAdmissionCleanup {
     public void run() {
         try {expire();}
         catch(RuntimeException failure){
-            Events.failed(Events.EVENT,"admission.cleanup","UNEXPECTED").addKeyValue("error.type",Events.types(failure))
-                .log("Admission cleanup skipped this hour: {}; the next run tries again",Events.types(failure));
+            String state=Events.sqlState(failure);
+            var line=Events.failed(Events.EVENT,"admission.cleanup","UNEXPECTED").addKeyValue("error.type",Events.types(failure));
+            if(state!=null)line=line.addKeyValue("db.sqlState",state);
+            line.log("Admission cleanup skipped this hour: {}{}; the next run tries again",Events.types(failure),state==null?"":" (SQL state "+state+")");
         }
     }
     /**

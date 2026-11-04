@@ -30,7 +30,12 @@ public class ReviewArtifactCatalog {
                         || loaded.putIfAbsent(artifact.artifactId(),artifact)!=null) throw new IllegalArgumentException();
             }
             artifacts=Collections.unmodifiableMap(loaded);
-        } catch(Exception failure) { throw new IllegalStateException("Author review manifest is invalid or unavailable"); }
+        } catch(Exception failure) {
+            com.lookahead.domain.StartupChecks.refused("app.author-reviews.manifest (LOOKAHEAD_AUTHOR_REVIEW_MANIFEST)", "REVIEW_MANIFEST_INVALID",
+                    "could not be read, or is not an absolute path to a JSON list of at most 100 entries of artifactId, artifactVersion,"
+                    + " contentHash and ticketId (64 KB at most)", failure);
+            throw new IllegalStateException("Author review manifest is invalid or unavailable");
+        }
     }
     public List<Artifact> list() { return List.copyOf(artifacts.values()); }
     public Artifact require(String id) {

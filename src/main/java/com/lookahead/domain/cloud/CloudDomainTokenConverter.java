@@ -24,7 +24,25 @@ public final class CloudDomainTokenConverter implements Converter<Jwt,AbstractAu
         try {
             var principal=registry.authenticate(identity,proof);
             return UsernamePasswordAuthenticationToken.authenticated(principal,null,List.of(new SimpleGrantedAuthority("SCOPE_account"),new SimpleGrantedAuthority("SCOPE_content"),new SimpleGrantedAuthority("SCOPE_support")));
-        } catch(AccountFailure denied){if(denied.status()>=500)throw new IdentityUnavailableException();throw CognitoTokenVerifier.invalid();}
-        catch(RuntimeException unavailable){throw new IdentityUnavailableException();}
+        } catch(AccountFailure denied){
+            if(denied.status()>=500){unavailable(denied.code(),null);throw new IdentityUnavailableException();}
+            throw CognitoTokenVerifier.invalid(com.lookahead.domain.Events.safe(denied.code()));
+        }
+        catch(RuntimeException unavailable){unavailable("UNEXPECTED",unavailable);throw new IdentityUnavailableException();}
+    }
+
+    /*
+     * DLV-969 (owner, 2026-11-04): the 401 or 503 of an API call used to say only AUTHENTICATION_REQUIRED or
+     * IDENTITY_UNAVAILABLE. A refusal carries its code to the 401 entry point (AuthenticationFailures); a failure gets one
+     * line per reason when it starts and once a minute while it lasts.
+     */
+    private static final com.lookahead.domain.Throttle THROTTLE=new com.lookahead.domain.Throttle();
+    private static void unavailable(String code,RuntimeException failure){
+        String types=failure==null?null:com.lookahead.domain.Events.types(failure),state=failure==null?null:com.lookahead.domain.Events.sqlState(failure);
+        if(!THROTTLE.due("failed|"+code+"|"+types))return;
+        var line=com.lookahead.domain.Events.failed(com.lookahead.domain.Events.EVENT,"sign-in.check",code);
+        if(types!=null)line=line.addKeyValue("error.type",types);
+        if(state!=null)line=line.addKeyValue("db.sqlState",state);
+        line.log("API call answered 503: the sign-in check could not complete ({}{})",types==null?code:types,state==null?"":", SQL state "+state);
     }
 }

@@ -1,10 +1,14 @@
 package com.lookahead.domain;
 
+import com.lookahead.domain.HealthReport.Diagnosis;
 import com.lookahead.domain.compatibility.LegacyStorageNames;
 import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import java.time.Clock;
+import java.time.Duration;
+import java.util.List;
 
 @Component("domainDatabase")
 public class DomainDatabaseHealthIndicator implements HealthIndicator {
@@ -85,18 +89,75 @@ public class DomainDatabaseHealthIndicator implements HealthIndicator {
             CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE']) p(privilege)
             WHERE NOT has_table_privilege(current_user,t.name,p.privilege))
         """;
+    /** Migrations each check needs; the diagnosis names the ones missing. */
+    static final List<String> BASE_MIGRATIONS = List.of("2"), CLOUD_MIGRATIONS = List.of("4", "17", "18", "19", "20");
+    static final List<String> BASE_TABLES = List.of("public.author_review_events", "public." + LegacyStorageNames.SUBJECTS_TABLE,
+            "public.account_grants", "public.plans", "public.plan_versions", "public.plan_activity", "public.mutation_receipts",
+            "public.support_receipts");
+    static final List<String> CLOUD_TABLES = List.of("public.cloud_accounts", "public.cloud_admission_events", "public.staff_aliases",
+            "public.cloud_account_states", "public.cloud_sign_ins", "public.cloud_sign_in_challenges", "public.cloud_identities",
+            "public.cloud_merge_tokens");
+    /** While still DOWN, the reason is written again this often, so every failed deploy attempt shows it. */
+    static final Duration REPEAT = HealthReport.REPEAT;
+
     private final JdbcTemplate jdbc;
     private final boolean cloud;
-    public DomainDatabaseHealthIndicator(JdbcTemplate jdbc) { this.jdbc = jdbc; this.cloud=false; }
+    private final HealthReport report;
+
+    public DomainDatabaseHealthIndicator(JdbcTemplate jdbc) { this(jdbc, false, Clock.systemUTC()); }
     @org.springframework.beans.factory.annotation.Autowired
     public DomainDatabaseHealthIndicator(JdbcTemplate jdbc,org.springframework.core.env.Environment environment) {
-        this.jdbc=jdbc;this.cloud=java.util.Set.of("dev","prod").contains(environment.getProperty("app.deployment-environment",""));
+        this(jdbc, java.util.Set.of("dev","prod").contains(environment.getProperty("app.deployment-environment","")), Clock.systemUTC());
     }
+    DomainDatabaseHealthIndicator(JdbcTemplate jdbc, boolean cloud, Clock clock) {
+        this.jdbc = jdbc; this.cloud = cloud;
+        this.report = new HealthReport("database", "the database checks pass; this task can take traffic", clock);
+    }
+
+    /** The answer carries no details (callers learn only UP or DOWN); the log says why, without connection details. */
     @Override public Health health() {
+        Diagnosis down;
         try {
             Boolean ready = jdbc.queryForObject(HEALTH_SQL, Boolean.class);
-            if(Boolean.TRUE.equals(ready)&&cloud)ready=jdbc.queryForObject(CLOUD_SQL,Boolean.class);
-            return Boolean.TRUE.equals(ready) ? Health.up().build() : Health.down().build();
-        } catch (Exception error) { return Health.down().build(); }
+            down = Boolean.TRUE.equals(ready) ? null : diagnose(BASE_MIGRATIONS, BASE_TABLES);
+            if (down == null && cloud)
+                down = Boolean.TRUE.equals(jdbc.queryForObject(CLOUD_SQL, Boolean.class)) ? null : diagnose(CLOUD_MIGRATIONS, CLOUD_TABLES);
+        } catch (Exception error) {
+            down = new Diagnosis("DATABASE_UNAVAILABLE", "the database check could not run: " + Events.types(error) + sqlState(error));
+        }
+        report.report(down);
+        return down == null ? Health.up().build() : Health.down().build();
+    }
+
+    /**
+     * DLV-969 (owner, 2026-11-04): a DOWN readiness used to leave nothing in the log, so a release deployed before its
+     * migrations failed its health checks silently. Missing migrations come first (the usual cause), then missing
+     * tables, else the role or its grants differ from what this release checks for.
+     */
+    Diagnosis diagnose(List<String> migrations, List<String> tables) {
+        try {
+            List<String> missing = jdbc.queryForList("SELECT v FROM unnest(ARRAY[" + quoted(migrations) + "]) v"
+                    + " WHERE NOT EXISTS (SELECT 1 FROM public.flyway_schema_history h WHERE h.version=v AND h.success) ORDER BY v::int", String.class);
+            if (!missing.isEmpty())
+                return new Diagnosis("MIGRATIONS_MISSING", "the database is missing migration(s) " + String.join(", ", missing)
+                        + "; run Flyway Utils migrate and verify before deploying this release");
+            List<String> absent = jdbc.queryForList("SELECT t FROM unnest(ARRAY[" + quoted(tables) + "]) t WHERE to_regclass(t) IS NULL", String.class);
+            if (!absent.isEmpty())
+                return new Diagnosis("TABLES_MISSING", "the database is missing table(s) " + String.join(", ", absent));
+            return new Diagnosis("GRANTS_DIFFER", "every migration and table is there, but the runtime role, its ownership or its"
+                    + " table privileges differ from what this release checks for (DomainDatabaseHealthIndicator)");
+        } catch (Exception error) {
+            return new Diagnosis("DATABASE_CHECK_FAILED", "the check failed and its diagnosis could not run: " + Events.types(error) + sqlState(error));
+        }
+    }
+
+    private static String quoted(List<String> values) {
+        return values.stream().map(value -> "'" + value + "'").collect(java.util.stream.Collectors.joining(","));
+    }
+
+    private static String sqlState(Throwable error) {
+        for (Throwable at = error; at != null; at = at.getCause())
+            if (at instanceof java.sql.SQLException sql && sql.getSQLState() != null) return " (SQL state " + sql.getSQLState() + ")";
+        return "";
     }
 }

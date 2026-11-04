@@ -1,5 +1,7 @@
 package com.lookahead.domain.publication;
 
+import com.lookahead.domain.Events;
+import com.lookahead.domain.StartupChecks;
 import com.lookahead.learning.content.service.ProtectedContentPolicy;
 import java.io.*;
 import java.nio.file.*;
@@ -47,18 +49,23 @@ public final class PublicationBootstrap {
 
     public PublicationLocation load(PublicationSettings settings, PublicationObjectSource source) {
         Path stage = null;
+        String step = "preparing the private publication folder", release = settings.live() ? "live" : settings.releaseId();
         try {
             Path parent = settings.directory();
             for (Path cursor = parent; cursor != null; cursor = cursor.getParent())
                 require(!Files.isSymbolicLink(cursor), "Publication directory cannot contain symlinks");
             Files.createDirectories(parent);
             stage = Files.createTempDirectory(parent, "publication-", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+            if (settings.live()) step = "listing live/ in the publication bucket to find the serving release";
             Selection selected = settings.live() ? discoverLive(source)
                     : new Selection(PublicationSettings.LIVE_PREFIX + settings.releaseId() + "/", settings.releaseId(), settings.manifestSha256(), settings.archiveSha256());
             String prefix = selected.prefix();
+            release = selected.releaseId();
+            step = "reading manifest.json";
             byte[] manifestBytes;
             try (InputStream stream = source.open(prefix + "manifest.json")) { manifestBytes = stream.readNBytes(MAX_FILE + 1); }
             require(manifestBytes.length <= MAX_FILE && (selected.manifestSha256() == null || sha(manifestBytes).equals(selected.manifestSha256())), "Transport manifest digest mismatch");
+            step = "checking manifest.json";
             JsonNode manifest = mapper.readTree(manifestBytes);
             String archiveSha256 = selected.archiveSha256() == null ? manifest.path("archiveSha256").asText() : selected.archiveSha256();
             require(manifest.path("schemaVersion").asText().equals("lookahead-publication-archive/v1")
@@ -67,11 +74,14 @@ public final class PublicationBootstrap {
                     && manifest.path("archiveSha256").asText().equals(archiveSha256), "Transport contract mismatch");
             Map<String, Entry> expected = inventory(manifest);
             require(expected.containsKey("publication.json") && expected.containsKey("account-catalog.json"), "Complete release requires publication and trusted account catalog");
+            step = "downloading publication.tar.gz";
             Path archive = stage.resolve("download.tar.gz");
             try (InputStream stream = source.open(prefix + "publication.tar.gz"); OutputStream output = Files.newOutputStream(archive, StandardOpenOption.CREATE_NEW)) {
                 require(copy(stream, output, MAX_BYTES, null) <= MAX_BYTES, "Compressed archive exceeds bound");
             }
+            step = "checking the archive digest";
             require(sha(archive).equals(archiveSha256), "Archive digest mismatch");
+            step = "extracting the archive";
             Path extracted = Files.createDirectory(stage.resolve("release"));
             Set<String> seen = new HashSet<>();
             try (var compressed = Files.newInputStream(archive);
@@ -94,6 +104,7 @@ public final class PublicationBootstrap {
                 }
             }
             require(seen.equals(expected.keySet()), "Incomplete archive");
+            step = "checking the publication and the trusted catalog";
             byte[] publicationBytes = Files.readAllBytes(extracted.resolve("publication.json"));
             byte[] catalogBytes = Files.readAllBytes(extracted.resolve("account-catalog.json"));
             MessageDigest contentDigest = MessageDigest.getInstance("SHA-256");
@@ -114,19 +125,45 @@ public final class PublicationBootstrap {
             }
             require(approved.equals(seen), "Unapproved archive inventory");
             require(mapper.readTree(catalogBytes).path("schemaVersion").asText().equals("account-catalog/v1"), "Invalid trusted catalog");
+            step = "locking the extracted files read-only";
             Files.delete(archive);
             try (var paths = Files.walk(extracted)) {
                 for (Path path : paths.sorted(Comparator.reverseOrder()).toList())
                     Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(Files.isDirectory(path) ? "r-x------" : "r--------"));
             }
+            Events.success(StartupChecks.LOG, "publication.load").addKeyValue("release.tag", release).addKeyValue("count", seen.size())
+                    .log("Content release {} loaded: {} files verified against its manifest ({})", release, seen.size(),
+                            settings.live() ? "the highest complete release under live/" : "the pinned release");
             return new PublicationLocation(extracted.resolve("publication.json").toString(), extracted.resolve("content").toString(),
                     extracted.resolve("account-catalog.json").toString(), true, settings.cacheBytes(), settings.cacheEntries());
         } catch (Exception failure) {
             // A partial stage is never exposed. Do not log SDK response bodies or secret material.
             if (stage != null) cleanup(stage);
+            refused(release, step, failure);
             throw new IllegalStateException("Selected cloud publication failed startup verification");
         }
     }
+
+    /**
+     * DLV-969 (owner, 2026-11-04): why the release could not load, before startup stops: the step, then this class's own
+     * check text, or S3's HTTP status and error code, or the exception types. Never a bucket, key, path or message.
+     */
+    private static void refused(String release, String step, Exception failure) {
+        boolean ours = failure instanceof Rejected;
+        Integer status = Events.status(failure);
+        String code = Events.code(failure);
+        String detail = ours ? failure.getMessage()
+                : status != null ? "S3 answered HTTP " + status + (code == null ? "" : " " + code) + " (" + Events.types(failure) + ")"
+                : Events.types(failure);
+        var line = Events.failed(StartupChecks.LOG, "publication.load", ours ? "PUBLICATION_INVALID" : "PUBLICATION_UNAVAILABLE")
+                .addKeyValue("release.tag", release).addKeyValue("error.type", Events.types(failure));
+        if (status != null) line = line.addKeyValue("upstream.status", status);
+        if (code != null) line = line.addKeyValue("upstream.code", code);
+        line.log("Startup refused: content release {} could not be loaded while {}: {}; the app stops before it takes traffic", release, step, detail);
+    }
+
+    /** A check of this class failed; its text is fixed here and safe to log. */
+    static final class Rejected extends IllegalArgumentException { Rejected(String message) { super(message); } }
 
     /**
      * The serving release is the complete folder under live/ with the highest calendar tag. Promotion
@@ -188,7 +225,7 @@ public final class PublicationBootstrap {
         try (InputStream input = Files.newInputStream(path)) { copy(input, OutputStream.nullOutputStream(), MAX_BYTES, digest); }
         return HexFormat.of().formatHex(digest.digest());
     }
-    private static void require(boolean condition, String message) { if (!condition) throw new IllegalArgumentException(message); }
+    private static void require(boolean condition, String message) { if (!condition) throw new Rejected(message); }
     private static void cleanup(Path stage) {
         try (var paths = Files.walk(stage)) {
             var all = paths.toList();
