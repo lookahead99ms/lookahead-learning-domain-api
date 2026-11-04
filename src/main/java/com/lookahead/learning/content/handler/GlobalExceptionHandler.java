@@ -54,7 +54,13 @@ public class GlobalExceptionHandler {
 
     /** The caller chooses the method and path; a line break in them must not forge a second log line. */
     static String forLog(String value) {
-        return value == null ? "" : value.replaceAll("[\\r\\n]", "_");
+        return value == null ? "" : redact(value).replaceAll("[\\r\\n]", "_");
+    }
+
+    private static final java.util.regex.Pattern MERGE_TOKEN = java.util.regex.Pattern.compile("/account/merge/[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])");
+    /** DLV-969 S36: a merge link's single-use token never reaches a log line or an error body; the rest of the path does. */
+    public static String redact(String path) {
+        return path == null ? null : MERGE_TOKEN.matcher(path).replaceAll("/account/merge/[token]");
     }
 
     private ResponseEntity<ApiError> error(
@@ -64,7 +70,7 @@ public class GlobalExceptionHandler {
             List<String> details) {
         ApiError body = new ApiError(
                 status.value(), status.getReasonPhrase(), message,
-                request.getRequestURI(), details, Instant.now());
+                redact(request.getRequestURI()), details, Instant.now());
         return ResponseEntity.status(status).body(body);
     }
 }

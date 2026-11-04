@@ -120,13 +120,14 @@ public class DevTestSessions {
         return new AccountPrincipal(target.accountId(), target.username(), target.displayName(), true, false, null);
     }
 
-    /** "owner", "co-author" or "admin" (a dual-role person gets the lower), or "" for anyone else. */
+    /** "owner", "co-author" or "admin" (a dual-role person gets the lower), or "" for anyone else. Any linked sign-in (S36) counts. */
     private String holderRole(String subject) {
         if (subject == null || subject.isBlank() || subject.length() > 256) return "";
         var holders = jdbc.query("""
-                SELECT c.account_id,c.author_access FROM cloud_accounts c WHERE c.issuer=? AND c.subject=? AND c.admitted AND c.enabled
+                SELECT c.account_id,c.author_access FROM cloud_accounts c WHERE c.account_id IN (%s) AND c.admitted AND c.enabled
                 AND NOT EXISTS (SELECT 1 FROM cloud_account_states s WHERE s.account_id=c.account_id)
-                """, (row, n) -> new Object[]{row.getObject(1, UUID.class), row.getBoolean(2)}, issuer, subject);
+                """.formatted(com.lookahead.domain.cloud.CloudIdentities.ACCOUNT_OF_IDENTITY),
+                (row, n) -> new Object[]{row.getObject(1, UUID.class), row.getBoolean(2)}, issuer, subject, issuer, subject);
         if (holders.isEmpty()) return "";
         if ((Boolean) holders.getFirst()[1]) return "owner";
         var roles = roles((UUID) holders.getFirst()[0]);

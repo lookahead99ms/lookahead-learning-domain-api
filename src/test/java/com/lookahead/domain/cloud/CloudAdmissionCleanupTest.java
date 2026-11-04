@@ -38,6 +38,7 @@ class CloudAdmissionCleanupTest {
         assertThat(cleanup.expire()).isEqualTo(2);
         for(UUID id:List.of(first,second)){
             verify(jdbc).update(contains("INSERT INTO cloud_admission_events"),any(UUID.class),eq(id),eq("https://issuer.invalid"),eq("subject-"+id));
+            verify(jdbc).update(eq("DELETE FROM cloud_identities WHERE account_id=?"),eq(id));
             verify(jdbc).update(eq("DELETE FROM cloud_accounts WHERE account_id=? AND admitted=false"),eq(id));
             verify(jdbc).update(eq("DELETE FROM platform_subjects WHERE id=?"),eq(id));
         }
@@ -72,7 +73,7 @@ class CloudAdmissionCleanupTest {
         try(var log=com.lookahead.domain.LogCapture.start()){
             cleanup.run();
             assertThat(log.lines("admission.expired")).extracting(line->com.lookahead.domain.LogCapture.keys(line).get("target.id")).containsExactly(first,second);
-            assertThat(log.lines("admission.expired").getFirst().getFormattedMessage()).isEqualTo("Waiting account "+first+" expired: not admitted within 48 h, removed");
+            assertThat(log.lines("admission.expired").getFirst().getFormattedMessage()).isEqualTo("Waiting account "+first+" expired: not admitted within 48 h, removed with its sign-in identities");
             var run=log.only("admission.cleanup");
             assertThat(run.getFormattedMessage()).isEqualTo("Admission cleanup removed 2 expired waiting account(s)");
             assertThat(com.lookahead.domain.LogCapture.keys(run)).containsEntry("count",2).containsEntry("event.outcome","success");

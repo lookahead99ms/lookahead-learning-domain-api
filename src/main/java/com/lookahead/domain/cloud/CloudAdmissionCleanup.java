@@ -43,15 +43,23 @@ public final class CloudAdmissionCleanup {
                 (r,i)->new Waiting(r.getObject("account_id",UUID.class),r.getString("issuer"),r.getString("subject")),(int)WAITING_EXPIRY.toHours());
             for(Waiting row:expired){
                 jdbc.update("INSERT INTO cloud_admission_events(id,account_id,issuer,subject,actor_id,action,roles) VALUES(?,?,?,?,NULL,'expire','[]'::jsonb)",UUID.randomUUID(),row.accountId,row.issuer,row.subject);
-                jdbc.update("DELETE FROM cloud_accounts WHERE account_id=? AND admitted=false",row.accountId);
-                jdbc.update("DELETE FROM platform_subjects WHERE id=?",row.accountId);
+                deleteWaiting(jdbc,row.accountId);
                 Events.afterCommit(()->Events.success(Events.EVENT,"admission.expired").addKeyValue("target.id",row.accountId)
-                    .log("Waiting account {} expired: not admitted within {} h, removed",row.accountId,WAITING_EXPIRY.toHours()));
+                    .log("Waiting account {} expired: not admitted within {} h, removed with its sign-in identities",row.accountId,WAITING_EXPIRY.toHours()));
             }
             int removed=expired.size();
             Events.afterCommit(()->Events.success(Events.EVENT,"admission.cleanup").addKeyValue("count",removed)
                 .log("Admission cleanup removed {} expired waiting account(s)",removed));
             return removed;
         });
+    }
+    /**
+     * Deletes one waiting account and every identity still on it (V19 also cascades, for older releases); the caller has
+     * recorded the event. The 48-hour expiry and a merge (DLV-969 S36) remove a waiting account only this way.
+     */
+    public static void deleteWaiting(JdbcTemplate jdbc,UUID account){
+        jdbc.update("DELETE FROM cloud_identities WHERE account_id=?",account);
+        jdbc.update("DELETE FROM cloud_accounts WHERE account_id=? AND admitted=false",account);
+        jdbc.update("DELETE FROM platform_subjects WHERE id=?",account);
     }
 }

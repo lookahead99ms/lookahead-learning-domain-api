@@ -155,12 +155,14 @@ public class TestAccountsService {
         admitTestAccount(entry.accountId(),entry.cloudUsername(),entry.firstName(),owner.accountId());
         defaults(entry,owner.accountId(),"scenario",Instant.now());
     }
-    /** DLV-969 S35: the admitted cloud_accounts row of a DEV test account, on the test issuer, and its 'admit' event. */
+    /** DLV-969 S35: the admitted cloud_accounts row of a DEV test account, on the test issuer, its identity (S36) and its 'admit' event. */
     void admitTestAccount(UUID id,String username,String displayName,UUID admittedBy){
         jdbc.update("""
                 INSERT INTO cloud_accounts(account_id,issuer,subject,admitted,enabled,author_access,username,display_name,requested_at,admitted_at,admitted_by)
                 VALUES (?,?,?,true,true,false,?,?,clock_timestamp(),clock_timestamp(),?)
                 """,id,TestAccountRoster.TEST_ISSUER,id.toString(),username,displayName,admittedBy);
+        // DLV-969 S36: its one identity, on the test issuer; a test account is never a link candidate.
+        com.lookahead.domain.cloud.CloudIdentities.insert(jdbc,id,TestAccountRoster.TEST_ISSUER,id.toString(),username,null,"first_contact");
         jdbc.update("INSERT INTO cloud_admission_events(id,account_id,issuer,subject,actor_id,action,roles) VALUES (?,?,?,?,?,'admit','[]'::jsonb)",
                 UUID.randomUUID(),id,TestAccountRoster.TEST_ISSUER,id.toString(),admittedBy);
     }

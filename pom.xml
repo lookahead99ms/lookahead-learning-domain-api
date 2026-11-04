@@ -36,6 +36,16 @@
                 <exclusion><groupId>software.amazon.awssdk</groupId><artifactId>apache5-client</artifactId></exclusion>
             </exclusions>
         </dependency>
+        <!-- DLV-969 S36: the merge-link email (SesEmailSender), only when app.email.enabled=true. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sesv2</artifactId>
+            <version>2.55.12</version>
+            <exclusions>
+                <exclusion><groupId>software.amazon.awssdk</groupId><artifactId>netty-nio-client</artifactId></exclusion>
+                <exclusion><groupId>software.amazon.awssdk</groupId><artifactId>apache5-client</artifactId></exclusion>
+            </exclusions>
+        </dependency>
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>s3</artifactId>

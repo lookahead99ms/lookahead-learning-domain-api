@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 /**
- * DLV-969 V18 against the disposable cloud-auth database: the full Domain schema (V1-V18) in a fresh schema, the
+ * DLV-969 V18 against the disposable cloud-auth database: the full Domain schema (V1-V20) in a fresh schema, the
  * sign-in pool mocked. Disable, Enable and Delete; the permanent role labels; the V18 grants and triggers.
  */
 @EnabledIfEnvironmentVariable(named="CLOUD_AUTH_TEST_DATABASE_URL",matches=".+")
@@ -50,6 +50,8 @@ class AccountRemovalDatabaseTest {
             if(file.startsWith("V17"))seedStaffBeforeV18();
         }
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V18__access_removal_and_staff_aliases.sql")));
+        jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V19__cloud_identities.sql")));
+        jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V20__cloud_merge_tokens.sql")));
         repository=new StaffAccessRepository(jdbc,json);
         staff=new StaffAccessService(repository,new LocalAuthorAccess(new MockEnvironment().withProperty("app.deployment-environment","dev")),mock(SnapshotValidator.class));
         ownerId=account("owner-subject","owner@example.invalid",true,true);
@@ -198,16 +200,62 @@ class AccountRemovalDatabaseTest {
             service.disable(owner,id,new AccountRemovalService.Confirmation("DISABLE"));
             verify(pool,times(2)).disable("down@example.invalid");assertThat(events(id,"disable")).isEqualTo(1);
             // DLV-969: the half-done case says what was saved and that a retry repeats only the pool call; the retry says it was repeated.
+            // DLV-969 S36: the line also says how many pool users (sign-in methods) the retry has to cover.
             assertThat(log.lines("account.disable")).extracting(line->line.getFormattedMessage()).containsExactly(
-                "Account "+id+": disable saved in the database, but the sign-in pool call failed; a retry of the same action repeats only the pool call",
-                "Account "+id+" was already disabled; the sign-in pool call was repeated and confirmed");
+                "Account "+id+": disable saved in the database, but the sign-in pool call failed for one of its 1 pool user(s); a retry of the same action repeats only the pool calls",
+                "Account "+id+" was already disabled; the sign-in pool call was repeated and confirmed for 1 pool user(s)");
             assertThat(com.lookahead.domain.LogCapture.keys(log.lines("account.disable").getFirst())).containsEntry("event.outcome","failure")
-                .containsEntry("reason","SIGN_IN_PROVIDER_UNAVAILABLE").containsEntry("target.id",id).containsEntry("account.id",ownerId);
+                .containsEntry("reason","SIGN_IN_PROVIDER_UNAVAILABLE").containsEntry("target.id",id).containsEntry("account.id",ownerId).containsEntry("count",1);
+            assertThat(com.lookahead.domain.LogCapture.keys(log.lines("account.disable").getLast())).containsEntry("event.outcome","success").containsEntry("repeated",true).containsEntry("count",1);
             assertThat(log.lines("account.disable").getFirst().getLevel()).isEqualTo(ch.qos.logback.classic.Level.WARN);
             log.containsNone("down@example.invalid","pool-down");
         }
     }
 
+    /** DLV-969 S36: an account with a Google and a password sign-in (V19 cloud_identities), oldest first. */
+    UUID linkedAccount(String subject,String gmail){
+        UUID id=account(subject,"Google_"+subject,true,false);
+        jdbc.update("UPDATE cloud_accounts SET verified_email=? WHERE account_id=?",gmail,id);
+        com.lookahead.domain.cloud.CloudIdentities.insert(jdbc,id,ISSUER,subject,"Google_"+subject,gmail,"first_contact");
+        jdbc.update("INSERT INTO cloud_identities(id,account_id,issuer,subject,username,provider,verified_email,linked_at,link_source) VALUES (?,?,?,?,?,'cognito',?,clock_timestamp()+interval '1 second','linked')",
+            UUID.randomUUID(),id,ISSUER,subject+"-password",gmail,gmail);
+        return id;
+    }
+    @Test void disableEnableAndDeleteTellThePoolOnceForEverySignInOfTheAccount(){
+        UUID id=linkedAccount("two-sign-ins","two@gmail.invalid");
+        var service=service(pool);var order=inOrder(pool);
+        service.disable(owner,id,new AccountRemovalService.Confirmation("DISABLE"));
+        order.verify(pool).disable("Google_two-sign-ins");order.verify(pool).disable("two@gmail.invalid");
+        service.enable(owner,id);
+        verify(pool).enable("Google_two-sign-ins");verify(pool).enable("two@gmail.invalid");
+        service.remove(owner,id,new AccountRemovalService.Confirmation("DELETE"));
+        verify(pool).remove("Google_two-sign-ins");verify(pool).remove("two@gmail.invalid");
+        verify(pool,times(2)).disable(anyString());verify(pool,times(2)).enable(anyString());verify(pool,times(2)).remove(anyString());
+        // The identities stay with the deleted account: a retry tells the pool about every user again, and a sign-in the
+        // pool has not yet removed still finds a deleted account rather than starting a new one.
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_identities WHERE account_id=?",Integer.class,id)).isEqualTo(2);
+        service.remove(owner,id,new AccountRemovalService.Confirmation("DELETE"));
+        verify(pool,times(2)).remove("Google_two-sign-ins");verify(pool,times(2)).remove("two@gmail.invalid");
+        assertThat(events(id,"remove")).isEqualTo(1);
+    }
+    @Test void aPoolFailureOnTheSecondSignInAsksForARetryThatRepeatsBoth(){
+        UUID id=linkedAccount("second-fails","second@gmail.invalid");
+        doThrow(new AccountFailure(503,"SIGN_IN_PROVIDER_UNAVAILABLE","retry")).doNothing().when(pool).disable("second@gmail.invalid");
+        var service=service(pool);
+        try(var log=com.lookahead.domain.LogCapture.start()){
+            failsWith(()->service.disable(owner,id,new AccountRemovalService.Confirmation("DISABLE")),503,"SIGN_IN_PROVIDER_UNAVAILABLE");
+            assertThat(state(id)).isEqualTo("disabled");
+            service.disable(owner,id,new AccountRemovalService.Confirmation("DISABLE"));
+            // DLV-969 S36 log: the owner sees that two pool users are involved and that the retry covered both.
+            assertThat(log.lines("account.disable")).extracting(line->line.getFormattedMessage()).containsExactly(
+                "Account "+id+": disable saved in the database, but the sign-in pool call failed for one of its 2 pool user(s); a retry of the same action repeats only the pool calls",
+                "Account "+id+" was already disabled; the sign-in pool call was repeated and confirmed for 2 pool user(s)");
+            assertThat(com.lookahead.domain.LogCapture.keys(log.lines("account.disable").getLast())).containsEntry("count",2).containsEntry("repeated",true);
+            log.containsNone("second@gmail.invalid","Google_second-fails");
+        }
+        verify(pool,times(2)).disable("Google_second-fails");verify(pool,times(2)).disable("second@gmail.invalid");
+        assertThat(events(id,"disable")).isEqualTo(1);
+    }
     @Test void theDirectoryListsDisabledAccountsWithTheirGmailButNeverDeletedOnes(){
         var directory=new AccountDirectory(new StaticListableBeanFactory().getBeanProvider(com.lookahead.domain.security.IdentitySettings.class),jdbc);
         UUID shown=account("listed-disabled","listed@gmail.invalid",true,false),hidden=account("listed-removed","hidden@gmail.invalid",true,false);
@@ -219,6 +267,20 @@ class AccountRemovalDatabaseTest {
         assertThat(listed.stream().filter(a->a.accountId().equals(shown)).findFirst().orElseThrow().email()).isEqualTo("listed@gmail.invalid");
         failsWith(()->directory.lookup("hidden@gmail.invalid"),404,"ACCOUNT_NOT_FOUND");
         assertThat(directory.lookup("listed@gmail.invalid").accountId()).isEqualTo(shown);
+    }
+    /** DLV-969 S36: the owner's exact lookup finds an account by any of its Cognito usernames, not only its first. */
+    @Test void theOwnersLookupFindsAnAccountByAnyOfItsSignIns(){
+        var directory=new AccountDirectory(new StaticListableBeanFactory().getBeanProvider(com.lookahead.domain.security.IdentitySettings.class),jdbc);
+        UUID id=linkedAccount("lookup-both","lookup-both@gmail.invalid");
+        for(String query:List.of("Google_lookup-both","google_lookup-both","LOOKUP-BOTH@gmail.invalid")){
+            var found=directory.lookup(query);
+            assertThat(found.accountId()).as(query).isEqualTo(id);assertThat(found.username()).isEqualTo("Google_lookup-both");
+        }
+        // A row without identity rows (before V19) still matches its own username; a deleted account matches none.
+        UUID legacy=account("lookup-legacy","lookup-legacy@example.invalid",true,false);
+        assertThat(directory.lookup("lookup-legacy@example.invalid").accountId()).isEqualTo(legacy);
+        service(pool).remove(owner,id,new AccountRemovalService.Confirmation("DELETE"));
+        failsWith(()->directory.lookup("lookup-both@gmail.invalid"),404,"ACCOUNT_NOT_FOUND");
     }
 
     @Test void labelsArePermanentPerRoleAndTheOwnerIsOnlyTheOwner(){

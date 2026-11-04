@@ -28,7 +28,7 @@ public class AccountErrorHandler {
     ResponseEntity<?> failure(AccountFailure ex, HttpServletRequest request) {
         var body = new LinkedHashMap<String, Object>();
         body.put("status", ex.status()); body.put("code", ex.code()); body.put("message", ex.getMessage());
-        body.put("path", request.getRequestURI()); body.put("timestamp", Instant.now());
+        body.put("path", GlobalExceptionHandler.redact(request.getRequestURI())); body.put("timestamp", Instant.now());
         if (ex.currentRevision() != null) body.put("currentRevision", ex.currentRevision());
         return ResponseEntity.status(ex.status()).header("Cache-Control", "no-store").body(body);
     }
