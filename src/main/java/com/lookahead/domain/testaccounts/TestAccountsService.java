@@ -28,6 +28,22 @@ public class TestAccountsService {
     private StaffAliases aliases;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     public void configureAliases(StaffAliases aliases){this.aliases=aliases;}
+    private com.lookahead.domain.membership.MembershipService memberships;
+    /** DLV-969 (owner, 2026-11-04): DEV purchase requests, listed for the owner and admins and decided by them. */
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void configureMemberships(com.lookahead.domain.membership.MembershipService memberships){this.memberships=memberships;}
+    /** DLV-969 (owner, 2026-11-04): the "upgraded by" marker, from the wired memberships and aliases (none: no marker). */
+    private UpgradeMarkers markers(){return new UpgradeMarkers(jdbc,memberships,aliases);}
+    /**
+     * DLV-969 (owner, 2026-11-04): the owner or an admin approves or declines a test account's DEV purchase request,
+     * for an account the one hierarchy lets them act on ({@link TestAccountTemplates#allows}); everyone else 403
+     * PURCHASE_APPROVAL_FORBIDDEN. Outside DEV: 403 PURCHASE_APPROVAL_DISABLED.
+     */
+    public ObjectNode decidePurchase(AccountPrincipal actor,com.lookahead.domain.membership.MembershipService.Decision decision){
+        if(memberships==null)throw new AccountFailure(403,"PURCHASE_APPROVAL_DISABLED","Owner approval of purchases exists only in DEV.");
+        String role=actor==null||!actor.isEnabled()?null:TestAccountTemplates.role(staff.permissions(actor));
+        return memberships.decide(actor,decision,role,target->policy.cloud()&&TestAccountTemplates.allows(role,targetRoles(target)));
+    }
     /**
      * Who created or last changed a test account (DLV-969): the owner gets the account id, which the page names; anyone
      * else gets their own id back (shown as "You"), "seed", or the other person's role label, never their id.
@@ -35,6 +51,10 @@ public class TestAccountsService {
     private String person(AccountPrincipal actor,boolean named,String recorded){
         if(named||recorded==null||"seed".equals(recorded)||recorded.equals(actor.accountId().toString()))return recorded;
         try{return aliases.label(UUID.fromString(recorded));}catch(IllegalArgumentException notAnAccount){return "Unknown";}
+    }
+    /** {@link #person} once per recorded value for one list: most rows share their creator and last changer. */
+    private String person(AccountPrincipal actor,boolean named,String recorded,Map<String,String> memo){
+        return recorded==null?null:memo.computeIfAbsent(recorded,value->person(actor,named,value));
     }
     private void reader(AccountPrincipal actor){
         policy.requireEnabled();var permissions=staff.permissions(actor);
@@ -67,6 +87,7 @@ public class TestAccountsService {
     // DLV-969 (owner, 2026-11-04): each reader sees the test accounts the one hierarchy lets them act on.
     String hierarchyRole=TestAccountTemplates.role(permissions);
     boolean named=aliases==null||aliases.seesIdentities(actor);
+    var markers=markers();var people=new HashMap<String,String>();
     // Cloud mode: learners created through CreatedTestAccounts, and the DEV roster the owner created (it records its
     // creator; Local's seed does not, and never runs in cloud mode).
     String rows=policy.cloud()?"SELECT * FROM test_account_registry WHERE creation_state='active' AND (initialization='created' OR creator_id IS NOT NULL) ORDER BY username"
@@ -80,16 +101,42 @@ public class TestAccountsService {
         if(!TestAccountTemplates.allows(hierarchyRole,targetRoles))return null;
         var item=json.createObjectNode().put("accountId",r.getString("account_id")).put("username",r.getString("username"))
                 .put("isTestAccount",true).put("revision",r.getLong("revision")).put("initialization",r.getString("initialization"))
-                .put("lastChangedBy",person(actor,named,r.getString("last_changed_by"))).put("lastChangedAt",r.getTimestamp("last_changed_at").toInstant().toString());
-        if(r.getObject("creator_id",UUID.class)!=null)item.put("creatorId",person(actor,named,r.getObject("creator_id",UUID.class).toString()));
+                .put("lastChangedBy",person(actor,named,r.getString("last_changed_by"),people)).put("lastChangedAt",r.getTimestamp("last_changed_at").toInstant().toString());
+        if(r.getObject("creator_id",UUID.class)!=null)item.put("creatorId",person(actor,named,r.getObject("creator_id",UUID.class).toString(),people));
         item.set("roles",roleNode);
         item.put("canDelete",policy.cloud()
                 ?TestAccountDeletionPolicy.allowsInDev("owner".equals(actorRole),actor.accountId(),id,r.getObject("creator_id",UUID.class))
                 :TestAccountDeletionPolicy.allows(actorRole,actor.accountId(),id,targetRoles));
         item.set("access",json.valueToTree(summaries.get(actor,id)));
         item.put("legacyPresetAvailable",policy.local()&&r.getString("username").matches("learner(0[1-9]|10)"));
+        // DLV-969 (owner, 2026-11-04): the request waiting for a decision, for the owner and admins in DEV (null: none).
+        if(policy.cloud()&&memberships!=null&&Set.of("owner","admin").contains(hierarchyRole))item.set("pendingPurchase",pendingPurchase(actor,named,id));
+        // DLV-969 (owner, 2026-11-04): who upgraded it since its latest Reset, for every reader of the row (null: nobody);
+        // and whether this viewer may reset it: the existing rule and, while it is upgraded, owner or requester only.
+        var marker=policy.cloud()?markers.find(id):null;
+        if(policy.cloud()&&memberships!=null)item.set("upgradedBy",markers.row(marker,actor.accountId(),named));
+        boolean rosterRow=r.getObject("creator_id",UUID.class)!=null&&!"created".equals(r.getString("initialization"));
+        boolean canReset;
+        try{requireResettable(permissions,id,rosterRow,targetRoles);requireNotReserved(actor,permissions,marker,markers);canReset=true;}
+        catch(AccountFailure refused){canReset=false;}
+        item.put("canReset",canReset);
         return item;
     }).stream().filter(Objects::nonNull).toList();}
+    /**
+     * DLV-969 (owner, 2026-11-04): the request with who sent it: {@code {"self": true}} for the viewer's own, otherwise
+     * the sender's permanent role label, and for the owner also their display name. Null: no request, or sender unknown.
+     */
+    private ObjectNode pendingPurchase(AccountPrincipal viewer,boolean named,UUID account){
+        var pending=memberships.pendingRequest(account);
+        if(pending==null)return null;
+        var body=pending.body();UUID by=pending.requestedBy();
+        if(by==null){body.putNull("requestedBy");return body;}
+        var who=body.putObject("requestedBy").put("self",by.equals(viewer.accountId()));
+        if(by.equals(viewer.accountId()))return body;
+        who.put("label",aliases==null?null:aliases.label(by));
+        if(named)who.put("name",jdbc.queryForList("SELECT display_name FROM cloud_accounts WHERE account_id=?",String.class,by).stream().findFirst().orElse(null));
+        return body;
+    }
     @Transactional
     public void reset(AccountPrincipal actor,UUID id,Reset request){
         try{
@@ -107,21 +154,17 @@ public class TestAccountsService {
     /** @return true when this key already reset the account (a retry), false when it was reset now. */
     private boolean resetChecked(AccountPrincipal actor,UUID id,Reset request){
         reader(actor);var permissions=staff.permissions(actor);
-        // DLV-969 S35: in DEV only the owner-created roster resets, and only to its scenario; Local keeps both presets.
-        if(policy.cloud()){
-            if(request==null||!"scenario".equals(request.preset())||jdbc.queryForList("SELECT 1 FROM test_account_registry WHERE account_id=? AND creator_id IS NOT NULL AND initialization<>'created'",Integer.class,id).isEmpty())
-                throw new AccountFailure(422,"RESET_UNAVAILABLE","In DEV only the test roster resets, and only to its scenario.");
-        }else policy.requireLocal();
-        if(!permissions.manageAccess()&&!permissions.triageFeedback())throw new AccountFailure(403,"RESET_FORBIDDEN","Only owner or admin can reset test accounts");
+        if(policy.cloud()&&(request==null||!"scenario".equals(request.preset())))throw resetUnavailable();
+        requireResettable(permissions,id,policy.cloud()&&!jdbc.queryForList("SELECT 1 FROM test_account_registry WHERE account_id=? AND creator_id IS NOT NULL AND initialization<>'created'",Integer.class,id).isEmpty(),null);
         var entry=entry(id);
-        // DLV-969 (owner, 2026-11-04): the one hierarchy; an admin never resets a co-author test account.
-        if(!TestAccountTemplates.allows(TestAccountTemplates.role(permissions),targetRoles(id)))
-            throw new AccountFailure(403,"RESET_FORBIDDEN","Your role cannot reset this test account.");
+        // DLV-969 (owner, 2026-11-04): while upgraded, only the owner or the requester; checked under the account's lock.
+        jdbc.query("SELECT id FROM platform_subjects WHERE id=? FOR UPDATE",rs->{},id);
+        var markers=markers();
+        requireNotReserved(actor,permissions,policy.cloud()?markers.find(id):null,markers);
         String shown=policy.cloud()?entry.cloudUsername():entry.username(); // the username the list shows
         if(request==null||request.key()==null||!shown.equals(request.confirmation())||(request.preset()==null||!Set.of("scenario","legacy").contains(request.preset())))
             throw new AccountFailure(422,"RESET_CONFIRMATION_REQUIRED","Confirm the exact test username and preset");
         if(request.preset().equals("legacy")&&!entry.username().matches("learner(0[1-9]|10)"))throw new AccountFailure(422,"LEGACY_PRESET_UNAVAILABLE","Legacy fixtures exist only for learner01–learner10");
-        jdbc.query("SELECT id FROM platform_subjects WHERE id=? FOR UPDATE",rs->{},id);
         var retries=jdbc.queryForList("SELECT actor_id::text || ':' || preset FROM test_account_resets WHERE account_id=? AND mutation_key=?",String.class,id,request.key());
         if(!retries.isEmpty()){
             if(!retries.getFirst().equals(actor.accountId()+":"+request.preset()))throw new AccountFailure(409,"IDEMPOTENCY_CONFLICT","Reset key belongs to another request");
@@ -141,6 +184,39 @@ public class TestAccountsService {
         jdbc.update("UPDATE test_account_registry SET initialization=?,revision=revision+1,last_changed_by=?,last_changed_at=clock_timestamp() WHERE account_id=?",request.preset(),actor.accountId().toString(),id);
         jdbc.update("INSERT INTO test_account_resets(account_id,mutation_key,actor_id,preset) VALUES (?,?,?,?)",id,request.key(),actor.accountId(),request.preset());
         return false;
+    }
+    private static AccountFailure resetUnavailable(){
+        return new AccountFailure(422,"RESET_UNAVAILABLE","In DEV only the test roster resets, and only to its scenario.");
+    }
+    /**
+     * The existing Reset rule, before the request is read: in DEV only the owner-created roster ({@code rosterRow}), in
+     * Local the fixture policy; owner or admin; a roster account; the one hierarchy (an admin never resets a co-author).
+     * {@code knownRoles}: the account's staff roles when the caller has read them, else null.
+     */
+    private void requireResettable(StaffPermissions permissions,UUID id,boolean rosterRow,Set<String> knownRoles){
+        // DLV-969 S35: in DEV only the owner-created roster resets, and only to its scenario; Local keeps both presets.
+        if(policy.cloud()){if(!rosterRow)throw resetUnavailable();}
+        else policy.requireLocal();
+        if(!permissions.manageAccess()&&!permissions.triageFeedback())throw new AccountFailure(403,"RESET_FORBIDDEN","Only owner or admin can reset test accounts");
+        entry(id);
+        // DLV-969 (owner, 2026-11-04): the one hierarchy; an admin never resets a co-author test account.
+        if(!TestAccountTemplates.allows(TestAccountTemplates.role(permissions),knownRoles==null?targetRoles(id):knownRoles))
+            throw new AccountFailure(403,"RESET_FORBIDDEN","Your role cannot reset this test account.");
+    }
+    /**
+     * DLV-969 (owner, 2026-11-04): an upgraded test account ({@code marker} not null) resets only by the owner or the
+     * person who sent the approved request; anyone else, other admins included, 403 RESET_RESERVED, naming the
+     * requester by role label only.
+     */
+    private static void requireNotReserved(AccountPrincipal actor,StaffPermissions permissions,
+            com.lookahead.domain.membership.MembershipService.ApprovedRequest marker,UpgradeMarkers markers){
+        if(marker==null||"owner".equals(TestAccountTemplates.role(permissions)))return;
+        UUID requester=marker.requestedBy();
+        if(requester!=null&&requester.equals(actor.accountId()))return;
+        String label=markers.label(requester);
+        throw new AccountFailure(403,"RESET_RESERVED",requester==null||"Owner".equals(label)||"Unknown".equals(label)
+            ?"Only the owner can reset this upgraded account."
+            :"Only the owner or "+label+", who upgraded this account, can reset it.");
     }
     private Set<String> targetRoles(UUID id){
         var roles=new HashSet<String>();

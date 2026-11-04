@@ -30,7 +30,24 @@ public class DevTestSessions {
     public static final String SECRET_HEADER = "X-LookAhead-Gateway-Secret";
     public static final String HOLDER_HEADER = "X-LookAhead-Gate-Subject";
     public static final String ACCOUNT_HEADER = "X-LookAhead-Test-Account";
-    public record Usable(UUID accountId, String username, String displayName, List<String> roles, String scenario) {}
+    /**
+     * DLV-969 (owner, 2026-11-04): request attribute holding the gate holder's account id (a {@link UUID}, absent when
+     * unknown) once a test-session request was accepted, so a DEV purchase request records who sent it.
+     */
+    public static final String REQUESTER_ATTRIBUTE = "com.lookahead.domain.testSession.holder";
+    /**
+     * One test account the gate holder may use. {@code upgradedBy} (DLV-969, owner 2026-11-04): who upgraded it since its
+     * latest Reset, {@code {self, label, name?, plan, approvedAt}} ({@code name} for the owner only), or null.
+     */
+    public record Usable(UUID accountId, String username, String displayName, List<String> roles, String scenario,
+            tools.jackson.databind.node.ObjectNode upgradedBy) {
+        public Usable(UUID accountId, String username, String displayName, List<String> roles, String scenario) {
+            this(accountId, username, displayName, roles, scenario, null);
+        }
+    }
+    /** An admitted, enabled gate holder: their account and their place in the one hierarchy. */
+    private record Holder(UUID accountId, String role) {}
+    private static final Holder NOBODY = new Holder(null, "");
     private record Target(UUID accountId, String username, String displayName) {}
     private final JdbcTemplate jdbc;
     private final TestAccountPolicy policy;
@@ -41,6 +58,9 @@ public class DevTestSessions {
         this.jdbc = jdbc; this.policy = policy; this.issuer = issuer;
         this.secret = Objects.requireNonNull(gatewaySecret).getBytes(StandardCharsets.UTF_8);
     }
+    private UpgradeMarkers markers;
+    /** DLV-969 (owner, 2026-11-04): the "upgraded by" marker on the picker; without it every account shows none. */
+    void configureMarkers(UpgradeMarkers markers) { this.markers = markers; }
 
     /** Every request is compared, including one without the header, before anything else is read. */
     public boolean fromGateway(HttpServletRequest request) {
@@ -51,15 +71,20 @@ public class DevTestSessions {
     /** The test accounts this gate holder may use; empty for anyone who is not admitted. */
     public List<Usable> usable(String holderSubject) {
         policy.requireCloud();
-        String role = holderRole(holderSubject);
+        var holder = holderOf(holderSubject);
+        String role = holder.role();
+        // Only the owner sees names; everyone sees their own requests as "self".
+        boolean named = "owner".equals(role);
         var templates = new java.util.HashMap<UUID, String>();
         for (var entry : TestAccountRoster.entries())
             TestAccountTemplates.all().stream().filter(t -> t.id().equals(entry.template())).findFirst()
                     .ifPresent(t -> templates.put(entry.accountId(), t.label()));
         return targets(null).stream().map(target -> {
             var roles = roles(target.accountId());
-            return TestAccountTemplates.allows(role, roles) ? new Usable(target.accountId(), target.username(), target.displayName(),
-                    roles.stream().sorted().toList(), templates.get(target.accountId())) : null;
+            if (!TestAccountTemplates.allows(role, roles)) return null;
+            var upgradedBy = markers == null ? null : markers.compact(markers.find(target.accountId()), holder.accountId(), named);
+            return new Usable(target.accountId(), target.username(), target.displayName(), roles.stream().sorted().toList(),
+                    templates.get(target.accountId()), upgradedBy);
         }).filter(Objects::nonNull).toList();
     }
 
@@ -76,8 +101,12 @@ public class DevTestSessions {
         if (request.getHeader("Authorization") != null) throw refused(request, "BEARER_TOKEN_WITH_TEST_ACCOUNT", null);
         UUID id;
         try { id = UUID.fromString(account); } catch (IllegalArgumentException malformed) { throw refused(request, "TEST_ACCOUNT_MALFORMED", null); }
-        try { return java.util.Optional.of(actAs(request.getHeader(HOLDER_HEADER), id)); }
+        AccountPrincipal principal;
+        try { principal = actAs(request.getHeader(HOLDER_HEADER), id); }
         catch (AccountFailure denied) { throw refused(request, denied.code(), id); }
+        UUID holder = holder(request.getHeader(HOLDER_HEADER));
+        if (holder != null) request.setAttribute(REQUESTER_ATTRIBUTE, holder);
+        return java.util.Optional.of(principal);
     }
 
     /** One WARN line naming why, then the same 401 for every reason. */
@@ -106,7 +135,9 @@ public class DevTestSessions {
     private UUID holder(String subject) {
         if (subject == null || subject.isBlank() || subject.length() > 256) return null;
         try {
-            return jdbc.queryForList("SELECT account_id FROM cloud_accounts WHERE issuer=? AND subject=?", UUID.class, issuer, subject).stream().findFirst().orElse(null);
+            // Any linked sign-in (S36) names the same account, as for the holder's role.
+            return jdbc.queryForList(com.lookahead.domain.cloud.CloudIdentities.ACCOUNT_OF_IDENTITY, UUID.class, issuer, subject, issuer, subject)
+                    .stream().findFirst().orElse(null);
         } catch (RuntimeException unknown) { return null; }
     }
 
@@ -126,16 +157,18 @@ public class DevTestSessions {
      * {@link TestAccountTemplates#role}: "owner", "co-author", "admin" (a dual-role person gets the lower) or "learner"
      * for an admitted, enabled, not disabled or deleted account; "" for anyone else. Any linked sign-in (S36) counts.
      */
-    private String holderRole(String subject) {
-        if (subject == null || subject.isBlank() || subject.length() > 256) return "";
+    private String holderRole(String subject) { return holderOf(subject).role(); }
+    private Holder holderOf(String subject) {
+        if (subject == null || subject.isBlank() || subject.length() > 256) return NOBODY;
         var holders = jdbc.query("""
                 SELECT c.account_id,c.author_access FROM cloud_accounts c WHERE c.account_id IN (%s) AND c.admitted AND c.enabled
                 AND NOT EXISTS (SELECT 1 FROM cloud_account_states s WHERE s.account_id=c.account_id)
                 """.formatted(com.lookahead.domain.cloud.CloudIdentities.ACCOUNT_OF_IDENTITY),
                 (row, n) -> new Object[]{row.getObject(1, UUID.class), row.getBoolean(2)}, issuer, subject, issuer, subject);
-        if (holders.isEmpty()) return "";
+        if (holders.isEmpty()) return NOBODY;
         boolean owner = (Boolean) holders.getFirst()[1];
-        return TestAccountTemplates.role(owner, owner ? Set.of() : roles((UUID) holders.getFirst()[0]));
+        UUID account = (UUID) holders.getFirst()[0];
+        return new Holder(account, TestAccountTemplates.role(owner, owner ? Set.of() : roles(account)));
     }
 
     private Set<String> roles(UUID account) {

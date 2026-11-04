@@ -217,6 +217,94 @@ owner, and one `test-account.restore` event names the ids. Nothing to restore an
 `403 OWNER_REQUIRED`, `422 ACCOUNT_CONFIRMATION_REQUIRED`, `403 TEST_ACCOUNTS_DISABLED` outside DEV. The roster
 card's `roster.deleted` (allowance) is the restorable count.
 
+### Owner-approved purchases for DEV test accounts (DLV-969, owner 2026-11-04)
+
+In DEV (`app.deployment-environment=dev`) payments stay simulated, and only a test account staff created can
+purchase: an active `test_account_registry` row with a `creator_id` and a `@lookahead.dev` username (the 35 roster
+accounts and "Create test account" learners), used through a test session. `PaymentConfiguration` wraps the mock
+provider in `OwnerApprovalPaymentGateway`, so a checkout is a request: no payment, no access, no migration. Local
+pays the mock at once as before; PROD has no payment provider.
+
+A request is an ordinary `membership_purchases` row: `status='pending'`, `source='checkout'`,
+`provider_status='awaiting_owner_approval'`, no `provider_payment_id`. The existing idempotency key, fingerprint,
+plan rules (new, renewal, upgrade at the prorated difference, change in the final seven days, promo sale) and
+overlap checks apply when it is created. Retrying with the same `Idempotency-Key` answers the same request and never
+asks the provider; nothing processes pending purchases automatically. Its `purchase-created` audit row also records
+`requestedBy`: the gate holder of the test session (`DevTestSessions.REQUESTER_ATTRIBUTE`, set by the test-session
+filter), because the purchase's own actor is the test account.
+
+Routes (all already forwarded by the Gateway):
+
+- `POST /api/v1/account/purchases` (test session). Answer: the purchase, e.g.
+  `{data:{id, planId, plan, pricePaidCents, currency:"USD", status:"pending", providerStatus:"awaiting_owner_approval",
+  providerPaymentId:null, startsAt, endsAt, source:"checkout", replacesId, ...}}`. The Web shows
+  "Request sent: the owner approves purchases in DEV".
+- `POST /api/v1/account/purchases/quote` answers the usual quote plus `ownerApproval: true` in DEV.
+- `GET /api/v1/admin/test-accounts`: for owner and admin viewers in DEV each row carries `pendingPurchase` (null
+  when nothing waits; a request a Reset superseded no longer counts):
+  `{purchaseId, kind: "new"|"renewal"|"upgrade"|"change", fromPlan:{code,name} ("free"/"Free" for a new plan),
+  toPlan:{code,name}, priceCents, currency, priceDifferenceCents (upgrade only: full difference before proration),
+  startsAt, endsAt, requestedAt, requestedBy}`. `requestedBy` is `{self:true}` for the viewer's own request, otherwise
+  `{self:false, label:"Admin 2"}` (the permanent `StaffAliases` label) and, for the owner only, also `name` (display
+  name); null when the sender is unknown. Course Pass purchases are refused at checkout, so no request has courses.
+  Co-authors and other readers get no `pendingPurchase` field.
+- `POST /api/v1/admin/test-accounts` with `{"purchaseDecision": {"purchaseId": "<uuid>", "decision": "approve"|"decline"}}`
+  (owner or admin; an admin only for accounts the hierarchy above lets them act on). Answer:
+  `{data:{decision:"approve"|"decline", repeated:false|true, purchase:{...as above}}}`. Approve pays through the mock
+  provider under the request's key and applies the membership exactly as a successful checkout (`succeeded`, or
+  `scheduled` for a change or renewal; an upgrade supersedes the replaced purchase). Decline sets `status='failed'`,
+  `provider_status='declined_by_owner'` and changes nothing else. The same decision again answers `repeated:true`
+  and never pays twice.
+
+Refusals: purchase and quote `403 PURCHASES_TEST_ACCOUNTS_ONLY` "In DEV, purchases are for test accounts; the owner
+approves them." (real learners, testers, staff's own accounts, deleted test accounts); second request while one waits
+`409 PURCHASE_REQUEST_PENDING` "A request is already waiting for the owner or an admin." (other pending purchases keep
+`409 PURCHASE_PENDING`). Decisions: `401 AUTHENTICATION_REQUIRED`; `403 PURCHASE_APPROVAL_DISABLED` outside DEV;
+`403 PURCHASE_APPROVAL_FORBIDDEN` "Only the owner or an admin can approve purchase requests." (co-author, reviewer,
+tester, learner, or an admin for a co-author test account); `422 PURCHASE_DECISION_INVALID`; `404 PURCHASE_NOT_FOUND`;
+`409 PURCHASE_NOT_A_REQUEST` (not waiting for a decision); `409 PURCHASE_REQUEST_DECIDED` (the other decision was
+already made); `409 PURCHASE_REQUEST_STALE` on approve after a Reset or once the replaced purchase is no longer
+active (decline it and send a new request); `503 PAYMENT_UNAVAILABLE` when the mock provider did not settle (approve
+again); `429 PAYMENT_BUSY` as for checkout. Staff plan upgrades (`/api/v1/admin/accounts/{id}/plan-upgrades`) are
+unchanged.
+
+Upgraded-by marker and reserved Reset (owner, 2026-11-04). Once a request is approved, the test account carries an
+"upgraded by" marker until its next Reset (or Restore). Nothing new is stored and there is no migration: the marker is
+the latest `purchase-approved` audit row (its `actor_id` is who decided, its `recorded_at` when) of a purchase of the
+account that is `succeeded` or `scheduled` (an approval the mock provider declined does not count), recorded after the
+account's latest `test_account_resets` row; the requester is the `requestedBy` of that purchase's `purchase-created`
+row (`MembershipService.approvedRequest`, `UpgradeMarkers`). Because Reset writes a `test_account_resets` row, Reset
+clears the marker; a declined request never makes one.
+
+- `GET /api/v1/admin/test-accounts` rows in DEV, for every reader who can see the row (owner, co-author, admin), carry
+  `upgradedBy`: `{self, label, name?, approvedBy:{self, label, name?}, plan:{code, name}, kind:"new"|"renewal"|"upgrade"|"change", approvedAt}`
+  or null. `self` is true when the viewer is that person; `label` is the permanent `StaffAliases` label ("Admin 2",
+  "Owner", "Unknown" when the sender was not recorded); `name` (display name) is present for the owner only.
+- Every row also carries `canReset` (boolean) for the viewer: the existing Reset rule (DEV: an owner-created roster
+  account, not a created learner; owner or admin; the one hierarchy) and the reservation below. The Web shows Reset only
+  when it is true.
+- The test-session picker (`DevTestSessions.usable` → `/internal/v1/test-sessions/accounts`, relayed unchanged by the
+  Gateway as `/bff/api/v1/auth/test-accounts`) carries a compact `upgradedBy` on each account:
+  `{self, label, name?, plan:"<plan name>", approvedAt}` or null, so people see the marker before switching. `self` is
+  relative to the gate holder; `name` only when the gate holder is the owner.
+
+While the marker is present, Reset (`POST /api/v1/admin/test-accounts/{id}/reset`) is allowed only to the owner and to
+the requester (the person who sent the approved request through the test session). Anyone else, other admins
+included, gets `403 RESET_RESERVED` "Only the owner or <label>, who upgraded this account, can reset it." (label only,
+never a name); when the sender is unknown or is the owner, "Only the owner can reset this upgraded account." The
+check runs under the account's row lock, after the existing checks and before the typed confirmation. An allowed Reset
+puts the account back to its scenario as before and the marker disappears. Restore is unchanged. The refusal is the
+usual `lookahead.event` WARN line `test-account.reset` with `reason=RESET_RESERVED`, `account.id` and `target.id`;
+the success lines are unchanged.
+
+Logs (`lookahead.payment`, ids, plan code and cents only): `purchase.approval-requested` when a request is created,
+`purchase.approved` / `purchase.declined` with `actor.role` (owner or admin) and `repeated`, the usual
+`membership.activated|upgraded|scheduled` on approval, `purchase.request` / `purchase.quote` refusals with reason
+`PURCHASES_TEST_ACCOUNTS_ONLY`, and `purchase.decision` refusals. `CloudTestAccountsDatabaseTest` and
+`MembershipDatabaseTest` cover the flow on the real database, including the marker for the owner (names), the requester
+(self) and another admin (label only), the picker marker, the reserved Reset, `canReset` per viewer and a declined
+request.
+
 ## Configuration and validation
 
 Cloud requires `LOOKAHEAD_COGNITO_ISSUER`, `AWS_REGION`,

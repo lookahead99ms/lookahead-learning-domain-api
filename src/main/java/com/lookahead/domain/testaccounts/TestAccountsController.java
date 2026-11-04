@@ -25,6 +25,9 @@ public class TestAccountsController {
     }
     /** DLV-969 S35: {@code "roster": true} creates the next DEV roster accounts, on the route the Gateway already forwards. */
     @PostMapping("/api/v1/admin/test-accounts") public ApiResponse<?> create(@AuthenticationPrincipal AccountPrincipal actor,@RequestBody CreatedTestAccounts.Create request){
+        // DLV-969 (owner, 2026-11-04): {"purchaseDecision": {"purchaseId": "<uuid>", "decision": "approve"|"decline"}}
+        // is the owner's or an admin's decision on a DEV purchase request.
+        if(request!=null&&request.purchaseDecision()!=null)return ApiResponse.success(service.decidePurchase(actor,request.purchaseDecision()));
         // DLV-969 (owner, 2026-11-04): {"restoreRoster": true, "confirm": "RESTORE"} brings back deleted DEV roster accounts.
         if(request!=null&&request.restoreRoster())return ApiResponse.success(roster.restore(actor,new DevTestRoster.Restore(request.confirm())));
         if(request!=null&&request.roster())return ApiResponse.success(roster.next(actor));

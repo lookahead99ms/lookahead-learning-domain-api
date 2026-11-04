@@ -132,7 +132,8 @@ class DevTestSessionsTest {
         var settings = withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS).strictness(Strictness.LENIENT);
         var created = mock(CreatedTestAccounts.class, settings);
         var roster = mock(DevTestRoster.class, settings);
-        var controller = new TestAccountsController(mock(TestAccountsService.class, settings), created, roster);
+        var accounts = mock(TestAccountsService.class, settings);
+        var controller = new TestAccountsController(accounts, created, roster);
         var owner = new AccountPrincipal(UUID.randomUUID(), "owner", "Owner", true, true);
         var status = new DevTestRoster.Status(35, 5, 0);
         when(roster.next(owner)).thenReturn(status);
@@ -152,6 +153,14 @@ class DevTestSessionsTest {
         assertThat(controller.create(owner, new CreatedTestAccounts.Create(null, null, null, false, true, "RESTORE")).data()).isEqualTo(new DevTestRoster.Restored(2));
         assertThat(controller.create(owner, new CreatedTestAccounts.Create(null, null, null, true, true, "RESTORE")).data()).isEqualTo(new DevTestRoster.Restored(2));
         verify(roster, times(1)).next(owner);
+        verify(created, times(1)).create(any(), any());
+        // DLV-969 (owner, 2026-11-04): {"purchaseDecision": {...}} on the same route is a decision on a DEV purchase request.
+        var decision = new com.lookahead.domain.membership.MembershipService.Decision(UUID.randomUUID(), "approve");
+        var decided = new tools.jackson.databind.ObjectMapper().createObjectNode().put("decision", "approve");
+        when(accounts.decidePurchase(owner, decision)).thenReturn(decided);
+        assertThat(controller.create(owner, new CreatedTestAccounts.Create(null, null, null, true, true, "RESTORE", decision)).data()).isEqualTo(decided);
+        verify(roster, times(1)).next(owner);
+        verify(roster, times(2)).restore(any(), any());
         verify(created, times(1)).create(any(), any());
     }
 }

@@ -27,8 +27,14 @@ public class CreatedTestAccounts {
      * learner without access, as before). {@code roster}: the owner's DEV roster ({@link DevTestRoster}) through the same route.
      * {@code password}: Local only. {@code restoreRoster} with {@code confirm} "RESTORE": the owner's Restore of deleted
      * DEV roster accounts ({@link DevTestRoster#restore}), on the route the Gateway already forwards.
+     * {@code purchaseDecision}: DLV-969 (owner, 2026-11-04), the owner's or an admin's decision on a DEV purchase
+     * request ({@link TestAccountsService#decidePurchase}), on the same route.
      */
-    public record Create(UUID key, String password, String scenario, boolean roster, boolean restoreRoster, String confirm) {
+    public record Create(UUID key, String password, String scenario, boolean roster, boolean restoreRoster, String confirm,
+            com.lookahead.domain.membership.MembershipService.Decision purchaseDecision) {
+        public Create(UUID key, String password, String scenario, boolean roster, boolean restoreRoster, String confirm) {
+            this(key, password, scenario, roster, restoreRoster, confirm, null);
+        }
         public Create(UUID key, String password, String scenario, boolean roster) { this(key, password, scenario, roster, false, null); }
         public Create(UUID key, String password) { this(key, password, null, false); }
         @Override public String toString() { return "Create[redacted]"; }

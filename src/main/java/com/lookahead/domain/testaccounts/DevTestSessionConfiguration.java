@@ -29,8 +29,13 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Configuration
 @ConditionalOnExpression("'${app.deployment-environment:}' == 'dev'")
 public class DevTestSessionConfiguration {
-    @Bean DevTestSessions devTestSessions(JdbcTemplate jdbc, TestAccountPolicy policy, CognitoSettings cognito) {
-        return new DevTestSessions(jdbc, policy, cognito.issuer(), cognito.gatewaySecret());
+    @Bean DevTestSessions devTestSessions(JdbcTemplate jdbc, TestAccountPolicy policy, CognitoSettings cognito,
+            org.springframework.beans.factory.ObjectProvider<com.lookahead.domain.membership.MembershipService> memberships,
+            org.springframework.beans.factory.ObjectProvider<com.lookahead.domain.access.StaffAliases> aliases) {
+        var sessions = new DevTestSessions(jdbc, policy, cognito.issuer(), cognito.gatewaySecret());
+        // DLV-969 (owner, 2026-11-04): the picker shows who upgraded each account (none without DEV purchase requests).
+        sessions.configureMarkers(new UpgradeMarkers(jdbc, memberships.getIfAvailable(), aliases.getIfAvailable()));
+        return sessions;
     }
 
     @Bean @Order(0) SecurityFilterChain devTestSessionSecurity(HttpSecurity http, DevTestSessions sessions) throws Exception {
