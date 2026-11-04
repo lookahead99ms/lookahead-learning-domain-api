@@ -30,4 +30,20 @@ class TestAccountDeletionPolicyTest {
         assertThat(TestAccountDeletionPolicy.allows("admin", actor, target, Set.of("co-author"))).isFalse();
         assertThat(TestAccountDeletionPolicy.allows("user", actor, target, Set.of())).isFalse();
     }
+
+    /** DLV-969 (owner, 2026-11-04): in DEV the roster is permanent; a created account goes by its creator or the owner. */
+    @Test void inDevOnlyTheCreatorOrTheOwnerDeletesACreatedAccountAndNobodyDeletesTheRoster() {
+        UUID other = UUID.randomUUID();
+        assertThat(TestAccountDeletionPolicy.allowsInDev(false, actor, target, actor)).isTrue();
+        assertThat(TestAccountDeletionPolicy.allowsInDev(false, actor, target, other)).isFalse();
+        assertThat(TestAccountDeletionPolicy.allowsInDev(false, actor, target, null)).isFalse();
+        assertThat(TestAccountDeletionPolicy.allowsInDev(true, actor, target, other)).isTrue();
+        assertThat(TestAccountDeletionPolicy.allowsInDev(true, actor, actor, actor)).isFalse();
+        assertThat(TestAccountDeletionPolicy.allowsInDev(true, null, target, null)).isFalse();
+        for (var entry : TestAccountRoster.entries()) {
+            assertThat(TestAccountRoster.isRoster(entry.accountId())).isTrue();
+            assertThat(TestAccountDeletionPolicy.allowsInDev(true, actor, entry.accountId(), actor)).isFalse();
+        }
+        assertThat(TestAccountRoster.isRoster(target)).isFalse();
+    }
 }

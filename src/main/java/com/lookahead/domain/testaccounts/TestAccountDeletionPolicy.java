@@ -3,7 +3,7 @@ package com.lookahead.domain.testaccounts;
 import java.util.Set;
 import java.util.UUID;
 
-/** The Local test-account deletion hierarchy, shared by the list and mutation paths. */
+/** Who may delete a test account: Local's role hierarchy, and DEV's creator rule; shared by the list and mutation paths. */
 final class TestAccountDeletionPolicy {
     private TestAccountDeletionPolicy() {}
 
@@ -14,5 +14,14 @@ final class TestAccountDeletionPolicy {
         if ("co-author".equals(actorRole))
             return targetRoles.isEmpty() || targetRoles.contains("admin");
         return "admin".equals(actorRole) && targetRoles.isEmpty();
+    }
+
+    /**
+     * DLV-969 (owner, 2026-11-04), DEV: the 35 roster accounts are never deleted, only reset to their scenario. A created
+     * test account is deleted by the owner or by the person who created it, whatever their role.
+     */
+    static boolean allowsInDev(boolean owner, UUID actorId, UUID targetId, UUID creatorId) {
+        if (actorId == null || targetId == null || actorId.equals(targetId) || TestAccountRoster.isRoster(targetId)) return false;
+        return owner || actorId.equals(creatorId);
     }
 }

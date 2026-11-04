@@ -200,10 +200,37 @@ class CloudTestAccountsDatabaseTest {
       .isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.code()).isEqualTo("RESET_UNAVAILABLE"));
   service.reset(admin,learner12,new TestAccountsService.Reset(UUID.randomUUID(),revision,"learner12@lookahead.dev","scenario"));
   assertThat(jdbc.queryForObject("SELECT count(*) FROM membership_purchases WHERE account_id=? AND superseded_at IS NULL",Integer.class,learner12)).isEqualTo(2);
-  // A deleted roster account is never created again.
-  created.delete(owner,learner01.accountId());
-  assertThat(roster.next(owner)).extracting("total","ready","deleted").containsExactly(35,34,1);
-  assertThat(jdbc.queryForObject("SELECT creation_state FROM test_account_registry WHERE account_id=?",String.class,learner01.accountId())).isEqualTo("deleted");
+  // DLV-969 (owner, 2026-11-04): a roster account is never deleted in DEV, not even by the owner; Reset is its way back.
+  assertThatThrownBy(()->created.delete(owner,learner01.accountId()))
+      .isInstanceOfSatisfying(AccountFailure.class,f->{assertThat(f.status()).isEqualTo(403);assertThat(f.code()).isEqualTo("ROSTER_ACCOUNT_PERMANENT");});
+  assertThat(roster.next(owner)).extracting("total","ready","deleted").containsExactly(35,35,0);
+  assertThat(service.list(admin)).allSatisfy(row->assertThat(row.get("canDelete").asBoolean()).isFalse());
+ }
+ /** DLV-969 (owner, 2026-11-04): in DEV a created test account is deleted by its creator or the owner, nobody else. */
+ @Test void inDevOnlyTheCreatorOrTheOwnerDeletesACreatedTestAccount(){
+  var other=new AccountPrincipal(UUID.randomUUID(),"coauthor","Co",true,false);
+  jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT DO NOTHING",other.accountId());
+  when(repository.forAccount(other.accountId())).thenReturn(new StaffAccessRepository.Assignment(UUID.randomUUID(),other.accountId(),null,Set.of("co-author"),Set.of(),false,1));
+  var first=created.create(admin,new CreatedTestAccounts.Create(UUID.randomUUID(),null,"learner02",false));
+  var second=created.create(admin,new CreatedTestAccounts.Create(UUID.randomUUID(),null,"learner03",false));
+  java.util.function.BiFunction<AccountPrincipal,TestAccountsService,Boolean> canDelete=(viewer,service)->service.list(viewer).stream()
+      .filter(row->row.get("accountId").asString().equals(first.accountId().toString())).findFirst().orElseThrow().get("canDelete").asBoolean();
+  // A co-author outranks an admin in Local, but in DEV did not create this account.
+  assertThat(canDelete.apply(other,rosterService(Set.of("co-author")))).isFalse();
+  assertThatThrownBy(()->created.delete(other,first.accountId()))
+      .isInstanceOfSatisfying(AccountFailure.class,f->{assertThat(f.status()).isEqualTo(403);assertThat(f.code()).isEqualTo("DELETE_FORBIDDEN");});
+  assertThat(canDelete.apply(admin,rosterService(Set.of("admin")))).isTrue();
+  var ownerList=new TestAccountsService(jdbc,json,policy,new ScenarioPurchases(jdbc,json,policy),plans,ownerStaff(),
+      new AccessSummaryService(jdbc,json,ownerStaff()),mock(SnapshotValidator.class));
+  assertThat(canDelete.apply(owner,ownerList)).isTrue();
+  created.delete(admin,first.accountId());
+  created.delete(owner,second.accountId());
+  assertThat(jdbc.queryForList("SELECT creation_state FROM test_account_registry WHERE account_id IN (?,?)",String.class,first.accountId(),second.accountId()))
+      .containsExactly("deleted","deleted");
+ }
+ StaffAccessService ownerStaff(){
+  var staff=mock(StaffAccessService.class);when(staff.permissions(any())).thenReturn(StaffPermissions.forRoles(true,Set.of()));
+  return staff;
  }
  /** DLV-969 S37: DEV before its study plans are published; the roster carries on and says who still needs a plan. */
  @Test void aMissingPlanTemplateNeverStopsTheRosterInDevButStillFailsLocal(){

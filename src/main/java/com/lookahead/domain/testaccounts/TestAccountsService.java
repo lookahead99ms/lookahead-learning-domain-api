@@ -76,7 +76,9 @@ public class TestAccountsService {
         var roleNode=roleRows.isEmpty()?json.createArrayNode():json.readTree(roleRows.getFirst());
         roleNode.forEach(role -> targetRoles.add(role.asText()));
         item.set("roles",roleNode);
-        item.put("canDelete",TestAccountDeletionPolicy.allows(actorRole,actor.accountId(),id,targetRoles));
+        item.put("canDelete",policy.cloud()
+                ?TestAccountDeletionPolicy.allowsInDev("owner".equals(actorRole),actor.accountId(),id,r.getObject("creator_id",UUID.class))
+                :TestAccountDeletionPolicy.allows(actorRole,actor.accountId(),id,targetRoles));
         item.set("access",json.valueToTree(summaries.get(actor,id)));
         item.put("legacyPresetAvailable",policy.local()&&r.getString("username").matches("learner(0[1-9]|10)"));
         return item;
