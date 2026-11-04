@@ -33,4 +33,8 @@ public final class TestAccountRoster {
         for (int n = 1; n <= 6; n++) result.add(new Entry("admin%02d".formatted(n), true));
         return List.copyOf(result);
     }
+    /** One of the 35 fixed roster accounts. */
+    public static boolean isRoster(UUID id) {
+        return entries().stream().anyMatch(entry -> entry.accountId().equals(id));
+    }
 }

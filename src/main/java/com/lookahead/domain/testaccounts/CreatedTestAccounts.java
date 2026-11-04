@@ -173,6 +173,13 @@ public class CreatedTestAccounts {
         String username=(String)targets.getFirst()[0];
         if (LocalAuthorAccess.ACCOUNT_ID.equals(id))
             throw new AccountFailure(403,"PROTECTED_TEST_ACCOUNT","The Local author account cannot be deleted.");
+        if (policy.cloud()) {
+            if (TestAccountRoster.isRoster(id))
+                throw new AccountFailure(403,"ROSTER_ACCOUNT_PERMANENT","Roster accounts are never deleted. Reset puts one back to its scenario.");
+            if (!TestAccountDeletionPolicy.allowsInDev(isOwner,actor.accountId(),id,(UUID)targets.getFirst()[1]))
+                throw new AccountFailure(403,"DELETE_FORBIDDEN","Only the owner or the person who created this test account can delete it.");
+            return new Reservation(id,username,(String)targets.getFirst()[2]);
+        }
         var targetAssignment=staff.forAccount(id);
         Set<String> targetRoles=targetAssignment==null?Set.of():targetAssignment.roles();
         String actorRole=isOwner?"owner":coauthor?"co-author":"admin";
