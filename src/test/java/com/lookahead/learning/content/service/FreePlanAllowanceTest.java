@@ -97,4 +97,33 @@ class FreePlanAllowanceTest {
         allowance.beforeDelete(owner);
         verify(jdbc, never()).queryForObject(anyString(), eq(Integer.class), any());
     }
+
+    /** DLV-969: each free allowance hit is one lookahead.limit WARN line with the limit, its size and its window. */
+    @Test void eachFreeAllowanceHitIsOneLimitLine() {
+        try (var log = com.lookahead.domain.LogCapture.start()) {
+            when(jdbc.query(anyString(), any(RowMapper.class), eq(owner))).thenReturn(List.of(true, true));
+            assertThatThrownBy(() -> allowance.beforeCreate(owner, Set.of("lesson-free"))).isInstanceOf(AccountFailure.class);
+            when(jdbc.query(anyString(), any(RowMapper.class), eq(owner))).thenReturn(List.of());
+            when(jdbc.queryForObject(contains("free_plan_creations"), eq(Integer.class), eq(owner))).thenReturn(15);
+            assertThatThrownBy(() -> allowance.beforeCreate(owner, Set.of("lesson-free"))).isInstanceOf(AccountFailure.class);
+            when(jdbc.queryForObject(contains("free_plan_deletions"), eq(Integer.class), eq(owner), any())).thenReturn(3);
+            when(jdbc.queryForObject(contains("min(deleted_at)"), eq(java.sql.Timestamp.class), eq(owner), any()))
+                    .thenReturn(java.sql.Timestamp.from(Instant.parse("2026-10-01T12:00:00Z")));
+            assertThatThrownBy(() -> allowance.beforeDelete(owner)).isInstanceOf(AccountFailure.class);
+
+            assertThat(log.lines()).allSatisfy(line -> {
+                assertThat(line.getLoggerName()).isEqualTo("lookahead.limit");
+                assertThat(line.getLevel()).isEqualTo(ch.qos.logback.classic.Level.WARN);
+                assertThat(com.lookahead.domain.LogCapture.keys(line)).containsEntry("account.id", owner).containsEntry("event.outcome", "refused");
+            });
+            assertThat(log.lines()).extracting(line -> com.lookahead.domain.LogCapture.keys(line).get("reason"))
+                    .containsExactly("FREE_ACTIVE_PLAN_LIMIT", "FREE_LIFETIME_PLAN_LIMIT", "FREE_DELETE_LIMIT");
+            assertThat(com.lookahead.domain.LogCapture.keys(log.lines().get(2))).containsEntry("limit.name", "free-plan-deletions")
+                    .containsEntry("limit.max", 3L).containsEntry("limit.window", "21d");
+            assertThat(log.messages()).containsExactly(
+                    "Free plan limit hit for account " + owner + ": at most 2 active free plans at once",
+                    "Free plan limit hit for account " + owner + ": all 15 free plan creations of its lifetime are used",
+                    "Free plan limit hit for account " + owner + ": at most 3 deletions in each rolling 21 days; next deletion allowed 2026-10-22T12:00Z");
+        }
+    }
 }

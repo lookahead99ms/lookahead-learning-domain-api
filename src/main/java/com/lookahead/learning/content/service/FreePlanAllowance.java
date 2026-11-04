@@ -1,5 +1,6 @@
 package com.lookahead.learning.content.service;
 
+import com.lookahead.domain.Events;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.repository.AccountRepository;
 import com.lookahead.learning.content.util.PlanJson;
@@ -59,9 +60,8 @@ public class FreePlanAllowance {
         if (!freeContent(contentIds))
             throw new AccountFailure(403, "COURSE_ACCESS_REQUIRED", "Get course access before saving this plan");
         if (activeFreePlans(owner, null) >= MAX_ACTIVE)
-            throw new AccountFailure(409, "FREE_ACTIVE_PLAN_LIMIT", "Archive or delete a free plan before saving another");
-        if (creations(owner) >= MAX_CREATIONS)
-            throw new AccountFailure(409, "FREE_LIFETIME_PLAN_LIMIT", "This account has used its 15 free plan creations");
+            throw activeLimit(owner, "plan.create", "Archive or delete a free plan before saving another");
+        if (creations(owner) >= MAX_CREATIONS) throw lifetimeLimit(owner, "plan.create");
         return true;
     }
 
@@ -72,21 +72,33 @@ public class FreePlanAllowance {
 
     public void beforeActivation(UUID owner, UUID planId, Set<String> contentIds) {
         if (freeAccount(owner) && freeContent(contentIds) && activeFreePlans(owner, planId) >= MAX_ACTIVE)
-            throw new AccountFailure(409, "FREE_ACTIVE_PLAN_LIMIT", "Archive or delete a free plan before activating another");
+            throw activeLimit(owner, "plan.activate", "Archive or delete a free plan before activating another");
     }
 
     public boolean beforeFreeScopeChange(UUID owner, UUID planId, Set<String> priorContent, Set<String> nextContent,
             boolean active) {
         if (!freeAccount(owner) || freeContent(priorContent) || !freeContent(nextContent)) return false;
         if (active && activeFreePlans(owner, planId) >= MAX_ACTIVE)
-            throw new AccountFailure(409, "FREE_ACTIVE_PLAN_LIMIT", "Archive or delete a free plan before changing this plan");
+            throw activeLimit(owner, "plan.version", "Archive or delete a free plan before changing this plan");
         Integer recorded = jdbc.queryForObject(
                 "SELECT count(*) FROM free_plan_creations WHERE account_id=? AND plan_id=?",
                 Integer.class, owner, planId);
         if (recorded != null && recorded > 0) return false;
-        if (creations(owner) >= MAX_CREATIONS)
-            throw new AccountFailure(409, "FREE_LIFETIME_PLAN_LIMIT", "This account has used its 15 free plan creations");
+        if (creations(owner) >= MAX_CREATIONS) throw lifetimeLimit(owner, "plan.version");
         return true;
+    }
+
+    /** Free plan allowance hits: one {@code lookahead.limit} line each (2 active, 15 in a lifetime, 3 deletions in 21 days). */
+    private static AccountFailure activeLimit(UUID owner, String action, String message) {
+        Events.limit(action, "FREE_ACTIVE_PLAN_LIMIT", "free-active-plans", MAX_ACTIVE, "at once").addKeyValue("account.id", owner)
+                .log("Free plan limit hit for account {}: at most {} active free plans at once", owner, MAX_ACTIVE);
+        return new AccountFailure(409, "FREE_ACTIVE_PLAN_LIMIT", message);
+    }
+
+    private static AccountFailure lifetimeLimit(UUID owner, String action) {
+        Events.limit(action, "FREE_LIFETIME_PLAN_LIMIT", "free-plan-creations", MAX_CREATIONS, "lifetime").addKeyValue("account.id", owner)
+                .log("Free plan limit hit for account {}: all {} free plan creations of its lifetime are used", owner, MAX_CREATIONS);
+        return new AccountFailure(409, "FREE_LIFETIME_PLAN_LIMIT", "This account has used its 15 free plan creations");
     }
 
     public void beforeDelete(UUID owner) {
@@ -102,6 +114,9 @@ public class FreePlanAllowance {
             String available = oldest == null ? "after the current window" :
                     oldest.toInstant().plusSeconds(DELETION_WINDOW_DAYS * 86400)
                             .atOffset(ZoneOffset.UTC).toString();
+            Events.limit("plan.delete", "FREE_DELETE_LIMIT", "free-plan-deletions", MAX_DELETIONS, DELETION_WINDOW_DAYS + "d").addKeyValue("account.id", owner)
+                    .log("Free plan limit hit for account {}: at most {} deletions in each rolling {} days; next deletion allowed {}",
+                        owner, MAX_DELETIONS, DELETION_WINDOW_DAYS, available);
             throw new AccountFailure(429, "FREE_DELETE_LIMIT",
                     "Three free-account deletions are allowed in each rolling 21-day window. You can delete again " + available);
         }

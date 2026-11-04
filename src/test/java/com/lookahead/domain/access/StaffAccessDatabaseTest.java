@@ -127,4 +127,28 @@ class StaffAccessDatabaseTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM staff_access_events WHERE assignment_id=? AND action='claim'",Integer.class,id)).isEqualTo(1);
     }
 
+
+    /** DLV-969: a role change is one INFO line once committed (roles before and after); a refusal is one WARN line with its code. */
+    @Test void roleChangesAreLoggedAfterCommitWithTheRolesBeforeAndAfter() {
+        var target=account(false);UUID id=UUID.randomUUID();
+        try(var log=com.lookahead.domain.LogCapture.start()){
+            save(owner,new StaffAccessService.Change(id,target.accountId(),null,Set.of("admin"),Set.of("java"),false,0));
+            save(owner,new StaffAccessService.Change(id,target.accountId(),null,Set.of("tester","co-author"),Set.of(),true,1));
+            assertThatThrownBy(()->save(owner,new StaffAccessService.Change(id,target.accountId(),null,Set.of("tester"),Set.of(),true,1))).isInstanceOf(RuntimeException.class);
+            assertThatThrownBy(()->save(learner,new StaffAccessService.Change(UUID.randomUUID(),other.accountId(),null,Set.of("admin"),Set.of(),false,0))).isInstanceOf(RuntimeException.class);
+            String invitation="invited.person@example.invalid";UUID pending=UUID.randomUUID();
+            save(owner,new StaffAccessService.Change(pending,null,invitation,Set.of("reviewer"),Set.of(),false,0));
+
+            var saved=log.lines("access.saved");
+            assertThat(saved).extracting(line->line.getFormattedMessage()).containsExactly(
+                "Owner saved access for account "+target.accountId()+": roles [] -> [admin], 1 topic grant(s), full curriculum off",
+                "Owner saved access for account "+target.accountId()+": roles [admin] -> [co-author, tester], 0 topic grant(s), full curriculum on");
+            assertThat(com.lookahead.domain.LogCapture.keys(saved.get(1))).containsEntry("account.id",owner.accountId()).containsEntry("target.id",target.accountId())
+                .containsEntry("roles",new java.util.TreeSet<>(Set.of("co-author","tester"))).containsEntry("roles.before",new java.util.TreeSet<>(Set.of("admin")));
+            assertThat(com.lookahead.domain.LogCapture.keys(log.only("access.save"))).containsEntry("reason","ACCESS_ASSIGNMENT_CONFLICT");
+            assertThat(com.lookahead.domain.LogCapture.keys(log.only("access.owner-check"))).containsEntry("reason","OWNER_REQUIRED").containsEntry("account.id",learner.accountId());
+            assertThat(log.only("access.invitation-saved").getFormattedMessage()).isEqualTo("Owner saved access for pending invitation "+pending+": roles [] -> [reviewer], 0 topic grant(s), full curriculum off");
+            log.containsNone(invitation,"Synthetic","synthetic-");
+        }
+    }
 }

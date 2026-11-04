@@ -20,7 +20,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * one search in CloudWatch shows the request in both services. Only the Gateway can reach Domain (mTLS), so its ID is
  * trusted when it is a UUID; anything else gets a new one. The ID is on every log line written while the request
  * runs and goes back in the response. Each request also writes one summary line: method, path (never the query),
- * status and time taken. Health checks and successful static files stay quiet.
+ * status and time taken, and for every 4xx and 5xx its code and the reason in words ({@link StatusReason}). 403, 429 and
+ * 5xx are WARN. Health checks and successful static files stay quiet.
  * <p>A failure that escapes everything else is logged at ERROR with its stack trace and the request ID as its
  * reference; the caller gets that reference and nothing else.
  */
@@ -58,22 +59,25 @@ public class RequestLog extends OncePerRequestFilter {
         long started = System.nanoTime();
         MDC.put(KEY, id);
         response.setHeader(HEADER, id);
+        var watched = new StatusReason(response);
+        StatusReason.Reason reason = null;
         try {
-            chain.doFilter(request, response);
+            chain.doFilter(request, watched);
+            reason = watched.reason();
         } catch (IOException | ServletException | RuntimeException failure) {
-            failed(request, response, id, failure);
+            reason = failed(request, response, id, failure);
         } finally {
-            summary(request, response.getStatus(), (System.nanoTime() - started) / 1_000_000);
+            summary(request, response.getStatus(), (System.nanoTime() - started) / 1_000_000, reason);
             MDC.remove(KEY);
         }
     }
 
-    private static void failed(HttpServletRequest request, HttpServletResponse response, String id, Exception failure)
+    private static StatusReason.Reason failed(HttpServletRequest request, HttpServletResponse response, String id, Exception failure)
             throws IOException {
         if (response.isCommitted()) {
             // The answer was already on its way; usually the caller left. Nothing can be sent, so no ERROR.
             failures.warn("Request ended early: {} {} {}", method(request), path(request), types(failure));
-            return;
+            return response.getStatus() >= 400 ? new StatusReason.Reason("HTTP_" + response.getStatus(), StatusReason.describe(response.getStatus())) : null;
         }
         failures.error("Unexpected failure reference={} {} {}", id, method(request), path(request), failure);
         response.reset();
@@ -83,15 +87,22 @@ public class RequestLog extends OncePerRequestFilter {
         response.setContentType("application/json");
         response.getWriter().write("{\"code\":\"UNEXPECTED_ERROR\",\"message\":\"Something went wrong. Quote reference "
                 + id + " when you report it.\",\"reference\":\"" + id + "\"}");
+        return new StatusReason.Reason("UNEXPECTED_ERROR", types(failure) + ": see the ERROR line with the same requestId");
     }
 
-    private static void summary(HttpServletRequest request, int status, long millis) {
+    /** Successes: "GET /x -> 200 in 3 ms". Failures add the code and why: "POST /x -> 403 DELETE_FORBIDDEN: Only the owner… in 9 ms". */
+    private static void summary(HttpServletRequest request, int status, long millis, StatusReason.Reason reason) {
         String path = path(request);
         if (quiet(path, status)) return;
-        (status >= 500 ? requests.atWarn() : requests.atInfo())
+        var line = (status >= 500 || status == 403 || status == 429 ? requests.atWarn() : requests.atInfo())
                 .addKeyValue("http.method", method(request)).addKeyValue("url.path", path)
-                .addKeyValue("http.status", status).addKeyValue("durationMs", millis)
-                .log("{} {} -> {} in {} ms", method(request), path, status, millis);
+                .addKeyValue("http.status", status).addKeyValue("durationMs", millis);
+        if (reason == null) {
+            line.log("{} {} -> {} in {} ms", method(request), path, status, millis);
+            return;
+        }
+        line.addKeyValue("error.code", reason.code()).addKeyValue("error.reason", reason.words())
+                .log("{} {} -> {} {}: {} in {} ms", method(request), path, status, reason.code(), reason.words(), millis);
     }
 
     static boolean quiet(String path, int status) {

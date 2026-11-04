@@ -96,7 +96,7 @@ class RequestLogTest {
         var request = request("POST", "/api/v1/plans/current");
         request.setQueryString("token=secret");
 
-        filter.doFilter(request, new MockHttpServletResponse(), (req, res) -> ((MockHttpServletResponse) res).setStatus(201));
+        filter.doFilter(request, new MockHttpServletResponse(), (req, res) -> ((jakarta.servlet.http.HttpServletResponse) res).setStatus(201));
 
         assertThat(requests.list).singleElement().satisfies(event -> {
             assertThat(event.getLevel()).isEqualTo(Level.INFO);
@@ -115,12 +115,40 @@ class RequestLogTest {
     @Test
     void aCallerMistakeIsInfoAndAServerFailureIsWarn() throws Exception {
         filter.doFilter(request("GET", "/api/v1/nowhere"), new MockHttpServletResponse(),
-                (req, res) -> ((MockHttpServletResponse) res).setStatus(404));
+                (req, res) -> ((jakarta.servlet.http.HttpServletResponse) res).setStatus(404));
         filter.doFilter(request("GET", "/api/v1/plans"), new MockHttpServletResponse(),
-                (req, res) -> ((MockHttpServletResponse) res).setStatus(503));
+                (req, res) -> ((jakarta.servlet.http.HttpServletResponse) res).setStatus(503));
 
         assertThat(requests.list).extracting(ILoggingEvent::getLevel).containsExactly(Level.INFO, Level.WARN);
-        assertThat(requests.list.get(1).getFormattedMessage()).startsWith("GET /api/v1/plans -> 503 in ");
+        assertThat(requests.list.get(0).getFormattedMessage())
+                .matches("GET /api/v1/nowhere -> 404 HTTP_404: Not found: no such page, record or route in \\d+ ms");
+        assertThat(requests.list.get(1).getFormattedMessage())
+                .startsWith("GET /api/v1/plans -> 503 HTTP_503: Unavailable: a service this request needs is down or busy in ");
+    }
+
+    /** DLV-969 (owner, 2026-11-04): a refusal names its code and why, from the answer Domain wrote; 403 and 429 are WARN. */
+    @Test
+    void aRefusalNamesItsCodeAndWhyAndMasksEmails() throws Exception {
+        filter.doFilter(request("POST", "/api/v1/admin/test-accounts/x/delete"), new MockHttpServletResponse(), (req, res) -> {
+            ((jakarta.servlet.http.HttpServletResponse) res).setStatus(403);
+            res.getWriter().write("{\"status\":403,\"code\":\"ROSTER_ACCOUNT_PERMANENT\",\"message\":\"Roster accounts are never deleted. Reset puts one back to its scenario.\"}");
+        });
+        filter.doFilter(request("POST", "/api/v1/memberships/purchases"), new MockHttpServletResponse(), (req, res) -> {
+            ((jakarta.servlet.http.HttpServletResponse) res).setStatus(429);
+            res.getOutputStream().write("{\"code\":\"PAYMENT_BUSY\",\"message\":\"Busy for priya@example.invalid\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        });
+        filter.doFilter(request("GET", "/api/v1/me"), new MockHttpServletResponse(),
+                (req, res) -> ((jakarta.servlet.http.HttpServletResponse) res).sendError(401, "Full authentication is required"));
+
+        assertThat(requests.list).extracting(ILoggingEvent::getFormattedMessage).map(line -> line.replaceAll(" in \\d+ ms$", "")).containsExactly(
+                "POST /api/v1/admin/test-accounts/x/delete -> 403 ROSTER_ACCOUNT_PERMANENT: Roster accounts are never deleted. Reset puts one back to its scenario.",
+                "POST /api/v1/memberships/purchases -> 429 PAYMENT_BUSY: Busy for [email]",
+                "GET /api/v1/me -> 401 HTTP_401: Full authentication is required");
+        assertThat(requests.list).extracting(ILoggingEvent::getLevel).containsExactly(Level.WARN, Level.WARN, Level.INFO);
+        assertThat(value(requests.list.getFirst(), "error.code")).isEqualTo("ROSTER_ACCOUNT_PERMANENT");
+        assertThat(requests.list.toString()).doesNotContain("priya@");
+        assertThat(StatusReason.describe(501)).startsWith("Not implemented");
+        assertThat(StatusReason.describe(418)).isEqualTo("HTTP 418");
     }
 
     @Test
@@ -132,7 +160,7 @@ class RequestLogTest {
         assertThat(requests.list).isEmpty();
 
         filter.doFilter(request("GET", "/files/missing.css"), new MockHttpServletResponse(),
-                (req, res) -> ((MockHttpServletResponse) res).setStatus(404));
+                (req, res) -> ((jakarta.servlet.http.HttpServletResponse) res).setStatus(404));
         filter.doFilter(request("GET", "/healthy"), new MockHttpServletResponse(), (req, res) -> { });
 
         assertThat(requests.list).extracting(ILoggingEvent::getFormattedMessage)

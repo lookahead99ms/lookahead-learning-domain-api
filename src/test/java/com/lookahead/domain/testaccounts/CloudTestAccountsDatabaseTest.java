@@ -201,8 +201,16 @@ class CloudTestAccountsDatabaseTest {
   service.reset(admin,learner12,new TestAccountsService.Reset(UUID.randomUUID(),revision,"learner12@lookahead.dev","scenario"));
   assertThat(jdbc.queryForObject("SELECT count(*) FROM membership_purchases WHERE account_id=? AND superseded_at IS NULL",Integer.class,learner12)).isEqualTo(2);
   // DLV-969 (owner, 2026-11-04): a roster account is never deleted in DEV, not even by the owner; Reset is its way back.
-  assertThatThrownBy(()->created.delete(owner,learner01.accountId()))
-      .isInstanceOfSatisfying(AccountFailure.class,f->{assertThat(f.status()).isEqualTo(403);assertThat(f.code()).isEqualTo("ROSTER_ACCOUNT_PERMANENT");});
+  try(var log=com.lookahead.domain.LogCapture.start()){
+   assertThatThrownBy(()->created.delete(owner,learner01.accountId()))
+       .isInstanceOfSatisfying(AccountFailure.class,f->{assertThat(f.status()).isEqualTo(403);assertThat(f.code()).isEqualTo("ROSTER_ACCOUNT_PERMANENT");});
+   // DLV-969: the refusal is one WARN line with its code and the ids, never the roster username.
+   var refused=log.only("test-account.delete");
+   assertThat(refused.getLevel()).isEqualTo(ch.qos.logback.classic.Level.WARN);
+   assertThat(refused.getFormattedMessage()).isEqualTo("Deleting test account "+learner01.accountId()+" refused: ROSTER_ACCOUNT_PERMANENT");
+   assertThat(com.lookahead.domain.LogCapture.keys(refused)).containsEntry("reason","ROSTER_ACCOUNT_PERMANENT").containsEntry("target.id",learner01.accountId());
+   log.containsNone(learner01.username());
+  }
   assertThat(roster.next(owner)).extracting("total","ready","deleted").containsExactly(35,35,0);
   assertThat(service.list(admin)).allSatisfy(row->assertThat(row.get("canDelete").asBoolean()).isFalse());
  }

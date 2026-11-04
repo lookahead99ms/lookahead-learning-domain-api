@@ -121,4 +121,26 @@ class AccountAdmissionServiceTest {
         assertThat(controller.admit(owner,request,second).data()).isSameAs(result);
         assertThat(first.getHeader("Cache-Control")).isEqualTo("no-store");assertThat(second.getHeader("Cache-Control")).isEqualTo("no-store");
     }
+
+    /** DLV-969: an admission is one INFO line with ids and roles, a refusal one WARN line with its code; never the name or email. */
+    @Test void admissionIsLoggedWithIdsAndRolesButNeverTheNameOrEmail() throws Exception {
+        lockedRowIs(row(false));
+        when(jdbc.queryForObject(contains("RETURNING admitted_at"),eq(Timestamp.class),any(),any())).thenReturn(Timestamp.from(admitted));
+        try(var log=com.lookahead.domain.LogCapture.start()){
+            service.admit(owner,new AccountAdmissionService.Request(waiting.toString(),List.of("tester","admin")));
+            var line=log.only("admission.admitted");
+            assertThat(line.getLoggerName()).isEqualTo("lookahead.event");
+            assertThat(line.getLevel()).isEqualTo(ch.qos.logback.classic.Level.INFO);
+            assertThat(line.getFormattedMessage()).isEqualTo("Owner admitted account "+waiting+" with roles [admin, tester]");
+            assertThat(com.lookahead.domain.LogCapture.keys(line)).containsEntry("event.outcome","success").containsEntry("account.id",owner.accountId())
+                .containsEntry("target.id",waiting).containsEntry("roles",List.of("admin","tester"));
+            lockedRowIs(row(true));
+            failsWith(()->service.admit(owner,new AccountAdmissionService.Request(waiting.toString(),List.of())),409,"ACCOUNT_ALREADY_ADMITTED");
+            var refused=log.only("admission.admit");
+            assertThat(refused.getLevel()).isEqualTo(ch.qos.logback.classic.Level.WARN);
+            assertThat(refused.getFormattedMessage()).isEqualTo("Admission refused: ACCOUNT_ALREADY_ADMITTED");
+            assertThat(com.lookahead.domain.LogCapture.keys(refused)).containsEntry("reason","ACCOUNT_ALREADY_ADMITTED").containsEntry("event.outcome","refused");
+            log.containsNone("new@example.invalid","New Learner","subject-1","issuer.invalid");
+        }
+    }
 }

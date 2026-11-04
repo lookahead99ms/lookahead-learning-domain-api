@@ -1,5 +1,6 @@
 package com.lookahead.domain.testaccounts;
 
+import com.lookahead.domain.Events;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.security.AccountPrincipal;
 import jakarta.servlet.http.HttpServletRequest;
@@ -69,14 +70,43 @@ public class DevTestSessions {
         String account = request.getHeader(ACCOUNT_HEADER);
         boolean gateway = fromGateway(request);
         if (account == null) return java.util.Optional.empty();
-        if (!gateway || request.getHeader("Authorization") != null) throw refused();
+        if (!gateway) throw refused(request, "GATEWAY_SECRET_INVALID", null);
+        if (request.getHeader("Authorization") != null) throw refused(request, "BEARER_TOKEN_WITH_TEST_ACCOUNT", null);
         UUID id;
-        try { id = UUID.fromString(account); } catch (IllegalArgumentException malformed) { throw refused(); }
+        try { id = UUID.fromString(account); } catch (IllegalArgumentException malformed) { throw refused(request, "TEST_ACCOUNT_MALFORMED", null); }
         try { return java.util.Optional.of(actAs(request.getHeader(HOLDER_HEADER), id)); }
-        catch (AccountFailure denied) { throw refused(); }
+        catch (AccountFailure denied) { throw refused(request, denied.code(), id); }
     }
 
-    private static AccountFailure refused() { return new AccountFailure(401, "AUTHENTICATION_REQUIRED", "Sign in to continue"); }
+    /** One WARN line naming why, then the same 401 for every reason. */
+    private static AccountFailure refused(HttpServletRequest request, String reason, UUID target) {
+        Events.refused(Events.EVENT, "test-session.request", reason).addKeyValue("target.id", target).addKeyValue("url.path", Events.path(request))
+                .log("Test-session request {} {} refused: {}", request.getMethod(), Events.path(request), reason);
+        return new AccountFailure(401, "AUTHENTICATION_REQUIRED", "Sign in to continue");
+    }
+
+    /** DLV-969 S35: the Gateway starts a test session; one line says who acts as which test account, or why not. */
+    public AccountPrincipal start(String holderSubject, UUID accountId) {
+        try {
+            var principal = actAs(holderSubject, accountId);
+            UUID holder = holder(holderSubject);
+            Events.success(Events.EVENT, "test-session.start").addKeyValue("account.id", holder).addKeyValue("target.id", principal.accountId())
+                    .log("Test session started: account {} acts as test account {}", holder, principal.accountId());
+            return principal;
+        } catch (AccountFailure refused) {
+            Events.refused(Events.EVENT, "test-session.start", refused.code()).addKeyValue("account.id", holder(holderSubject)).addKeyValue("target.id", accountId)
+                    .log("Test session refused for test account {}: {}", accountId, refused.code());
+            throw refused;
+        }
+    }
+
+    /** The gate holder's account id for the log line, or null when unknown; looking it up never fails the session. */
+    private UUID holder(String subject) {
+        if (subject == null || subject.isBlank() || subject.length() > 256) return null;
+        try {
+            return jdbc.queryForList("SELECT account_id FROM cloud_accounts WHERE issuer=? AND subject=?", UUID.class, issuer, subject).stream().findFirst().orElse(null);
+        } catch (RuntimeException unknown) { return null; }
+    }
 
     /** The test account a gate holder acts as for this request; refused unless every rule above holds. */
     public AccountPrincipal actAs(String holderSubject, UUID accountId) {

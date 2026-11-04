@@ -15,6 +15,8 @@ public final class MockStripePaymentGateway implements PaymentGateway {
         if(!java.util.Set.of("success","decline","requires-action","network","rate-limit","server-error","timeout-after-success").contains(scenario))
             throw new IllegalArgumentException("Unsupported mock payment scenario");
         tx=new TransactionTemplate(manager);tx.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        com.lookahead.domain.Events.success(com.lookahead.domain.Events.PAYMENT,"payment.provider").addKeyValue("provider.scenario",scenario)
+            .log("Payments use the mock provider with scenario {}: no real charge is ever made",scenario);
     }
     public Result create(String key,int amount,String currency) {
         Result existing=findByKey(key);

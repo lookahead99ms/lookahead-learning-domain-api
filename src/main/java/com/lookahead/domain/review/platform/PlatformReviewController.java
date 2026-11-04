@@ -120,10 +120,12 @@ public class PlatformReviewController {
 
     private static List<Upload> uploads(MultipartHttpServletRequest request) {
         var files = request.getMultiFileMap().getOrDefault("image", List.of());
-        if (files.size() > PlatformReviewService.IMAGES_PER_ITEM) throw PlatformReviewService.invalid("Attach at most 6 images to one item.");
+        if (files.size() > PlatformReviewService.IMAGES_PER_ITEM)
+            throw PlatformReviewService.imageLimit("platform-review-images", PlatformReviewService.IMAGES_PER_ITEM, PlatformReviewService.invalid("Attach at most 6 images to one item."));
         var uploads = new ArrayList<Upload>();
         for (MultipartFile file : files) {
-            if (file.getSize() > PlatformReviewService.IMAGE_BYTES) throw PlatformReviewService.tooLarge("Each image must be 5 MB or smaller.");
+            if (file.getSize() > PlatformReviewService.IMAGE_BYTES)
+                throw PlatformReviewService.imageLimit("platform-review-image-bytes", PlatformReviewService.IMAGE_BYTES, PlatformReviewService.tooLarge("Each image must be 5 MB or smaller."));
             try { uploads.add(new Upload(file.getOriginalFilename(), file.getContentType(), file.getBytes())); }
             catch (IOException unreadable) { throw PlatformReviewService.invalid("An image could not be read."); }
         }

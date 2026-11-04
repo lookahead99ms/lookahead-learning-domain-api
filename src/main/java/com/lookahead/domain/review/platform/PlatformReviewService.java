@@ -1,5 +1,6 @@
 package com.lookahead.domain.review.platform;
 
+import com.lookahead.domain.Events;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.security.AccountPrincipal;
 import com.lookahead.learning.content.security.LocalAuthorAccess;
@@ -113,6 +114,8 @@ public class PlatformReviewService {
         if (replay.isPresent()) {
             if (!replay.get().createHash().equals(hash))
                 throw new AccountFailure(409, "PLATFORM_REVIEW_IDEMPOTENCY_CONFLICT", "Reload the page before sending this item again.");
+            Events.success(Events.EVENT, "platform-review.submit").addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", replay.get().id())
+                    .addKeyValue("repeated", true).log("Platform review item {} sent again with the same key: the saved item is returned", replay.get().id());
             return new Receipt(view(replay.get()), true);
         }
         String id = UUID.randomUUID().toString();
@@ -125,8 +128,12 @@ public class PlatformReviewService {
             change(today, items -> {
                 var prior = items.stream().filter(i -> key.equals(i.createKey()) && mine(i, actor)).findFirst();
                 if (prior.isPresent()) return new Change<>(items, prior.get(), false);
-                if (items.stream().filter(i -> mine(i, actor)).count() >= ITEMS_PER_REVIEWER_PER_DAY)
+                if (items.stream().filter(i -> mine(i, actor)).count() >= ITEMS_PER_REVIEWER_PER_DAY) {
+                    Events.limit("platform-review.submit", "PLATFORM_REVIEW_DAILY_LIMIT", "platform-review-items", ITEMS_PER_REVIEWER_PER_DAY, "1d UTC")
+                            .addKeyValue("account.id", actor.accountId())
+                            .log("Platform review limit hit for account {}: at most {} items a day (UTC)", actor.accountId(), ITEMS_PER_REVIEWER_PER_DAY);
                     throw invalid("You have added the most items allowed for one day. Add more tomorrow.");
+                }
                 var next = new ArrayList<>(items);
                 next.add(item);
                 return new Change<>(next, item, true);
@@ -135,6 +142,11 @@ public class PlatformReviewService {
             discard(attachments);
             throw failure;
         }
+        Events.success(Events.EVENT, "platform-review.submit").addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", id)
+                .addKeyValue("review.category", clean.category()).addKeyValue("review.page", clean.page()).addKeyValue("review.priority", clean.priority())
+                .addKeyValue("count", attachments.size())
+                .log("Platform review item {} submitted by account {}: {} on page {}, priority {}, {} image(s)", id, actor.accountId(),
+                    clean.category(), clean.page(), clean.priority(), attachments.size());
         return new Receipt(view(item), false);
     }
 
@@ -176,6 +188,9 @@ public class PlatformReviewService {
             throw failure;
         }
         discard(removed);
+        Events.success(Events.EVENT, "platform-review.update").addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", id)
+                .addKeyValue("count", saved.attachments().size())
+                .log("Platform review item {} updated by account {}: {} image(s) kept, {} added, {} removed", id, actor.accountId(), kept.size(), added.size(), removed.size());
         return view(saved);
     }
 
@@ -191,6 +206,8 @@ public class PlatformReviewService {
             return new Change<>(next, current, true);
         });
         discard(removed.attachments());
+        Events.success(Events.EVENT, "platform-review.delete").addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", id)
+                .log("Platform review item {} deleted by account {} with its {} image(s)", id, actor.accountId(), removed.attachments().size());
     }
 
     public Item triage(AccountPrincipal actor, String id, String status, String note) {
@@ -198,16 +215,22 @@ public class PlatformReviewService {
         if (status == null || !STATUSES.contains(status)) throw invalid("Choose a status.");
         String ownerNote = text(note == null ? "" : note, NOTE_LENGTH, true, "Keep the note within 2000 characters.").strip();
         var found = visible(actor, id);
-        return view(shown(actor, change(found.day(), items -> {
+        String[] before = {null};
+        var triaged = view(shown(actor, change(found.day(), items -> {
             var next = new ArrayList<>(items);
             int at = indexOf(next, id);
             StoredItem c = next.get(at);
+            before[0] = c.status();
             var updated = new StoredItem(c.id(), c.reviewerAccountId(), c.reviewerId(), c.reviewerName(), c.category(), c.page(),
                     c.pageUrl(), c.title(), c.details(), c.priority(), c.attachments(), status, ownerNote, c.createdAt(),
                     clock.instant().toString(), c.createKey(), c.createHash(), c.lastWriteKey(), c.submitterRole());
             next.set(at, updated);
             return new Change<>(next, updated, true);
         })));
+        Events.success(Events.EVENT, "platform-review.status").addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", id)
+                .addKeyValue("review.status.before", before[0]).addKeyValue("review.status", status)
+                .log("Platform review item {} status changed by the owner: {} -> {}", id, before[0], status);
+        return triaged;
     }
 
     public record Receipt(Item item, boolean replayed) {}
@@ -281,12 +304,20 @@ public class PlatformReviewService {
                 Change<T> result = edit.apply(items);
                 if (!result.write()) return result.result();
                 byte[] bytes = serialize(new DayFile(DAY_SCHEMA, day.toString(), List.copyOf(result.items())));
-                if (storage(() -> objects.write(key, bytes, stored.map(PlatformReviewObjects.Stored::version).orElse(null))))
+                if (storage(() -> objects.write(key, bytes, stored.map(PlatformReviewObjects.Stored::version).orElse(null)))) {
+                    if (attempt > 0) Events.success(Events.EVENT, "platform-review.write").addKeyValue("retry.attempt", attempt + 1).addKeyValue("retry.max", WRITE_ATTEMPTS)
+                            .log("Review day file {} saved on attempt {} of {}", day, attempt + 1, WRITE_ATTEMPTS);
                     return result.result();
+                }
+                if (attempt < WRITE_ATTEMPTS - 1)
+                    Events.retry(Events.EVENT, "platform-review.write", "WRITE_CONFLICT", attempt + 1, WRITE_ATTEMPTS)
+                            .log("Review day file {} was changed by another writer at the same moment: attempt {} of {}; reading it again", day, attempt + 1, WRITE_ATTEMPTS);
             }
         } finally {
             writes.unlock();
         }
+        Events.failed(Events.EVENT, "platform-review.write", "WRITE_CONFLICT").addKeyValue("retry.max", WRITE_ATTEMPTS)
+                .log("Review day file {} not saved after {} attempts: another writer kept changing it; refused with 503", day, WRITE_ATTEMPTS);
         throw unavailable();
     }
 
@@ -333,11 +364,11 @@ public class PlatformReviewService {
 
     private List<Prepared> images(List<Upload> uploads, List<StoredAttachment> kept) {
         var list = uploads == null ? List.<Upload>of() : uploads;
-        if (kept.size() + list.size() > IMAGES_PER_ITEM) throw invalid("Attach at most 6 images to one item.");
+        if (kept.size() + list.size() > IMAGES_PER_ITEM) throw imageLimit("platform-review-images", IMAGES_PER_ITEM, invalid("Attach at most 6 images to one item."));
         long total = kept.stream().mapToLong(StoredAttachment::size).sum();
         var images = new ArrayList<Prepared>();
         for (Upload upload : list) {
-            if (upload.bytes().length > IMAGE_BYTES) throw tooLarge("Each image must be 5 MB or smaller.");
+            if (upload.bytes().length > IMAGE_BYTES) throw imageLimit("platform-review-image-bytes", IMAGE_BYTES, tooLarge("Each image must be 5 MB or smaller."));
             if (upload.bytes().length == 0) throw invalid("An image is empty.");
             Image image;
             try { image = PlatformReviewImages.clean(upload.declaredType(), upload.bytes()); }
@@ -345,7 +376,7 @@ public class PlatformReviewService {
             total += upload.bytes().length;
             images.add(new Prepared(name(upload.name()), image));
         }
-        if (total > ITEM_IMAGE_BYTES) throw tooLarge("Images on one item must total 20 MB or less.");
+        if (total > ITEM_IMAGE_BYTES) throw imageLimit("platform-review-item-image-bytes", ITEM_IMAGE_BYTES, tooLarge("Images on one item must total 20 MB or less."));
         return images;
     }
 
@@ -473,6 +504,13 @@ public class PlatformReviewService {
     private static <T> T storage(java.util.function.Supplier<T> call) {
         try { return call.get(); }
         catch (UncheckedIOException failure) { throw unavailable(); }
+    }
+
+    /** An image count or size limit hit: one {@code lookahead.limit} line naming the limit, then the caller's refusal. */
+    static AccountFailure imageLimit(String name, long max, AccountFailure refusal) {
+        Events.limit("platform-review.images", refusal.code(), name, max, "per item").addKeyValue("http.status", refusal.status())
+                .log("Platform review image limit hit: {} (at most {}); refused with {}", name, max, refusal.status());
+        return refusal;
     }
 
     static AccountFailure invalid(String message) { return new AccountFailure(422, "PLATFORM_REVIEW_INVALID", message); }

@@ -43,7 +43,12 @@ public class DevTestSessionConfiguration {
                 .addFilterBefore(new OncePerRequestFilter() {
                     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
                             throws ServletException, IOException {
-                        if (!sessions.fromGateway(request)) { Filter.refuse(response); return; }
+                        if (!sessions.fromGateway(request)) {
+                            com.lookahead.domain.Events.refused(com.lookahead.domain.Events.EVENT, "test-session.gateway-check", "GATEWAY_SECRET_INVALID")
+                                    .addKeyValue("url.path", com.lookahead.domain.Events.path(request))
+                                    .log("Test-session route {} refused: the call did not carry the Gateway secret", com.lookahead.domain.Events.path(request));
+                            Filter.refuse(response); return;
+                        }
                         chain.doFilter(request, response);
                     }
                 }, org.springframework.security.web.csrf.CsrfFilter.class)

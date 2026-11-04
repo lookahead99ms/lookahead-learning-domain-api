@@ -1,5 +1,6 @@
 package com.lookahead.domain.access;
 
+import com.lookahead.domain.Events;
 import com.lookahead.domain.security.IdentitySettings;
 import com.lookahead.learning.content.exception.AccountFailure;
 import java.net.http.HttpClient;
@@ -41,11 +42,13 @@ public class AccountDirectory {
                 """,(r,i)->new Account(r.getObject(1,UUID.class),r.getString(2),r.getString(3),r.getString(4)),term,term,term,term,page*50);
             return new Page(java.util.List.copyOf(rows.subList(0,Math.min(50,rows.size()))),page,rows.size()>50);
         }
+        long started=Events.started();int[] status={0};
         try {
             var uri=org.springframework.web.util.UriComponentsBuilder.fromUriString(identity.upstream()+"/internal/v1/accounts")
                 .queryParam("query","{query}").queryParam("page",page).encode().buildAndExpand(term).toUri();
-            return http.get().uri(uri).headers(h->h.setBasicAuth("lookahead-domain-verifier",identity.verifierSecret()))
+            return answered("ListAccounts",started,http.get().uri(uri).headers(h->h.setBasicAuth("lookahead-domain-verifier",identity.verifierSecret()))
                 .exchange((sent,response)-> {
+                    status[0]=response.getStatusCode().value();
                     if(response.getStatusCode().value()!=200)throw unavailable();
                     byte[] bytes=response.getBody().readNBytes(262145);
                     if(bytes.length>262144)throw unavailable();
@@ -53,8 +56,19 @@ public class AccountDirectory {
                     if(result==null||result.accounts()==null||result.accounts().size()>50||result.page()!=page
                        ||result.accounts().stream().anyMatch(a->a==null||a.accountId()==null||a.username()==null||a.displayName()==null))throw unavailable();
                     return result;
-                });
-        } catch(AccountFailure expected){throw expected;}catch(RuntimeException failure){throw unavailable();}
+                }));
+        } catch(AccountFailure expected){throw refused("ListAccounts",started,status[0],expected);}catch(RuntimeException failure){throw failed("ListAccounts",started,status[0],failure);}
+    }
+    private static <T> T answered(String operation,long started,T result){Events.upstreamDone("Identity",operation,started);return result;}
+    /** Identity answered, but not with a usable account: not found is a refusal, anything else a failure. */
+    private static AccountFailure refused(String operation,long started,int status,AccountFailure outcome){
+        if("ACCOUNT_NOT_FOUND".equals(outcome.code()))Events.upstreamRefused("Identity",operation,started,"ACCOUNT_NOT_FOUND");
+        else Events.upstreamFailed("Identity",operation,started,null,status==0?null:status,status==200?"INVALID_RESPONSE":null);
+        return outcome;
+    }
+    private static AccountFailure failed(String operation,long started,int status,RuntimeException failure){
+        Events.upstreamFailed("Identity",operation,started,failure,status==0?Events.status(failure):Integer.valueOf(status),null);
+        return unavailable();
     }
     public Account lookup(String query) {
         if(query==null||query.isBlank()||query.length()>254||query.codePoints().anyMatch(Character::isISOControl))throw invalid();
@@ -65,10 +79,12 @@ public class AccountDirectory {
                 (r,i)->new Account(r.getObject(1,UUID.class),r.getString(2),r.getString(3),null),query);
             if(rows.size()!=1)throw missing();return rows.getFirst();
         }
+        long started=Events.started();int[] status={0};
         try {
-            return http.post().uri(identity.upstream()+"/internal/v1/accounts/lookup")
+            return answered("LookupAccount",started,http.post().uri(identity.upstream()+"/internal/v1/accounts/lookup")
                 .headers(h->h.setBasicAuth("lookahead-domain-verifier",identity.verifierSecret()))
                 .body(Map.of("query",query)).exchange((sent,response)-> {
+                    status[0]=response.getStatusCode().value();
                     if(response.getStatusCode().value()==404)throw missing();
                     if(response.getStatusCode().value()!=200)throw unavailable();
                     byte[] bytes=response.getBody().readNBytes(4097);
@@ -77,8 +93,8 @@ public class AccountDirectory {
                     if(account.accountId()==null||account.username()==null||account.displayName()==null)throw unavailable();
                     jdbc.update("INSERT INTO platform_subjects(id) VALUES(?) ON CONFLICT (id) DO NOTHING",account.accountId());
                     return account;
-                });
-        } catch(AccountFailure expected){throw expected;}catch(RuntimeException failure){throw unavailable();}
+                }));
+        } catch(AccountFailure expected){throw refused("LookupAccount",started,status[0],expected);}catch(RuntimeException failure){throw failed("LookupAccount",started,status[0],failure);}
     }
     public Account byId(UUID id) {
         if (id == null) throw invalid();
@@ -88,10 +104,12 @@ public class AccountDirectory {
             if (rows.isEmpty()) throw missing();
             return rows.getFirst();
         }
+        long started=Events.started();int[] status={0};
         try {
-            return http.get().uri(identity.upstream()+"/internal/v1/accounts/"+id)
+            return answered("GetAccount",started,http.get().uri(identity.upstream()+"/internal/v1/accounts/"+id)
                 .headers(h->h.setBasicAuth("lookahead-domain-verifier",identity.verifierSecret()))
                 .exchange((sent,response)-> {
+                    status[0]=response.getStatusCode().value();
                     if(response.getStatusCode().value()==404)throw missing();
                     if(response.getStatusCode().value()!=200)throw unavailable();
                     byte[] bytes=response.getBody().readNBytes(4097);
@@ -99,8 +117,8 @@ public class AccountDirectory {
                     var account=new tools.jackson.databind.ObjectMapper().readValue(bytes,Account.class);
                     if(account==null||!id.equals(account.accountId()))throw unavailable();
                     return account;
-                });
-        } catch(AccountFailure expected){throw expected;}catch(RuntimeException failure){throw unavailable();}
+                }));
+        } catch(AccountFailure expected){throw refused("GetAccount",started,status[0],expected);}catch(RuntimeException failure){throw failed("GetAccount",started,status[0],failure);}
     }
     private static AccountFailure invalid(){return new AccountFailure(422,"INVALID_ACCOUNT_LOOKUP","Enter an exact email or username.");}
     private static AccountFailure missing(){return new AccountFailure(404,"ACCOUNT_NOT_FOUND","No eligible existing account matched. You can prepare a pending email assignment.");}

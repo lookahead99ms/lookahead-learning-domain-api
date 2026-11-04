@@ -1,5 +1,6 @@
 package com.lookahead.domain.cloud;
 
+import com.lookahead.domain.Events;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.security.AccountPrincipal;
 import java.nio.charset.StandardCharsets;
@@ -30,10 +31,11 @@ public final class CloudSignInRegistry {
     private final TransactionTemplate transaction;
     public CloudSignInRegistry(JdbcTemplate jdbc,PlatformTransactionManager manager){this.jdbc=jdbc;this.transaction=new TransactionTemplate(manager);}
 
+    static final int CHALLENGES_PER_WINDOW=5;
     /** DLV-969: a sign-in without a cloud_accounts row records a waiting row (first contact) and still answers 403. */
     public Admission admit(CognitoIdentity identity,String proof) {
         String binding=binding(proof),family=family(identity);
-        return locked(identity,false,true,account->{
+        Admission admission=locked(identity,false,true,account->{
             Instant now=now();requireFresh(identity.authenticatedAt(),now);expire(account.id,now);
             var families=jdbc.query("SELECT * FROM cloud_sign_ins WHERE family_digest=?",(r,i)->signIn(r),family);
             if(!families.isEmpty()) {
@@ -53,11 +55,20 @@ public final class CloudSignInRegistry {
             // Do not issue a second challenge for the same token family; the caller retains its secret.
             if(!pending.isEmpty())throw failure(409,"SIGN_IN_CHALLENGE_PENDING");
             jdbc.update("DELETE FROM cloud_sign_in_challenges WHERE account_id=? AND expires_at<?",account.id,ts(now.minus(Duration.ofMinutes(15))));
-            if(jdbc.queryForObject("SELECT count(*) FROM cloud_sign_in_challenges WHERE account_id=? AND created_at>?",Integer.class,account.id,ts(now.minus(Duration.ofMinutes(15))))>=5)throw failure(429,"SIGN_IN_RATE_LIMITED");
+            if(jdbc.queryForObject("SELECT count(*) FROM cloud_sign_in_challenges WHERE account_id=? AND created_at>?",Integer.class,account.id,ts(now.minus(Duration.ofMinutes(15))))>=CHALLENGES_PER_WINDOW){
+                Events.limit("sign-in.challenge","SIGN_IN_RATE_LIMITED","sign-in-challenges",CHALLENGES_PER_WINDOW,"15m").addKeyValue("account.id",account.id)
+                    .log("Sign-in limit hit for account {}: at most {} sign-in challenges in 15 minutes; refused with 429",account.id,CHALLENGES_PER_WINDOW);
+                throw failure(429,"SIGN_IN_RATE_LIMITED");
+            }
             String token=randomToken();Instant expires=now.plus(Duration.ofMinutes(5));
             jdbc.update("INSERT INTO cloud_sign_in_challenges(token_digest,account_id,family_digest,binding_digest,created_at,expires_at,auth_at) VALUES(?,?,?,?,?,?,?)",digest(token),account.id,family,binding,ts(now),ts(expires),ts(identity.authenticatedAt()));
             return new Admission(account.id,null,token,expires);
         });
+        if(admission.signInId()!=null)Events.success(Events.EVENT,"sign-in.admitted").addKeyValue("account.id",admission.accountId()).addKeyValue("target.id",admission.signInId())
+            .log("Sign-in {} admitted for account {}",admission.signInId(),admission.accountId());
+        else Events.success(Events.EVENT,"sign-in.challenge").addKeyValue("account.id",admission.accountId())
+            .log("Account {} already has 2 active sign-ins: a challenge to replace one was issued",admission.accountId());
+        return admission;
     }
     public AccountPrincipal authenticate(CognitoIdentity identity,String proof) {
         return locked(identity,account->{current(account,identity,proof,true);return new AccountPrincipal(account.id,account.username,account.name,true,account.author,identity.verifiedEmail());});
@@ -75,17 +86,25 @@ public final class CloudSignInRegistry {
             if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM cloud_sign_ins WHERE family_digest=? OR (account_id=? AND binding_digest=? AND revoked_at IS NULL))",Boolean.class,c.family,a.id,c.binding)))throw invalid();
             UUID id=insert(a.id,c.family,c.binding,c.auth,now);
             jdbc.update("UPDATE cloud_sign_in_challenges SET selected_id=?,admitted_id=? WHERE token_digest=?",selected,id,digest(token));
+            Events.afterCommit(()->Events.success(Events.EVENT,"sign-in.replaced").addKeyValue("account.id",a.id).addKeyValue("target.id",selected)
+                .log("Account {} replaced sign-in {} with new sign-in {}",a.id,selected,id));
             return new Admission(a.id,id,null,null);
         });
     }
     public void cancel(CognitoIdentity identity,String proof,String token){locked(identity,a->{Challenge c=challenge(a,identity,proof,token);if(c.admitted==null)jdbc.update("UPDATE cloud_sign_in_challenges SET cancelled=true WHERE token_digest=?",digest(token));return null;});}
-    public boolean revoke(CognitoIdentity identity,String proof,UUID target){return locked(identity,a->{SignIn current=current(a,identity,proof,false);requireFresh(current.recent,now());if(!owned(a.id,target))throw invalid();revokeRow(a.id,target,now());return current.id.equals(target);});}
-    public void revokeOthers(CognitoIdentity identity,String proof){locked(identity,a->{SignIn current=current(a,identity,proof,false);requireFresh(current.recent,now());jdbc.update("UPDATE cloud_sign_ins SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE account_id=? AND id<>?",a.id,current.id);return null;});}
+    public boolean revoke(CognitoIdentity identity,String proof,UUID target){return locked(identity,a->{SignIn current=current(a,identity,proof,false);requireFresh(current.recent,now());if(!owned(a.id,target))throw invalid();revokeRow(a.id,target,now());
+        Events.afterCommit(()->Events.success(Events.EVENT,"sign-in.revoked").addKeyValue("account.id",a.id).addKeyValue("target.id",target).log("Account {} ended sign-in {}",a.id,target));
+        return current.id.equals(target);});}
+    public void revokeOthers(CognitoIdentity identity,String proof){locked(identity,a->{SignIn current=current(a,identity,proof,false);requireFresh(current.recent,now());int ended=jdbc.update("UPDATE cloud_sign_ins SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE account_id=? AND id<>?",a.id,current.id);
+        Events.afterCommit(()->Events.success(Events.EVENT,"sign-in.revoked-others").addKeyValue("account.id",a.id).addKeyValue("count",ended).log("Account {} ended its other sign-ins ({} row(s))",a.id,ended));
+        return null;});}
     public Entry rename(CognitoIdentity identity,String proof,String label){
         if(label==null||label.strip().length()>80||label.codePoints().anyMatch(c->Character.isISOControl(c)||c=='<'||c=='>'))throw failure(400,"INVALID_SIGN_IN_LABEL");
         return locked(identity,a->{SignIn current=current(a,identity,proof,false);jdbc.update("UPDATE cloud_sign_ins SET label=? WHERE id=?",label.strip(),current.id);return entries(a.id,current.id).stream().filter(Entry::current).findFirst().orElseThrow();});
     }
-    public void terminate(CognitoIdentity identity,String proof){locked(identity,a->{String binding=binding(proof);jdbc.update("UPDATE cloud_sign_ins SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE account_id=? AND family_digest=? AND binding_digest=?",a.id,family(identity),binding);return null;});}
+    public void terminate(CognitoIdentity identity,String proof){locked(identity,a->{String binding=binding(proof);jdbc.update("UPDATE cloud_sign_ins SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE account_id=? AND family_digest=? AND binding_digest=?",a.id,family(identity),binding);
+        Events.afterCommit(()->Events.success(Events.EVENT,"sign-in.signed-out").addKeyValue("account.id",a.id).log("Account {} signed out",a.id));
+        return null;});}
     public Map<String,Object> profile(CognitoIdentity identity,String proof,String displayName){return locked(identity,a->{
         current(a,identity,proof,true);String name=a.name;
         if(displayName!=null){name=displayName.strip();if(name.isEmpty()||name.codePointCount(0,name.length())>160||name.codePoints().anyMatch(c->Character.isISOControl(c)||c>=0xD800&&c<=0xDFFF))throw failure(422,"INVALID_PROFILE");jdbc.update("UPDATE cloud_accounts SET display_name=? WHERE account_id=?",name,a.id);}
@@ -128,14 +147,19 @@ public final class CloudSignInRegistry {
     public void changeCredentials(CognitoIdentity identity,String proof,Runnable providerChange){
         // Commit a fail-closed intent before crossing the provider/database boundary.
         // A process crash or failed completion commit leaves all account access blocked.
-        locked(identity,a->{current(a,identity,proof,false);jdbc.update("UPDATE cloud_accounts SET credential_change_pending=true WHERE account_id=?",a.id);return null;});
+        UUID account=locked(identity,a->{current(a,identity,proof,false);jdbc.update("UPDATE cloud_accounts SET credential_change_pending=true WHERE account_id=?",a.id);return a.id;});
         try {providerChange.run();}
         catch(AccountFailure rejected){
             boolean knownRejection=Set.of("INVALID_CURRENT_PASSWORD","INVALID_PASSWORD").contains(rejected.code());
-            finishCredentialChange(identity,!knownRejection);throw rejected;
+            finishCredentialChange(identity,!knownRejection);
+            (knownRejection?Events.refused(Events.EVENT,"password.change",rejected.code()):Events.failed(Events.EVENT,"password.change",rejected.code()))
+                .addKeyValue("account.id",account)
+                .log(knownRejection?"Password change for account {} refused by the sign-in service: {}":"Password change for account {} not confirmed by the sign-in service: {}; every sign-in of the account was ended",account,rejected.code());
+            throw rejected;
         }
-        catch(RuntimeException uncertain){finishCredentialChange(identity,true);throw uncertain;}
+        catch(RuntimeException uncertain){finishCredentialChange(identity,true);Events.failed(Events.EVENT,"password.change","UNEXPECTED").addKeyValue("account.id",account).log("Password change for account {} failed: {}; every sign-in of the account was ended",account,Events.types(uncertain));throw uncertain;}
         finishCredentialChange(identity,true);
+        Events.success(Events.EVENT,"password.change").addKeyValue("account.id",account).log("Password changed for account {}; every sign-in of the account was ended",account);
     }
     private void finishCredentialChange(CognitoIdentity identity,boolean revoke){locked(identity,true,false,a->{
         if(revoke){
@@ -164,30 +188,47 @@ public final class CloudSignInRegistry {
      * from the provider claims; both commit before the 403 is thrown. Every other path leaves the table untouched.
      */
     private <T>T locked(CognitoIdentity identity,boolean allowCredentialChange,boolean firstContact,Function<Account,T> action){
-        var waiting=new AccountFailure[1];
+        var waiting=new AccountFailure[1];var waitingId=new UUID[1];var waitingAction=new String[1];
         T result=transaction.execute(status->{
             // Two concurrent first contacts of one identity serialize here; the second sees the row the first created.
             if(firstContact)jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?,0))",rs->{},identity.issuer()+"\n"+identity.subject());
             var rows=jdbc.query("SELECT * FROM cloud_accounts WHERE issuer=? AND subject=? FOR UPDATE",(r,i)->new Row(
                 new Account(r.getObject("account_id",UUID.class),r.getString("username"),r.getString("display_name"),r.getBoolean("author_access")),
                 r.getBoolean("enabled"),r.getBoolean("admitted"),r.getBoolean("credential_change_pending")),identity.issuer(),identity.subject());
-            if(rows.size()!=1){if(!firstContact)throw admissionRequired();request(identity);waiting[0]=admissionRequired();return null;}
+            if(rows.size()!=1){if(!firstContact)throw admissionRequired();waitingId[0]=request(identity);waitingAction[0]="created";waiting[0]=admissionRequired();return null;}
             Row row=rows.getFirst();
             // DLV-969: an account the owner disabled or deleted (V18) has no sign-in, even before the pool is told.
-            if(!row.enabled||!jdbc.queryForList("SELECT state FROM cloud_account_states WHERE account_id=?",String.class,row.account.id).isEmpty())throw denied();
-            if(!row.admitted){if(!firstContact)throw denied();refresh(identity,row.account.id);waiting[0]=admissionRequired();return null;}
-            if(!allowCredentialChange&&row.credentialChangePending)throw failure(503,"CREDENTIAL_CHANGE_PENDING");
+            var states=jdbc.queryForList("SELECT state FROM cloud_account_states WHERE account_id=?",String.class,row.account.id);
+            if(!row.enabled||!states.isEmpty()){
+                String reason=states.isEmpty()?"ACCOUNT_DISABLED":"removed".equals(states.getFirst())?"ACCOUNT_REMOVED":"ACCOUNT_DISABLED";
+                Events.refused(Events.EVENT,"sign-in.check",reason).addKeyValue("account.id",row.account.id)
+                    .log("Sign-in refused for account {}: {}",row.account.id,reason.equals("ACCOUNT_REMOVED")?"the owner deleted it":"the owner disabled it");
+                throw denied();
+            }
+            if(!row.admitted){if(!firstContact)throw denied();refresh(identity,row.account.id);waitingId[0]=row.account.id;waitingAction[0]="refreshed";waiting[0]=admissionRequired();return null;}
+            if(!allowCredentialChange&&row.credentialChangePending){
+                Events.refused(Events.EVENT,"sign-in.check","CREDENTIAL_CHANGE_PENDING").addKeyValue("account.id",row.account.id)
+                    .log("Request refused for account {}: a password change is not confirmed yet (503)",row.account.id);
+                throw failure(503,"CREDENTIAL_CHANGE_PENDING");
+            }
             return action.apply(row.account);
         });
-        if(waiting[0]!=null)throw waiting[0];
+        if(waiting[0]!=null){
+            // Committed: the owner now sees the waiting row on People and access.
+            Events.refused(Events.EVENT,"admission.waiting-"+waitingAction[0],"ACCOUNT_ADMISSION_REQUIRED").addKeyValue("account.id",waitingId[0])
+                .log("Sign-in refused for account {}: not admitted yet; waiting row {} (removed after {} h unless the owner admits it)",
+                    waitingId[0],waitingAction[0],CloudAdmissionCleanup.WAITING_EXPIRY.toHours());
+            throw waiting[0];
+        }
         return result;
     }
-    private void request(CognitoIdentity identity){
+    private UUID request(CognitoIdentity identity){
         UUID id=UUID.randomUUID();
         jdbc.update("INSERT INTO platform_subjects(id) VALUES(?)",id);
         jdbc.update("INSERT INTO cloud_accounts(account_id,issuer,subject,admitted,enabled,author_access,requested_at,username,display_name,verified_email) VALUES(?,?,?,false,true,false,clock_timestamp(),?,?,?)",
             id,identity.issuer(),identity.subject(),identity.username(),identity.displayName(),email(identity));
         jdbc.update("INSERT INTO cloud_admission_events(id,account_id,issuer,subject,actor_id,action,roles) VALUES(?,?,?,?,NULL,'request','[]'::jsonb)",UUID.randomUUID(),id,identity.issuer(),identity.subject());
+        return id;
     }
     private void refresh(CognitoIdentity identity,UUID account){jdbc.update("UPDATE cloud_accounts SET username=?,display_name=?,verified_email=? WHERE account_id=?",identity.username(),identity.displayName(),email(identity),account);}
     private static String email(CognitoIdentity identity){String email=identity.verifiedEmail();return email==null||email.length()>254?null:email;}

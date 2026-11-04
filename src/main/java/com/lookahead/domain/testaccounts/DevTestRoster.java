@@ -1,5 +1,6 @@
 package com.lookahead.domain.testaccounts;
 
+import com.lookahead.domain.Events;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.security.AccountPrincipal;
 import com.lookahead.learning.content.security.LocalAuthorAccess;
@@ -46,11 +47,20 @@ public class DevTestRoster {
     public Status next(AccountPrincipal actor) {
         policy.requireCloud();
         if (actor == null || !actor.isEnabled()) throw new AccountFailure(401, "AUTHENTICATION_REQUIRED", "Sign in to continue.");
-        if (!owner.allowed(actor)) throw new AccountFailure(403, "TEST_ROSTER_OWNER_ONLY", "Only the owner can create the test roster.");
+        if (!owner.allowed(actor)) {
+            Events.refused(Events.EVENT, "test-roster.create", "TEST_ROSTER_OWNER_ONLY").addKeyValue("account.id", actor.accountId())
+                    .log("Test roster creation refused for account {}: only the owner creates it", actor.accountId());
+            throw new AccountFailure(403, "TEST_ROSTER_OWNER_ONLY", "Only the owner can create the test roster.");
+        }
         var existing = new HashSet<>(jdbc.queryForList("SELECT account_id FROM test_account_registry", UUID.class));
-        TestAccountRoster.entries().stream().filter(entry -> !existing.contains(entry.accountId())).limit(BATCH)
-                .forEach(entry -> transactions.executeWithoutResult(status -> service.admitRosterEntry(actor, entry)));
-        return status();
+        var batch = TestAccountRoster.entries().stream().filter(entry -> !existing.contains(entry.accountId())).limit(BATCH).toList();
+        batch.forEach(entry -> transactions.executeWithoutResult(status -> service.admitRosterEntry(actor, entry)));
+        var progress = status();
+        Events.success(Events.EVENT, "test-roster.create").addKeyValue("account.id", actor.accountId()).addKeyValue("count", batch.size())
+                .addKeyValue("ready", progress.ready()).addKeyValue("total", progress.total())
+                .log("DEV test roster: {} account(s) created in this batch; {} of {} ready, {} deleted, {} still to create",
+                    batch.size(), progress.ready(), progress.total(), progress.deleted(), progress.remaining());
+        return progress;
     }
 
     private Status status() {

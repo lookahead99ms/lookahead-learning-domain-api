@@ -1,5 +1,6 @@
 package com.lookahead.domain.review.platform;
 
+import com.lookahead.domain.Events;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
@@ -29,6 +30,7 @@ public final class S3PlatformReviewObjects implements PlatformReviewObjects {
     }
     @Override public Optional<Stored> read(String key) {
         String objectKey=key(key);
+        long started=Events.started();
         try (var response=s3.getObject(GetObjectRequest.builder().bucket(bucket).key(objectKey).expectedBucketOwner(owner).build())) {
             byte[] bytes=response.readNBytes(MAX_READ_BYTES+1);
             String version=response.response().eTag();
@@ -36,18 +38,20 @@ public final class S3PlatformReviewObjects implements PlatformReviewObjects {
             return Optional.of(new Stored(bytes,version));
         } catch(S3Exception failure) {
             if(failure.statusCode()==404)return Optional.empty();
-            throw unavailable();
-        } catch(IOException | software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable(); }
+            throw unavailable("GetObject",started,failure);
+        } catch(IOException | software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("GetObject",started,failure); }
     }
     @Override public boolean write(String key, byte[] bytes, String expectedVersion) {
         var request=putRequest(key).ifMatch(expectedVersion).ifNoneMatch(expectedVersion==null?"*":null).build();
+        long started=Events.started();
         try { s3.putObject(request,RequestBody.fromBytes(bytes));return true; }
-        catch(S3Exception failure) { if(failure.statusCode()==412||failure.statusCode()==409)return false;throw unavailable(); }
-        catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable(); }
+        catch(S3Exception failure) { if(failure.statusCode()==412||failure.statusCode()==409)return false;throw unavailable("PutObject",started,failure); }
+        catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("PutObject",started,failure); }
     }
     @Override public void put(String key,byte[] bytes) {
+        long started=Events.started();
         try { s3.putObject(putRequest(key).build(),RequestBody.fromBytes(bytes)); }
-        catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable(); }
+        catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("PutObject",started,failure); }
     }
     private PutObjectRequest.Builder putRequest(String key) {
         return PutObjectRequest.builder().bucket(bucket).key(key(key)).expectedBucketOwner(owner)
@@ -56,6 +60,7 @@ public final class S3PlatformReviewObjects implements PlatformReviewObjects {
     @Override public List<String> list(String requestedPrefix) {
         String directory=key(requestedPrefix.endsWith("/")?requestedPrefix.substring(0,requestedPrefix.length()-1):requestedPrefix)+"/";
         List<String> keys=new ArrayList<>();String token=null;
+        long started=Events.started();
         try {
             do {
                 var page=s3.listObjectsV2(ListObjectsV2Request.builder().bucket(bucket).prefix(directory).delimiter("/")
@@ -70,11 +75,20 @@ public final class S3PlatformReviewObjects implements PlatformReviewObjects {
                 token=next;
             } while(token!=null);
             return List.copyOf(keys);
-        } catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable(); }
+        } catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("ListObjectsV2",started,failure); }
     }
     @Override public void delete(String key) {
+        long started=Events.started();
         try {s3.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key(key)).expectedBucketOwner(owner).build());}
-        catch(software.amazon.awssdk.core.exception.SdkException failure) {throw unavailable();}
+        catch(software.amazon.awssdk.core.exception.SdkException failure) {throw unavailable("DeleteObject",started,failure);}
     }
     private static UncheckedIOException unavailable() {return new UncheckedIOException(new IOException("Review object storage unavailable"));}
+    /**
+     * Failures only get a {@code lookahead.upstream} line: one review page reads up to 30 day files, so a line per
+     * successful call would bury the rest. The line has the exception type and S3's status and error code.
+     */
+    private static UncheckedIOException unavailable(String operation,long started,Exception failure) {
+        Events.upstreamFailed("S3",operation,started,failure);
+        return unavailable();
+    }
 }

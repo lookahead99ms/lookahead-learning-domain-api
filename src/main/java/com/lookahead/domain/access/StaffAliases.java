@@ -1,5 +1,6 @@
 package com.lookahead.domain.access;
 
+import com.lookahead.domain.Events;
 import com.lookahead.learning.content.security.AccountPrincipal;
 import com.lookahead.learning.content.security.LocalAuthorAccess;
 import java.util.List;
@@ -21,6 +22,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class StaffAliases {
     /** A person with several roles is labelled by the first of these; with none they are a Learner. */
     static final List<String> ORDER = List.of("co-author", "admin", "reviewer", "tester");
+    static final int ATTEMPTS = 5;
     private final JdbcTemplate jdbc;
     private final StaffAccessService access;
     private final StaffAccessRepository staff;
@@ -56,9 +58,15 @@ public class StaffAliases {
 
     /** The person's number for {@code role}, given now if they have none; two people racing for one number retry. */
     int number(UUID accountId, String role) {
-        for (int attempt = 0; attempt < 5; attempt++) {
+        for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
             var known = jdbc.queryForList("SELECT number FROM staff_aliases WHERE account_id=? AND role=?", Integer.class, accountId, role);
-            if (!known.isEmpty()) return known.getFirst();
+            if (!known.isEmpty()) {
+                // Found after this call's insert: the number was given on try number `attempt`.
+                if (attempt > 0) Events.success(Events.EVENT, "alias.assigned").addKeyValue("target.id", accountId)
+                        .addKeyValue("retry.attempt", attempt).addKeyValue("retry.max", ATTEMPTS)
+                        .log("Role label {} {} given to account {} on attempt {} of {}", title(role), known.getFirst(), accountId, attempt, ATTEMPTS);
+                return known.getFirst();
+            }
             try {
                 assign.executeWithoutResult(status -> jdbc.update("""
                     INSERT INTO staff_aliases(account_id,role,number)
@@ -67,8 +75,13 @@ public class StaffAliases {
                     """, accountId, role, role));
             } catch (DuplicateKeyException taken) {
                 // Another person took that number in the same moment; read again and take the next one.
+                Events.retry(Events.EVENT, "alias.assign", "NUMBER_TAKEN", attempt + 1, ATTEMPTS).addKeyValue("target.id", accountId)
+                        .log("Role label number for account {} ({}) was taken by someone else at the same moment: attempt {} of {}; trying the next number",
+                            accountId, title(role), attempt + 1, ATTEMPTS);
             }
         }
+        Events.failed(Events.EVENT, "alias.assign", "RETRIES_EXHAUSTED").addKeyValue("target.id", accountId).addKeyValue("retry.max", ATTEMPTS)
+                .log("Could not give a role label to account {} ({}) after {} attempts", accountId, title(role), ATTEMPTS);
         throw new IllegalStateException("Could not assign a role label");
     }
 

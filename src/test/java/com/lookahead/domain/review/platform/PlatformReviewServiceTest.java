@@ -253,6 +253,41 @@ class PlatformReviewServiceTest {
         assertFailure(() -> service.list(owner, null), 503);
     }
 
+    /** DLV-969: submitted, status changed and deleted are one INFO line each; never the title, details or the reviewer's name. */
+    @Test void reviewActionsAreLoggedWithIdsAndFixedValuesOnly() {
+        try (var log = com.lookahead.domain.LogCapture.start()) {
+            var item = create(first, "Secret title text", png());
+            var submitted = log.only("platform-review.submit");
+            assertThat(submitted.getFormattedMessage()).isEqualTo("Platform review item " + item.id() + " submitted by account " + first.accountId()
+                    + ": problem on page Search, priority high, 1 image(s)");
+            assertThat(com.lookahead.domain.LogCapture.keys(submitted)).containsEntry("target.id", item.id()).containsEntry("count", 1)
+                    .containsEntry("review.category", "problem");
+            reviews.triage(owner, item.id(), "planned", "private owner note");
+            assertThat(log.only("platform-review.status").getFormattedMessage())
+                    .isEqualTo("Platform review item " + item.id() + " status changed by the owner: new -> planned");
+            var other = create(second, "Another");
+            reviews.delete(second, other.id());
+            assertThat(log.only("platform-review.delete").getFormattedMessage())
+                    .isEqualTo("Platform review item " + other.id() + " deleted by account " + second.accountId() + " with its 0 image(s)");
+            log.containsNone("Secret title", "Steps to reproduce", "private owner note", "First Reviewer", "first@example.test");
+        }
+    }
+
+    /** DLV-969: the daily item limit and the image limits are one lookahead.limit line each. */
+    @Test void dailyAndImageLimitsAreLimitLines() {
+        for (int i = 0; i < PlatformReviewService.ITEMS_PER_REVIEWER_PER_DAY; i++) create(first, "Item " + i);
+        try (var log = com.lookahead.domain.LogCapture.start()) {
+            assertFailure(() -> create(first, "One too many"), 422);
+            var daily = log.only("platform-review.submit");
+            assertThat(daily.getLoggerName()).isEqualTo("lookahead.limit");
+            assertThat(com.lookahead.domain.LogCapture.keys(daily)).containsEntry("reason", "PLATFORM_REVIEW_DAILY_LIMIT")
+                    .containsEntry("limit.max", 100L).containsEntry("limit.window", "1d UTC").containsEntry("account.id", first.accountId());
+            assertFailure(() -> create(second, "Too many images", png(), png(), png(), png(), png(), png(), png()), 422);
+            assertThat(com.lookahead.domain.LogCapture.keys(log.only("platform-review.images"))).containsEntry("limit.name", "platform-review-images")
+                    .containsEntry("limit.max", 6L).containsEntry("reason", "PLATFORM_REVIEW_INVALID");
+        }
+    }
+
     private Item create(AccountPrincipal actor, String title, byte[]... pngs) {
         var uploads = new ArrayList<Upload>();
         for (byte[] bytes : pngs) uploads.add(upload(PlatformReviewImages.detect(bytes), bytes));
