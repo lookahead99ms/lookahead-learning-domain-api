@@ -75,18 +75,26 @@ class CandidateTests(unittest.TestCase):
             def comment(text, edited=False):
                 stamp = f.github.now.replace(microsecond=0).isoformat()
                 return {'id': 9, 'user': {'login': m.approval.OWNER}, 'body': text, 'created_at': stamp, 'updated_at': stamp[:-6] + '+01:00' if edited else stamp}
-            def run(comments):
+            def run(comments, env=None):
                 f.github.autoApprove = False
                 def get(repository, path, payload=None):
                     if path == 'issues/3/comments?per_page=100':
                         return comments
                     return f.github.get(repository, path, payload)
-                return m.decide('dev', f.env, verification, get, lambda: f.github.now, lambda _: None)
+                return m.decide('dev', env or f.env, verification, get, lambda: f.github.now, lambda _: None)
             kept = run([comment(keep)])
             self.assertEqual((kept['decision'], kept['commentId'], kept['stage'], kept['schema']), ('keep', 9, 'dev', m.SCHEMA_DECISION))
+            # The keep-or-rollback decision window is 15 minutes (the owner already approved the deploy; the approval wait itself is 10).
+            self.assertEqual(m.approval.timestamp(kept['expiresAt']) - m.approval.timestamp(kept['createdAt']), timedelta(minutes=15))
             body = f.github.data['issues/3']['body']
             self.assertIn('### What this run does', body); self.assertIn(back, body); self.assertIn('`REJECT` stops this run', body)
+            self.assertIn('after 15 minutes with no decision the run fails without changing anything.', body)
             self.assertLess(body.index('### What this run does'), body.index('| Item | Detail |'))
+            # The decision window follows the repository variable APPROVAL_VALID_MINUTES; a bad value stops before any issue is opened.
+            tuned = run([comment(keep)], dict(f.env, APPROVAL_VALID_MINUTES='20'))
+            self.assertEqual(timedelta(minutes=20), m.approval.timestamp(tuned['expiresAt']) - m.approval.timestamp(tuned['createdAt']))
+            self.assertIn('after 20 minutes with no decision', f.github.data['issues/3']['body'])
+            with self.assertRaisesRegex(ValueError, 'APPROVAL_VALID_MINUTES must be a whole number of minutes from 5 to 60'): run([comment(keep)], dict(f.env, APPROVAL_VALID_MINUTES='61'))
             self.assertEqual(run([comment(back)])['decision'], 'rollback')
             with self.assertRaisesRegex(ValueError, 'rejected'): run([comment('REJECT', edited=True)])
             with self.assertRaisesRegex(TimeoutError, 'No keep-or-rollback decision'): run([comment(keep, edited=True), comment('keep please'), {**comment(keep), 'user': {'login': 'other'}}])
@@ -96,7 +104,8 @@ class CandidateTests(unittest.TestCase):
             # Expired window and changed issue body fail closed on the recheck path.
             receipt = {k: kept[k] for k in ('schema', 'stage', 'runId', 'planDigest', 'createdAt', 'expiresAt', 'issue')}
             self.assertIsNone(m.decision('dev', plan, verification, receipt, f.env, f.github.get, f.github.now))
-            with self.assertRaisesRegex(ValueError, 'expired'): m.decision('dev', plan, verification, receipt, f.env, f.github.get, f.github.now + timedelta(minutes=41))
+            self.assertIsNone(m.decision('dev', plan, verification, receipt, f.env, f.github.get, f.github.now + timedelta(minutes=14, seconds=59)))
+            with self.assertRaisesRegex(ValueError, 'expired'): m.decision('dev', plan, verification, receipt, f.env, f.github.get, f.github.now + timedelta(minutes=15))
             f.github.data['issues/3']['body'] += ' edited'
             with self.assertRaisesRegex(ValueError, 'issue changed'): m.decision('dev', plan, verification, receipt, f.env, f.github.get, f.github.now)
 

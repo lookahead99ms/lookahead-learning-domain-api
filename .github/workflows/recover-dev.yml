@@ -176,7 +176,7 @@
       ],
       "if": "always() && needs.plan-recovery.result == 'success'",
       "runs-on": "ubuntu-24.04",
-      "timeout-minutes": 45,
+      "timeout-minutes": 20,
       "permissions": {
         "contents": "read",
         "actions": "read",
@@ -185,6 +185,8 @@
       },
       "env": {
         "GH_TOKEN": "${{ github.token }}",
+        "APPROVAL_WAIT_MINUTES": "${{ vars.APPROVAL_WAIT_MINUTES }}",
+        "APPROVAL_VALID_MINUTES": "${{ vars.APPROVAL_VALID_MINUTES }}",
         "FALLBACK_RELEASE_VERSION": "${{ needs.plan-recovery.outputs.fallback-release }}"
       },
       "steps": [
@@ -216,7 +218,7 @@
           "run": "echo \"RELEASE_SOURCE_RECORD=$RUNNER_TEMP/recover-plan/release-source.json\" >> \"$GITHUB_ENV\"\necho \"FALLBACK_SOURCE_RECORD=$RUNNER_TEMP/recover-plan/fallback-source.json\" >> \"$GITHUB_ENV\""
         },
         {
-          "name": "Open one approval issue for the whole sequence and wait for the owner comment (40 minutes)",
+          "name": "Open one approval issue for the whole sequence and wait for the owner comment (10 minutes)",
           "id": "approve",
           "run": "python3 tools/release/recover.py approve --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\""
         },
@@ -256,6 +258,8 @@
       },
       "env": {
         "GH_TOKEN": "${{ github.token }}",
+        "APPROVAL_WAIT_MINUTES": "${{ vars.APPROVAL_WAIT_MINUTES }}",
+        "APPROVAL_VALID_MINUTES": "${{ vars.APPROVAL_VALID_MINUTES }}",
         "AWS_MAX_ATTEMPTS": "1",
         "AWS_RETRY_MODE": "standard",
         "AWS_EC2_METADATA_DISABLED": "true",

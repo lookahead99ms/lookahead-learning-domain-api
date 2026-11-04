@@ -113,6 +113,15 @@
       ],
       "Description": "DLV-969 S35: dev keeps database-only test accounts that staff use through test sessions inside the DEV gate (app.test-accounts.identity)"
     },
+    "EmailEnabled": {
+      "Type": "String",
+      "Default": "false",
+      "AllowedValues": [
+        "false",
+        "true"
+      ],
+      "Description": "DLV-969 S36: true sends the merge-link email through SES with the task role (app.email.enabled); false only logs that an email was skipped"
+    },
     "RefreshToken": {
       "Type": "String",
       "Default": "none",
@@ -345,6 +354,20 @@
               {
                 "Name": "LOOKAHEAD_DOMAIN_AUTHOR_ENABLED",
                 "Value": "false"
+              },
+              {
+                "Name": "LOOKAHEAD_EMAIL_ENABLED",
+                "Value": {
+                  "Ref": "EmailEnabled"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_EMAIL_FROM",
+                "Value": "Look Ahead <no-reply@dev.devlookahead.com>"
+              },
+              {
+                "Name": "LOOKAHEAD_PUBLIC_URL",
+                "Value": "https://dev.devlookahead.com"
               }
             ],
             "HealthCheck": {

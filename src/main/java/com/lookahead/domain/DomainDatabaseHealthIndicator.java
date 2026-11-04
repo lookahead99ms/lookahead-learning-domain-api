@@ -41,11 +41,16 @@ public class DomainDatabaseHealthIndicator implements HealthIndicator {
      * never change. Identity columns and the operator-only enabled and author_access flags stay out of reach.
      * Since V18 (DLV-969, run before this release) the role also keeps the owner's Disable/Delete states and the
      * permanent role labels, which it may add but never change or remove.
+     * Since V19 (DLV-969 S36, run before this release) it records, links and refreshes the provider identities of an
+     * account (cloud_identities) and removes those of an expired waiting account.
+     * Since V20 (DLV-969 S36, run before this release) it keeps the single-use merge links (cloud_merge_tokens).
      */
     public static final String CLOUD_SQL = """
         SELECT EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='4' AND success)
           AND EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='17' AND success)
           AND EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='18' AND success)
+          AND EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='19' AND success)
+          AND EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='20' AND success)
           AND has_table_privilege(current_user,'public.cloud_accounts','SELECT')
           AND has_table_privilege(current_user,'public.cloud_accounts','INSERT')
           AND has_table_privilege(current_user,'public.cloud_accounts','DELETE')
@@ -74,7 +79,9 @@ public class DomainDatabaseHealthIndicator implements HealthIndicator {
           AND NOT has_table_privilege(current_user,'public.staff_aliases','DELETE')
           AND NOT has_table_privilege(current_user,'public.staff_aliases','TRUNCATE')
           AND NOT has_table_privilege(current_user,'public.cloud_account_states','TRUNCATE')
-          AND NOT EXISTS(SELECT 1 FROM unnest(ARRAY['public.cloud_sign_ins','public.cloud_sign_in_challenges','public.cloud_account_states']) t(name)
+          AND NOT has_table_privilege(current_user,'public.cloud_identities','TRUNCATE')
+          AND NOT has_table_privilege(current_user,'public.cloud_merge_tokens','TRUNCATE')
+          AND NOT EXISTS(SELECT 1 FROM unnest(ARRAY['public.cloud_sign_ins','public.cloud_sign_in_challenges','public.cloud_account_states','public.cloud_identities','public.cloud_merge_tokens']) t(name)
             CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE']) p(privilege)
             WHERE NOT has_table_privilege(current_user,t.name,p.privilege))
         """;

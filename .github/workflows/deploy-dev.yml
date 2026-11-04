@@ -167,7 +167,7 @@
       ],
       "if": "always() && needs.plan-dev.result == 'success'",
       "runs-on": "ubuntu-24.04",
-      "timeout-minutes": 45,
+      "timeout-minutes": 20,
       "permissions": {
         "contents": "read",
         "actions": "read",
@@ -175,7 +175,9 @@
         "pull-requests": "read"
       },
       "env": {
-        "GH_TOKEN": "${{ github.token }}"
+        "GH_TOKEN": "${{ github.token }}",
+        "APPROVAL_WAIT_MINUTES": "${{ vars.APPROVAL_WAIT_MINUTES }}",
+        "APPROVAL_VALID_MINUTES": "${{ vars.APPROVAL_VALID_MINUTES }}"
       },
       "steps": [
         {
@@ -206,7 +208,7 @@
           "run": "echo \"RELEASE_SOURCE_RECORD=$RUNNER_TEMP/deploy-plan/release-source.json\" >> \"$GITHUB_ENV\""
         },
         {
-          "name": "Open the approval issue and wait for the owner comment (40 minutes)",
+          "name": "Open the approval issue and wait for the owner comment (10 minutes)",
           "id": "approve",
           "run": "python3 tools/release/deploy.py approve --plan \"$RUNNER_TEMP/deploy-plan/plan.json\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\""
         },
@@ -246,6 +248,8 @@
       },
       "env": {
         "GH_TOKEN": "${{ github.token }}",
+        "APPROVAL_WAIT_MINUTES": "${{ vars.APPROVAL_WAIT_MINUTES }}",
+        "APPROVAL_VALID_MINUTES": "${{ vars.APPROVAL_VALID_MINUTES }}",
         "AWS_MAX_ATTEMPTS": "1",
         "AWS_RETRY_MODE": "standard",
         "AWS_EC2_METADATA_DISABLED": "true"

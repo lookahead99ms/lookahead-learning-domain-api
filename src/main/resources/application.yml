@@ -55,6 +55,14 @@ app:
     client-id: ${APP_OAUTH_CLIENT_ID:}
     scope-prefix: ${LOOKAHEAD_COGNITO_SCOPE_PREFIX:}
     gateway-secret: ${LOOKAHEAD_DOMAIN_GATEWAY_SECRET:}
+  # DLV-969 S36: the merge link is <public-url>/account/merge?token=…; off (the default) only logs a skipped email.
+  # Unset: https://dev.devlookahead.com in dev; elsewhere startup fails when the email is enabled (CloudMergeConfiguration).
+  public-url: ${LOOKAHEAD_PUBLIC_URL:}
+  email:
+    enabled: ${LOOKAHEAD_EMAIL_ENABLED:false}
+    # Required when enabled, no default: an address, or a name and <address> ("Look Ahead <no-reply@…>").
+    from: ${LOOKAHEAD_EMAIL_FROM:}
+    region: ${AWS_REGION:}
   accounts:
     catalog-path: ${LOOKAHEAD_ACCOUNT_CATALOG:}
   content:

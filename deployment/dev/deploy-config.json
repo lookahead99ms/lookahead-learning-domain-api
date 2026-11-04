@@ -45,7 +45,8 @@
     "PlatformReviewsBucket": "",
     "PlatformReviewsPrefix": "",
     "PlatformReviewsKmsKeyArn": "",
-    "TestAccountIdentity": "dev"
+    "TestAccountIdentity": "dev",
+    "EmailEnabled": "false"
   },
   "logFailurePatterns": [
     "ERROR",

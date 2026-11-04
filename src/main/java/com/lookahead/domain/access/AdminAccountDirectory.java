@@ -12,7 +12,21 @@ import org.springframework.stereotype.Service;
 public class AdminAccountDirectory {
     public record Row(UUID accountId,String username,String displayName,String email,Set<String> roles,
         boolean testAccount,boolean fullCurriculum,AccessSummaryService.Summary access,
-        boolean canDowngrade,boolean canDelete,String signIn,boolean canDisable,boolean canEnable,boolean canRemove) {}
+        boolean canDowngrade,boolean canDelete,String signIn,boolean canDisable,boolean canEnable,boolean canRemove,int sameEmailAccounts,
+        List<Map<String,Object>> signInMethods) {
+        /**
+         * sameEmailAccounts (DLV-969 S36): other accounts, not deleted or test, with this verified email; signInMethods:
+         * each sign-in of the account, oldest first, as {provider, email?}, test identities left out. The owner only.
+         */
+        public Row(UUID accountId,String username,String displayName,String email,Set<String> roles,boolean testAccount,boolean fullCurriculum,
+                AccessSummaryService.Summary access,boolean canDowngrade,boolean canDelete,String signIn,boolean canDisable,boolean canEnable,boolean canRemove) {
+            this(accountId,username,displayName,email,roles,testAccount,fullCurriculum,access,canDowngrade,canDelete,signIn,canDisable,canEnable,canRemove,0);
+        }
+        public Row(UUID accountId,String username,String displayName,String email,Set<String> roles,boolean testAccount,boolean fullCurriculum,
+                AccessSummaryService.Summary access,boolean canDowngrade,boolean canDelete,String signIn,boolean canDisable,boolean canEnable,boolean canRemove,int sameEmailAccounts) {
+            this(accountId,username,displayName,email,roles,testAccount,fullCurriculum,access,canDowngrade,canDelete,signIn,canDisable,canEnable,canRemove,sameEmailAccounts,List.of());
+        }
+    }
     public record Page(List<Row> accounts,int page,boolean hasNext) {}
     private final AccountDirectory directory;
     private final StaffAccessService access;
@@ -46,7 +60,9 @@ public class AdminAccountDirectory {
             return new Row(account.accountId(),account.username(),account.displayName(),account.email(),roles,test,full,summary,
                 eligible&&(privileged||purchases||grants||!"Free".equals(summary.label())),
                 eligible&&localPolicy.local()&&!privileged&&!purchases&&!grants&&"Free".equals(summary.label()),
-                options.signIn(),options.canDisable(),options.canEnable(),options.canRemove());
+                options.signIn(),options.canDisable(),options.canEnable(),options.canRemove(),
+                test?0:com.lookahead.domain.cloud.CloudIdentities.sameEmailAccounts(jdbc,account.accountId(),account.email()),
+                test?List.of():com.lookahead.domain.cloud.CloudIdentities.signInMethods(jdbc,account.accountId()));
         }).toList();
         return new Page(rows,source.page(),source.hasNext());
     }

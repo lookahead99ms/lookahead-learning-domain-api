@@ -23,6 +23,9 @@ release builds use `lookahead-domain-api-<version>.jar` and copy it to
 | `LOOKAHEAD_TLS_SERVER_NAME` | Exact slot-specific Domain DNS SAN, such as `domain-green.lookahead-dev.internal`; resolve the real name through reviewed discovery |
 | `LOOKAHEAD_DOMAIN_SEED_ENABLED` | `false` |
 | `LOOKAHEAD_DOMAIN_AUTHOR_ENABLED` | `false` |
+| `LOOKAHEAD_EMAIL_ENABLED` | DLV-969 S36 merge-link email; template parameter `EmailEnabled`, DEV `false` (the email is only logged as skipped, address masked). `true` sends through SES v2 with the task role, which then needs `ses:SendEmail` on the sender identity |
+| `LOOKAHEAD_EMAIL_FROM` | `Look Ahead <no-reply@dev.devlookahead.com>`; a bare address or an ASCII name and `<address>`. No default: with `LOOKAHEAD_EMAIL_ENABLED=true` and this unset, startup fails naming `LOOKAHEAD_EMAIL_FROM`. SES uses the existing `AWS_REGION` |
+| `LOOKAHEAD_PUBLIC_URL` | `https://dev.devlookahead.com`; the https origin of the link `<origin>/account/merge?token=…` (an invalid value fails startup naming it) |
 
 The DEV profile serves application mTLS on `0.0.0.0:8443`, TLS1.2/1.3, with client
 authentication required. The certificate filter authorizes the exact Gateway

@@ -56,6 +56,10 @@ class AccountAdmissionServiceTest {
         assertThat(result.expiryHours()).isEqualTo(48);
         assertThat(result.waiting()).containsExactly(new AccountAdmissionService.Waiting(waiting,"new@example.invalid","New Learner","new@example.invalid",requested,requested.plusSeconds(48*3600)));
         verify(jdbc).query(contains("ORDER BY requested_at,account_id"),any(RowMapper.class));
+        // DLV-969 S36: the duplicate flag is read with the list, from the same row.
+        verify(jdbc).query(contains("AS same_email_accounts"),any(RowMapper.class));
+        when(rs.getInt("same_email_accounts")).thenReturn(2);
+        assertThat(service.waiting(owner).waiting().getFirst().sameEmailAccounts()).isEqualTo(2);
         verify(jdbc,never()).update(anyString(),any(Object[].class));
     }
     @Test void admissionRejectsMalformedRequestsBeforeTouchingTheDatabase() {

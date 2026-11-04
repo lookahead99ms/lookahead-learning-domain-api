@@ -35,6 +35,8 @@ class CloudSignInRegistryDatabaseTest {
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V7__cloud_account_preferences.sql")));
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V17__dev_access_admission.sql")));
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V18__access_removal_and_staff_aliases.sql")));
+        jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V19__cloud_identities.sql")));
+        jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V20__cloud_merge_tokens.sql")));
         registry=service();
     }
     CloudSignInRegistry service(){return new CloudSignInRegistry(jdbc,new DataSourceTransactionManager(source));}
@@ -262,13 +264,13 @@ class CloudSignInRegistryDatabaseTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE account_id=?",Integer.class,id)).isZero();
         assertThat(events(id,"expire")).isEqualTo(1);
     }
-    /** DLV-969: DEV readiness must accept the V17 and V18 grants (it once required the pre-V17 shape and failed every task). */
+    /** DLV-969: DEV readiness must accept the V17-V20 grants (it once required the pre-V17 shape and failed every task). */
     @Test void cloudReadinessAcceptsTheV18RuntimeGrantsAndRejectsDrift(){
         var tx=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source));
         // This suite builds the tables in its own schema; the readiness SQL names public, as the deployed database does.
         jdbc.execute("CREATE TABLE IF NOT EXISTS flyway_schema_history(version text, success boolean)");
         jdbc.execute("GRANT SELECT ON flyway_schema_history TO lookahead_platform_app");
-        jdbc.update("INSERT INTO flyway_schema_history VALUES ('4',true),('17',true),('18',true)");
+        jdbc.update("INSERT INTO flyway_schema_history VALUES ('4',true),('17',true),('18',true),('19',true),('20',true)");
         String sql=com.lookahead.domain.DomainDatabaseHealthIndicator.CLOUD_SQL.replace("public.",schema+".");
         java.util.function.Supplier<Boolean> asApp=()->tx.execute(status->{jdbc.execute("SET LOCAL ROLE lookahead_platform_app");
             return jdbc.queryForObject(sql,Boolean.class);});
@@ -288,6 +290,28 @@ class CloudSignInRegistryDatabaseTest {
         try { assertThat(asApp.get()).isFalse(); } finally { jdbc.execute("REVOKE UPDATE ON staff_aliases FROM lookahead_platform_app"); }
         jdbc.execute("REVOKE DELETE ON cloud_account_states FROM lookahead_platform_app");
         try { assertThat(asApp.get()).isFalse(); } finally { jdbc.execute("GRANT DELETE ON cloud_account_states TO lookahead_platform_app"); }
+        assertThat(asApp.get()).isTrue();
+        // V19 (DLV-969 S36): the release after it needs the migration and exactly its cloud_identities grants.
+        jdbc.update("DELETE FROM flyway_schema_history WHERE version='19'");
+        assertThat(asApp.get()).isFalse();
+        jdbc.update("INSERT INTO flyway_schema_history VALUES ('19',true)");
+        for(String privilege:List.of("SELECT","INSERT","UPDATE","DELETE")){
+            jdbc.execute("REVOKE "+privilege+" ON cloud_identities FROM lookahead_platform_app");
+            try { assertThat(asApp.get()).as(privilege).isFalse(); } finally { jdbc.execute("GRANT "+privilege+" ON cloud_identities TO lookahead_platform_app"); }
+        }
+        jdbc.execute("GRANT TRUNCATE ON cloud_identities TO lookahead_platform_app");
+        try { assertThat(asApp.get()).isFalse(); } finally { jdbc.execute("REVOKE TRUNCATE ON cloud_identities FROM lookahead_platform_app"); }
+        assertThat(asApp.get()).isTrue();
+        // V20 (DLV-969 S36): the merge links, the same way.
+        jdbc.update("DELETE FROM flyway_schema_history WHERE version='20'");
+        assertThat(asApp.get()).isFalse();
+        jdbc.update("INSERT INTO flyway_schema_history VALUES ('20',true)");
+        for(String privilege:List.of("SELECT","INSERT","UPDATE","DELETE")){
+            jdbc.execute("REVOKE "+privilege+" ON cloud_merge_tokens FROM lookahead_platform_app");
+            try { assertThat(asApp.get()).as(privilege).isFalse(); } finally { jdbc.execute("GRANT "+privilege+" ON cloud_merge_tokens TO lookahead_platform_app"); }
+        }
+        jdbc.execute("GRANT TRUNCATE ON cloud_merge_tokens TO lookahead_platform_app");
+        try { assertThat(asApp.get()).isFalse(); } finally { jdbc.execute("REVOKE TRUNCATE ON cloud_merge_tokens FROM lookahead_platform_app"); }
         assertThat(asApp.get()).isTrue();
     }
     @Test void ownerAdmissionMarksTheRowAssignsRolesAndIsRecordedOnce(){

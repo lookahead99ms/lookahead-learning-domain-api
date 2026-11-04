@@ -9,7 +9,7 @@ commit. Modes:
              published image digest; an optional live URL must answer 200 and name the tag
   decide     owner issue bound to this run: `APPROVE KEEP DEV <version>` proceeds, `APPROVE ROLLBACK DEV <version>`
              restores the previous release, `REJECT` stops the run with nothing changed; edited comments, expiry
-             (40 minutes) and drift fail closed exactly like the publish approval
+             (APPROVAL_VALID_MINUTES, default 15) and drift fail closed exactly like the publish approval
   cutover    held: the DEV public cutover tool lives in Infra and is not available yet (AWS lane, DLV-914)
   rollback   held: the DEV rollback tool lives in Infra and is not available yet (AWS lane, DLV-914)
   record     one release record per run: tag, source, image digest, approvals, verification and decision receipts
@@ -157,7 +157,7 @@ def commands(stage, plan):
     return {'KEEP': 'APPROVE KEEP' + bound, 'ROLLBACK': 'APPROVE ROLLBACK' + bound}
 
 
-def body(stage, plan, verification, receipt):
+def body(stage, plan, verification, receipt, env=None):
     t = issueTemplate.text
     keep, back = commands(stage, plan).values()
     gist = '\n'.join([
@@ -166,7 +166,8 @@ def body(stage, plan, verification, receipt):
         '',
         '1. `' + keep + '` keeps this release: the candidate becomes the served ' + stage.upper() + ' release and the pipeline proceeds to the next stage.',
         '2. `' + back + '` restores the previously served release; this candidate is stopped and nothing of it remains in service.',
-        '3. `REJECT` stops this run with nothing changed. Any other comment is ignored; an edited comment never counts; after 40 minutes with no decision the run fails without changing anything.',
+        '3. `REJECT` stops this run with nothing changed. Any other comment is ignored; an edited comment never counts; after ' + approval.minutesText(approval.approvalValid(env))
+        + ' minutes with no decision the run fails without changing anything.',
         '',
         'This decision changes which release serves ' + stage.upper() + '; it never publishes, rebuilds or deletes an image.'])
     shown = [('**' + key + '**', '`' + t(str(value)) + '`') for key, value in
@@ -197,10 +198,10 @@ def decision(stage, plan, verification, receipt, env, get=approval.api, now=None
     now = now or datetime.now(timezone.utc)
     created, expires = approval.timestamp(receipt['createdAt']), approval.timestamp(receipt['expiresAt'])
     require(receipt.get('schema') == SCHEMA_DECISION and receipt.get('planDigest') == approval.digest(plan) and receipt.get('runId') == plan['runId']
-            and created <= now < expires and timedelta(0) < expires - created <= timedelta(minutes=40), 'Decision window expired or binding changed')
+            and created <= now < expires and timedelta(0) < expires - created <= approval.approvalValid(env), 'Decision window expired or binding changed')
     issue = get(plan['repository'], 'issues/' + str(receipt['issue']))
     require(issue.get('state') == 'open' and not issue.get('pull_request') and issue.get('user', {}).get('login') == 'github-actions[bot]'
-            and issue.get('body') == body(stage, plan, verification, receipt), 'Decision issue changed')
+            and issue.get('body') == body(stage, plan, verification, receipt, env), 'Decision issue changed')
     comments = get(plan['repository'], 'issues/' + str(receipt['issue']) + '/comments?per_page=100')
     require(isinstance(comments, list) and len(comments) < 100, 'Incomplete decision comment inventory')
     wanted = {text: name for name, text in commands(stage, plan).items()}
@@ -223,20 +224,21 @@ def decide(stage, env, verification, get=approval.api, now=lambda: datetime.now(
     plan = planFor(env, get)
     require(verification.get('releaseVersion') == plan['releaseVersion'] and verification.get('sourceSha') == plan['sourceSha'],
             'Verification belongs to another release')
-    start = now().replace(microsecond=0)
+    # The keep-or-rollback window follows APPROVAL_VALID_MINUTES (default 15): the owner already approved the deploy and is now deciding whether it stays.
+    start, valid = now().replace(microsecond=0), approval.approvalValid(env)
     receipt = {'schema': SCHEMA_DECISION, 'stage': stage, 'runId': plan['runId'], 'planDigest': approval.digest(plan),
-               'createdAt': start.isoformat(), 'expiresAt': (start + timedelta(minutes=40)).isoformat()}
-    preview = body(stage, plan, verification, receipt)
+               'createdAt': start.isoformat(), 'expiresAt': (start + valid).isoformat()}
+    preview = body(stage, plan, verification, receipt, env)
     require(len(preview) < 60000, 'Decision preview too large')
     issue = get(plan['repository'], 'issues', {'title': issueTemplate.title(headline(stage, plan), plan['runId']), 'body': preview})
     receipt['issue'] = issue['number']
     print('https://github.com/' + plan['repository'] + '/issues/' + str(receipt['issue']), flush=True)
-    for _ in range(120):
+    for _ in range(int(valid.total_seconds()) // 20):  # the decision window at 20-second polls (default 15 minutes = 45 polls)
         found = decision(stage, plan, verification, receipt, env, get, now())
         if found is not None:
             return {**receipt, **found, 'plan': plan}
         sleep(20)
-    raise TimeoutError('No keep-or-rollback decision within 40 minutes; nothing was changed')
+    raise TimeoutError('No keep-or-rollback decision within ' + approval.minutesText(valid) + ' minutes; nothing was changed')
 
 
 def record(env, paths, now=None):

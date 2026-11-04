@@ -74,9 +74,13 @@ public class AccountDirectory {
         if(query==null||query.isBlank()||query.length()>254||query.codePoints().anyMatch(Character::isISOControl))throw invalid();
         query=query.strip().toLowerCase(java.util.Locale.ROOT);
         if(identity==null) {
-            // Cloud identities already admitted by the provider mapping; no email-based linking.
-            var rows=jdbc.query("SELECT account_id,username,display_name FROM cloud_accounts a WHERE admitted AND enabled AND lower(username)=? AND NOT EXISTS(SELECT 1 FROM cloud_account_states s WHERE s.account_id=a.account_id AND s.state='removed') LIMIT 2",
-                (r,i)->new Account(r.getObject(1,UUID.class),r.getString(2),r.getString(3),null),query);
+            // Cloud identities already admitted by the provider mapping; no email-based linking. DLV-969 S36: any Cognito
+            // username of the account (V19 cloud_identities), or its own username for a row without identity rows.
+            var rows=jdbc.query("""
+                SELECT account_id,username,display_name FROM cloud_accounts a WHERE admitted AND enabled
+                AND (lower(username)=? OR EXISTS(SELECT 1 FROM cloud_identities i WHERE i.account_id=a.account_id AND lower(i.username)=?))
+                AND NOT EXISTS(SELECT 1 FROM cloud_account_states s WHERE s.account_id=a.account_id AND s.state='removed') LIMIT 2
+                """,(r,i)->new Account(r.getObject(1,UUID.class),r.getString(2),r.getString(3),null),query,query);
             if(rows.size()!=1)throw missing();return rows.getFirst();
         }
         long started=Events.started();int[] status={0};

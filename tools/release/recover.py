@@ -128,8 +128,9 @@ def commands(planned):
     return {'deploy': 'APPROVE RECOVER ' + planned['imageTag']}
 
 
-def window(planned):
-    return timedelta(minutes=40)
+def window(planned, env=None):
+    """One approval for the whole sequence: the repository variable APPROVAL_WAIT_MINUTES (default 10)."""
+    return owner.approvalWait(env)
 
 
 def headline(planned):
@@ -138,7 +139,7 @@ def headline(planned):
                       + ', park again if neither serves'}
 
 
-def gist(planned):
+def gist(planned, env=None):
     t, stack, minutes = issueTemplate.text, issueTemplate.text(planned['stack']), str(planned['healthyMinutes'])
     return '\n'.join((
         '**Business change:** the DEV ' + t(planned['app']) + ' service `' + stack + '` is recovered in one run: parked, then served by `'
@@ -153,10 +154,11 @@ def gist(planned):
         '4. **Only if the fallback does not serve either:** park at zero tasks and fail the run.',
         '',
         'Each stage assumes its own deploy session (`' + t(stagePlan(planned, 'park')['sessionName'].rsplit('-', 1)[0]) + '-1` … `-5`, at most 60 minutes each). '
-        'The run summary lists every stage, release, task definition revision, outcome and time. Approval expires 40 minutes after this issue is created.'))
+        'The run summary lists every stage, release, task definition revision, outcome and time. Approve within ' + owner.minutesText(window(planned, env))
+        + ' minutes of this issue being created; the approval comment is then valid for ' + owner.minutesText(owner.approvalValid(env)) + ' minutes.'))
 
 
-def body(planned, receipt):
+def body(planned, receipt, env=None):
     t = issueTemplate.text
     rows = [('**' + name + '**', '`' + t(s['releaseVersion']) + '` · DesiredCount ' + str(s['desiredCount']) + ' · change set `' + t(s['changeSet'])
              + '` · session `' + t(s['sessionName']) + '`') for name, s in ((s['stage'], s) for s in planned['stages'])]
@@ -165,7 +167,7 @@ def body(planned, receipt):
                  {'action': 'Modify', 'type': 'AWS::CloudFormation::Stack', 'consoleName': planned['stack'],
                   'note': 'one change set per stage (app-' + planned['runId'] + '-<stage>), each previewed against its stage plan before execution'}]
     return issueTemplate.render(
-        headline=headline(planned), gist=gist(planned), resources=resources,
+        headline=headline(planned), gist=gist(planned, env), resources=resources,
         overview='**Recover the DEV service**\n\nAuthorize the whole recovery sequence described above inside this run. Without approval nothing changes in AWS.',
         scope='### Recovery\n\n' + issueTemplate.table(('Stage', 'Release, count, change set, session'), rows),
         validation=[('Target ' + t(planned['releaseVersion']), 'ECR tag `' + t(planned['imageTag']) + '` read back as `' + t(stagePlan(planned, 'target')['image'].rsplit('@', 1)[-1]) + '`'),
@@ -182,28 +184,30 @@ def body(planned, receipt):
 
 def approve(planned, env, root, get=owner.api, now=lambda: deploy.utc(), sleep=time.sleep):
     validate(planned, env, root, get)
-    start = now().replace(microsecond=0)
+    start, wait = now().replace(microsecond=0), window(planned, env)
     receipt = {'schema': deploy.SCHEMA_RECEIPT, 'runId': planned['runId'], 'planDigest': planned['planDigest'],
-               'createdAt': start.isoformat(), 'expiresAt': (start + window(planned)).isoformat()}
-    preview = body(planned, receipt)
+               'createdAt': start.isoformat(), 'expiresAt': (start + wait).isoformat()}
+    preview = body(planned, receipt, env)
     require(len(preview) < 60000, 'Approval preview too large')
     issue = get(planned['repository'], 'issues', {'title': issueTemplate.title(headline(planned), planned['runId']), 'body': preview})
     receipt['issue'] = issue['number']
     print('https://github.com/' + planned['repository'] + '/issues/' + str(receipt['issue']), flush=True)
-    for _ in range(int(window(planned).total_seconds()) // 20):
+    for _ in range(int(wait.total_seconds()) // 20):
         # Only the issue and its comments are polled; the plan was validated above and is validated again on an answer.
-        selected = deploy.selectedApproval(planned, receipt, get, now(), body, commands, window)
+        selected = deploy.selectedApproval(planned, receipt, get, now(), body, commands, window, env=env)
         if selected is not None:
             validate(planned, env, root, get)
-            return {**receipt, 'commentId': selected[0], 'mode': selected[1]}
+            return {**receipt, 'commentId': selected[0], 'mode': selected[1], 'approvedAt': selected[2]}
         sleep(20)
     raise TimeoutError('Recovery approval timed out; start a new reviewed run')
 
 
 def verify(planned, receipt, env, root, get=owner.api, now=None):
+    now = now or deploy.utc()
     validate(planned, env, root, get)
-    selected = deploy.selectedApproval(planned, receipt, get, now, body, commands, window)
-    require(selected is not None and selected == (receipt.get('commentId'), receipt.get('mode')), 'Exact live owner approval required')
+    selected = deploy.selectedApproval(planned, receipt, get, now, body, commands, window, recheck=True, env=env)
+    require(selected is not None and selected[:2] == (receipt.get('commentId'), receipt.get('mode')), 'Exact live owner approval required')
+    owner.stillValid(receipt, selected[2], now, env)
 
 
 def lastStops(call, config, limit=3):

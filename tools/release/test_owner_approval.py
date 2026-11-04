@@ -122,19 +122,21 @@ class ApprovalTests(unittest.TestCase):
                     receipt = fake.approved()
                     start = fake.now.replace(microsecond=0)
                     self.assertEqual(receipt['createdAt'], start.isoformat())
-                    self.assertEqual(receipt['expiresAt'], (start + timedelta(minutes=40)).isoformat())
-                    self.assertLessEqual(m.timestamp(receipt['expiresAt']) - fake.now, timedelta(minutes=40))
+                    self.assertEqual(receipt['expiresAt'], (start + timedelta(minutes=10)).isoformat())
+                    self.assertLessEqual(m.timestamp(receipt['expiresAt']) - fake.now, timedelta(minutes=10))
                     m.verify(fake.plan, receipt, fake.env, fake.get, fake.now)
                     self.assertEqual(fake.data['issues/3']['body'], m.body(fake.plan, receipt))
                     # A prior-second issue and an issue at expiry still fail closed.
                     original = fake.data['issues/3']['created_at']
-                    for stamp in (start - timedelta(seconds=1), start + timedelta(minutes=40)):
+                    for stamp in (start - timedelta(seconds=1), start + timedelta(minutes=10)):
                         fake.data['issues/3']['created_at'] = stamp.isoformat()
                         with self.assertRaises(ValueError):
                             m.verify(fake.plan, receipt, fake.env, fake.get, fake.now)
                     fake.data['issues/3']['created_at'] = original
-                    with self.assertRaises(ValueError):
-                        m.verify(fake.plan, receipt, fake.env, fake.get, start + timedelta(minutes=40))
+                    # The recheck is bounded from the approval comment (15 minutes), not from the issue (10): minute 10 passes, minute 15 fails.
+                    m.verify(fake.plan, receipt, fake.env, fake.get, start + timedelta(minutes=10))
+                    with self.assertRaisesRegex(ValueError, 'older than 15 minutes'):
+                        m.verify(fake.plan, receipt, fake.env, fake.get, start + timedelta(minutes=15))
                     fake.data['issues/3']['body'] += 'edited'
                     with self.assertRaisesRegex(ValueError, 'Approval issue changed'):
                         m.verify(fake.plan, receipt, fake.env, fake.get, fake.now)
@@ -195,13 +197,62 @@ class ApprovalTests(unittest.TestCase):
             fake=Github();receipt=fake.approved();edit(receipt)
             with self.assertRaises(ValueError):m.verify(fake.plan,receipt,fake.env,fake.get,fake.now)
         fake=Github();receipt=fake.approved()
-        with self.assertRaises(ValueError):m.verify(fake.plan,receipt,fake.env,fake.get,fake.now+timedelta(minutes=40))
+        with self.assertRaises(ValueError):m.verify(fake.plan,receipt,fake.env,fake.get,fake.now+timedelta(minutes=15))
         with self.assertRaises(ValueError):m.verify(fake.plan,receipt,fake.env,fake.get,fake.now-timedelta(seconds=1))
+
+    def test_window_variables_default_override_empty_and_refuse_bad_values(self):
+        self.assertEqual((timedelta(minutes=10),timedelta(minutes=15)),(m.approvalWait({}),m.approvalValid({})))
+        for empty in ('',' ',None):  # an unset repository variable reaches the job as an empty string
+            self.assertEqual(timedelta(minutes=10),m.approvalWait({'APPROVAL_WAIT_MINUTES':empty}))
+            self.assertEqual(timedelta(minutes=15),m.approvalValid({'APPROVAL_VALID_MINUTES':empty}))
+        self.assertEqual((timedelta(minutes=2),timedelta(minutes=15)),(m.approvalWait({'APPROVAL_WAIT_MINUTES':'2'}),m.approvalWait({'APPROVAL_WAIT_MINUTES':' 15 '})))
+        self.assertEqual((timedelta(minutes=5),timedelta(minutes=60)),(m.approvalValid({'APPROVAL_VALID_MINUTES':'5'}),m.approvalValid({'APPROVAL_VALID_MINUTES':'60'})))
+        for name,bad in (('APPROVAL_WAIT_MINUTES','1'),('APPROVAL_WAIT_MINUTES','16'),('APPROVAL_WAIT_MINUTES','7.5'),('APPROVAL_WAIT_MINUTES','-3'),('APPROVAL_WAIT_MINUTES','ten'),
+                         ('APPROVAL_VALID_MINUTES','4'),('APPROVAL_VALID_MINUTES','61'),('APPROVAL_VALID_MINUTES','1e1'),('APPROVAL_VALID_MINUTES','15m')):
+            with self.subTest(name=name,value=bad),self.assertRaisesRegex(ValueError,name+' must be a whole number of minutes from'):m.window(name,{name:bad})
+        with patch.dict(m.os.environ,{'APPROVAL_WAIT_MINUTES':'3','APPROVAL_VALID_MINUTES':'45'}):  # no env given: the process environment
+            self.assertEqual((timedelta(minutes=3),timedelta(minutes=45)),(m.approvalWait(),m.approvalValid()))
+
+    def test_wait_and_recheck_follow_the_window_variables(self):
+        fake=Github();fake.env.update(APPROVAL_WAIT_MINUTES='4',APPROVAL_VALID_MINUTES='30');fake.autoApprove=False;sleeps=[]
+        with self.assertRaises(TimeoutError):m.approve(fake.plan,fake.env,fake.get,lambda:fake.now,sleeps.append)
+        self.assertEqual([20]*12,sleeps)  # 4 minutes of 20-second polls
+        fake.autoApprove=True;receipt=fake.approved()
+        self.assertEqual((fake.now+timedelta(minutes=4)).isoformat(),receipt['expiresAt'])
+        self.assertIn('approve within 4 minutes of this issue being created; the approval comment is then valid for 30 minutes.',fake.data['issues/3']['body'])
+        m.verify(fake.plan,receipt,fake.env,fake.get,fake.now+timedelta(minutes=29,seconds=59))
+        with self.assertRaisesRegex(ValueError,'older than 30 minutes'):m.verify(fake.plan,receipt,fake.env,fake.get,fake.now+timedelta(minutes=30))
+        # A recheck under other variables than the wait fails closed: the issue text no longer matches the receipt.
+        with self.assertRaisesRegex(ValueError,'Approval issue changed'):m.verify(fake.plan,receipt,{k:v for k,v in fake.env.items() if not k.startswith('APPROVAL_')},fake.get,fake.now)
+        for name in m.WINDOWS:  # a bad variable stops the wait before any issue is opened
+            with self.assertRaisesRegex(ValueError,name):m.approve(fake.plan,{**fake.env,name:'0'},fake.get,lambda:fake.now,lambda _:None)
+
+    def test_late_approval_stays_valid_fifteen_minutes_from_the_comment(self):
+        # Wait at most 10 minutes from issue creation for the comment; the posted approval is then valid 15 minutes from the comment.
+        fake=Github();fake.autoApprove=False;T=fake.now;late=(T+timedelta(minutes=9)).isoformat()
+        fake.comment=lambda:{'id':7,'user':{'login':m.OWNER},'body':'APPROVE IMAGE '+fake.plan['imageTag'],'created_at':late,'updated_at':late}
+        clock=[T];sleeps=[]
+        def sleep(seconds):
+            sleeps.append(seconds);clock[0]=T+timedelta(minutes=9);fake.comments=[fake.comment()]
+        receipt=m.approve(fake.plan,fake.env,fake.get,lambda:clock[0],sleep)
+        self.assertEqual((7,late,[20]),(receipt['commentId'],receipt['approvedAt'],sleeps))
+        approvedAt=T+timedelta(minutes=9)
+        m.verify(fake.plan,receipt,fake.env,fake.get,T+timedelta(minutes=20))  # minute 20: past the comment window, inside the validity
+        m.verify(fake.plan,receipt,fake.env,fake.get,approvedAt+timedelta(minutes=14,seconds=59))
+        with self.assertRaisesRegex(ValueError,'older than 15 minutes'):m.verify(fake.plan,receipt,fake.env,fake.get,approvedAt+timedelta(minutes=15))
+        # A receipt written before `approvedAt` existed takes the time from the live comment; one that disagrees with the comment fails closed.
+        legacy={k:v for k,v in receipt.items() if k!='approvedAt'}
+        m.verify(fake.plan,legacy,fake.env,fake.get,approvedAt+timedelta(minutes=14,seconds=59))
+        with self.assertRaisesRegex(ValueError,'older than 15 minutes'):m.verify(fake.plan,legacy,fake.env,fake.get,approvedAt+timedelta(minutes=15))
+        with self.assertRaisesRegex(ValueError,'differs from the receipt'):m.verify(fake.plan,{**receipt,'approvedAt':T.isoformat()},fake.env,fake.get,T+timedelta(minutes=20))
+        # The comment window itself is unchanged: a comment at minute 10 never approves.
+        atExpiry=(T+timedelta(minutes=10)).isoformat();fake.comments=[{**fake.comment(),'created_at':atExpiry,'updated_at':atExpiry}]
+        with self.assertRaises(ValueError):m.verify(fake.plan,receipt,fake.env,fake.get,T+timedelta(minutes=12))
 
     def test_wait_is_bounded_and_rechecks_provenance(self):
         fake=Github();fake.autoApprove=False;sleeps=[]
         with self.assertRaises(TimeoutError):m.approve(fake.plan,fake.env,fake.get,lambda:fake.now,sleeps.append)
-        self.assertEqual(sleeps,[20]*120)
+        self.assertEqual(sleeps,[20]*30)  # 10 minutes of 20-second polls
         def moved(_):fake.data['commits/main']['sha']='f'*40
         with self.assertRaisesRegex(ValueError,'Main moved'):m.approve(fake.plan,fake.env,fake.get,lambda:fake.now,moved)
 
@@ -267,7 +318,7 @@ class ApprovalTests(unittest.TestCase):
             self.assertIn('2. Assume the scoped publisher role `arn:aws:iam::509614632283:role/synthetic-publisher`', top)
             self.assertIn('3. Push the already scanned image (configuration digest `sha256:' + 'b' * 64 + '`) once to `' + fake.plan['target'] + '`', top)
             self.assertIn('4. Read the published digest back from ECR and retain the publication receipt and proof files (`image.json`, `image.tar`)', top)
-            self.assertIn('approval expires 40 minutes after this issue is created.', top)
+            self.assertIn('approve within 10 minutes of this issue being created; the approval comment is then valid for 15 minutes.', top)
             # Deterministic: the verification re-render must equal the posted body.
             self.assertEqual(m.gist(fake.plan), m.gist(fake.plan))
             fallback = {k: v for k, v in fake.plan.items() if k != 'app'}

@@ -1,5 +1,6 @@
 """`05 · Recover DEV` (tools/release/recover.py): park, deploy the target, fall back, park again. AWS and GitHub are the injected
 fakes of test_deploy; nothing is called for real."""
+from datetime import timedelta
 import json
 from pathlib import Path
 import tempfile
@@ -134,9 +135,41 @@ class ApprovalTests(RecoverFixture):
     def test_no_answer_times_out(self):
         self.aws.serving('old')
         planned = self.recovery()
+        self.assertEqual(timedelta(minutes=10), m.window(planned))  # one owner approval for the whole sequence, 10 minutes
+        self.assertIn('Approve within 10 minutes of this issue being created; the approval comment is then valid for 15 minutes.', m.gist(planned))
         self.github.autoApprove = False
+        sleeps = []
         with self.assertRaisesRegex(TimeoutError, 'Recovery approval timed out'):
-            self.approvedRecovery(planned)
+            m.approve(planned, self.env, self.root, self.get, now=self.clock, sleep=sleeps.append)
+        self.assertEqual([20] * 30, sleeps)
+        tuned = {'APPROVAL_WAIT_MINUTES': '2', 'APPROVAL_VALID_MINUTES': '5'}
+        self.assertEqual(timedelta(minutes=2), m.window(planned, tuned))
+        self.assertIn('Approve within 2 minutes of this issue being created; the approval comment is then valid for 5 minutes.', m.gist(planned, tuned))
+        sleeps = []
+        with self.assertRaisesRegex(TimeoutError, 'Recovery approval timed out'):
+            m.approve(planned, dict(self.env, **tuned), self.root, self.get, now=self.clock, sleep=sleeps.append)
+        self.assertEqual([20] * 6, sleeps)
+
+    def test_late_approval_is_rechecked_fifteen_minutes_from_the_comment(self):
+        self.aws.serving('old')
+        planned = self.recovery()
+        T = self.now; late = (T + timedelta(minutes=9)).isoformat()
+        self.github.autoApprove = False
+        self.github.comment = lambda: {'id': 7, 'user': {'login': owner.OWNER}, 'body': m.commands(planned)['deploy'], 'created_at': late, 'updated_at': late}
+        clock = [T]
+        def sleep(seconds):
+            clock[0] = T + timedelta(minutes=9); self.github.comments = [self.github.comment()]
+        receipt = m.approve(planned, self.env, self.root, self.get, now=lambda: clock[0], sleep=sleep)
+        self.assertEqual((7, 'deploy', late), (receipt['commentId'], receipt['mode'], receipt['approvedAt']))
+        approvedAt = T + timedelta(minutes=9)
+        m.verify(planned, receipt, self.env, self.root, self.get, T + timedelta(minutes=20))
+        m.verify(planned, receipt, self.env, self.root, self.get, approvedAt + timedelta(minutes=14, seconds=59))
+        with self.assertRaisesRegex(ValueError, 'older than 15 minutes'):
+            m.verify(planned, receipt, self.env, self.root, self.get, approvedAt + timedelta(minutes=15))
+        legacy = {k: v for k, v in receipt.items() if k != 'approvedAt'}
+        m.verify(planned, legacy, self.env, self.root, self.get, approvedAt + timedelta(minutes=14, seconds=59))
+        with self.assertRaisesRegex(ValueError, 'older than 15 minutes'):
+            m.verify(planned, legacy, self.env, self.root, self.get, approvedAt + timedelta(minutes=15))
 
 
 class StageTests(RecoverFixture):

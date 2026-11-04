@@ -20,7 +20,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /**
- * DLV-969 S35 against the disposable cloud-auth database: the full Domain schema (V1-V15, V17, V18) in a fresh schema,
+ * DLV-969 S35 against the disposable cloud-auth database: the full Domain schema (V1-V15, V17-V19) in a fresh schema,
  * the policy in dev mode. DEV test accounts are database-only: no identity provider, no password; staff use them
  * through test sessions inside the DEV gate.
  */
@@ -42,7 +42,7 @@ class CloudTestAccountsDatabaseTest {
   source=new DriverManagerDataSource(url+"?currentSchema="+schema,"postgres",password);jdbc=new JdbcTemplate(source);
   jdbc.execute("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='lookahead_platform_app') THEN CREATE ROLE lookahead_platform_app NOLOGIN; END IF; END $$");
   jdbc.execute("CREATE TABLE flyway_schema_history(installed_rank integer)");
-  for(String file:List.of("V1__platform.sql","V2__author_review_events.sql","V3__plan_names.sql","V4__cloud_identity_and_sign_ins.sql","V6__staff_access.sql","V8__memberships.sql","V9__plan_lifecycle.sql","V10__test_account_registry.sql","V11__free_plan_allowances.sql","V12__created_test_accounts.sql","V13__real_account_maintenance.sql","V14__managed_test_purchase_purge_grants.sql","V15__retain_runtime_audit.sql","V17__dev_access_admission.sql","V18__access_removal_and_staff_aliases.sql"))
+  for(String file:List.of("V1__platform.sql","V2__author_review_events.sql","V3__plan_names.sql","V4__cloud_identity_and_sign_ins.sql","V6__staff_access.sql","V8__memberships.sql","V9__plan_lifecycle.sql","V10__test_account_registry.sql","V11__free_plan_allowances.sql","V12__created_test_accounts.sql","V13__real_account_maintenance.sql","V14__managed_test_purchase_purge_grants.sql","V15__retain_runtime_audit.sql","V17__dev_access_admission.sql","V18__access_removal_and_staff_aliases.sql","V19__cloud_identities.sql","V20__cloud_merge_tokens.sql"))
    jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain",file)));
   for(var actor:List.of(admin,owner))jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",actor.accountId());
  }
@@ -87,6 +87,10 @@ class CloudTestAccountsDatabaseTest {
       .containsEntry("admitted",true).containsEntry("enabled",true).containsEntry("author_access",false)
       .containsEntry("username",first.username()).containsEntry("admitted_by",admin.accountId());
   assertThat(row.get("verified_email")).isNull();
+  // DLV-969 S36: its one identity is on the test issuer, provider 'test', without an email, so it never links.
+  assertThat(jdbc.queryForMap("SELECT issuer,subject,username,provider,verified_email,link_source FROM cloud_identities WHERE account_id=?",first.accountId()))
+      .containsEntry("issuer",TestAccountRoster.TEST_ISSUER).containsEntry("subject",first.accountId().toString()).containsEntry("username",first.username())
+      .containsEntry("provider","test").containsEntry("link_source","first_contact").containsEntry("verified_email",null);
   assertThat(jdbc.queryForMap("SELECT action,actor_id,issuer FROM cloud_admission_events WHERE account_id=?",first.accountId()))
       .containsEntry("action","admit").containsEntry("actor_id",admin.accountId()).containsEntry("issuer",TestAccountRoster.TEST_ISSUER);
   // learner05: Learn, active, ready-made plan in progress.
@@ -278,6 +282,11 @@ class CloudTestAccountsDatabaseTest {
   assertThat(sessions.actAs(coauthorSub,coauthor01).accountId()).isEqualTo(coauthor01);
   assertThatThrownBy(()->sessions.actAs(learnerSub,learner07)).isInstanceOf(AccountFailure.class);
   assertThatThrownBy(()->sessions.actAs(disabledSub,learner07)).isInstanceOf(AccountFailure.class);
+  // DLV-969 S36: a second sign-in linked to the co-author's account (V19 cloud_identities) holds the gate as that account.
+  UUID coauthorAccount=jdbc.queryForObject("SELECT account_id FROM cloud_accounts WHERE subject=?",UUID.class,coauthorSub);
+  com.lookahead.domain.cloud.CloudIdentities.insert(jdbc,coauthorAccount,ISSUER,"sub-coauthor-google","Google_1001","coauthor@gmail.invalid","linked");
+  assertThat(sessions.usable("sub-coauthor-google")).hasSize(35);
+  assertThat(sessions.actAs("sub-coauthor-google",coauthor01).accountId()).isEqualTo(coauthor01);
   // A start without an account id is refused before anything is looked up.
   assertThatThrownBy(()->sessions.actAs(adminSub,null)).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.status()).isEqualTo(422));
   // A real account is never a test-session target, even for the owner.

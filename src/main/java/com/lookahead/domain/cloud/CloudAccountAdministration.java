@@ -34,12 +34,14 @@ public final class CloudAccountAdministration {
         return transaction.execute(status->{
             jdbc.execute("SET LOCAL lock_timeout='5s'");
             jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtextextended(?,0))",Object.class,issuer+"\n"+subject);
-            var rows=jdbc.query("SELECT account_id FROM cloud_accounts WHERE issuer=? AND subject=? FOR UPDATE",(r,i)->r.getObject(1,UUID.class),issuer,subject);
+            // DLV-969 S36: any identity of the account (V19 cloud_identities) names it, not only its first one.
+            var rows=jdbc.query("SELECT account_id FROM cloud_accounts WHERE account_id IN ("+CloudIdentities.ACCOUNT_OF_IDENTITY+") FOR UPDATE",(r,i)->r.getObject(1,UUID.class),issuer,subject,issuer,subject);
             UUID id;
             if(rows.isEmpty()) {
                 if(!action.equals("admit")||args.length!=5)throw new IllegalArgumentException("Admit requires verified provider identity and profile text");
                 id=UUID.randomUUID();jdbc.update("INSERT INTO platform_subjects(id) VALUES(?)",id);
                 jdbc.update("INSERT INTO cloud_accounts(account_id,issuer,subject,admitted,username,display_name) VALUES(?,?,?,true,?,?)",id,issuer,subject,args[3],args[4]);
+                CloudIdentities.insert(jdbc,id,issuer,subject,args[3],null,"first_contact");
             } else {
                 id=rows.getFirst();
                 switch(action){

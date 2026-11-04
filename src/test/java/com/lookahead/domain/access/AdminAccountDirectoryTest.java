@@ -46,6 +46,22 @@ class AdminAccountDirectoryTest {
   var ownRow=result.accounts().get(0);
   assertThat(List.of(String.valueOf(ownRow.signIn()),ownRow.canDisable(),ownRow.canEnable(),ownRow.canRemove())).containsExactly("null",false,false,false);
   verify(removal,never()).options(eq(actor.accountId()),eq(actor.accountId()),anyBoolean());
+  // DLV-969 S36: the owner sees how many other accounts share a row's verified email; no email, no query.
+  assertThat(realRow.sameEmailAccounts()).isZero();
+  when(jdbc.queryForObject(contains("count(*)"),eq(Integer.class),eq("real@example.test"),eq("real@example.test"),eq(real))).thenReturn(2);
+  var again=new AdminAccountDirectory(directory,access,staff,summaries,jdbc,localPolicy,removal).list(actor,"",0);
+  assertThat(again.accounts().get(1).sameEmailAccounts()).isEqualTo(2);assertThat(again.accounts().get(0).sameEmailAccounts()).isZero();
+  assertThat(again.accounts().get(2).sameEmailAccounts()).isZero();
+  var compatible=new AdminAccountDirectory.Row(real,"real","Real",null,Set.of("user"),false,false,summary,false,false,null,false,false,false);
+  assertThat(compatible.sameEmailAccounts()).isZero();assertThat(compatible.signInMethods()).isEmpty();
+  assertThat(new AdminAccountDirectory.Row(real,"real","Real",null,Set.of("user"),false,false,summary,false,false,null,false,false,false,3).signInMethods()).isEmpty();
+  // The owner sees every sign-in method of a row, from cloud_identities; a test account's row asks nothing.
+  assertThat(again.accounts().get(1).signInMethods()).isEmpty();
+  when(jdbc.query(contains("FROM cloud_identities"),any(org.springframework.jdbc.core.RowMapper.class),eq(real)))
+      .thenReturn(List.of(Map.of("provider","google","email","real@example.test"),Map.of("provider","cognito")));
+  var third=new AdminAccountDirectory(directory,access,staff,summaries,jdbc,localPolicy,removal).list(actor,"",0);
+  assertThat(third.accounts().get(1).signInMethods()).containsExactly(Map.of("provider","google","email","real@example.test"),Map.of("provider","cognito"));
+  verify(jdbc,never()).query(contains("FROM cloud_identities"),any(org.springframework.jdbc.core.RowMapper.class),eq(admin));
  }
  @Test void controllerDisablesCaching() {
   var service=mock(AdminAccountDirectory.class);var response=new org.springframework.mock.web.MockHttpServletResponse();

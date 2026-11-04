@@ -400,9 +400,11 @@ requires that commit to be on `main`, freezes the record, CI builds that commit 
 the workflow and tooling run from `main`, and the tag is re-checked before credentials.
 Rollback is a new tag at an older `main` commit. It requires an immutable DEV ECR
 repository and an exact main-only `dev` environment. The owner must approve an issue
-bound to the tag, both commits, run, image, target and role within 40 minutes;
-a manual trigger alone is insufficient. Approval is rechecked before the 15-minute
-upload credentials and again before pushing. This is workflow-enforced owner approval,
+bound to the tag, both commits, run, image, target and role within 10 minutes of the
+issue being created; a manual trigger alone is insufficient. The posted approval is valid
+for 15 minutes from its comment and is rechecked before the 15-minute upload credentials
+and again before pushing (both windows are defaults, tunable by the repository variables
+`APPROVAL_WAIT_MINUTES` and `APPROVAL_VALID_MINUTES` described in the release tooling README). This is workflow-enforced owner approval,
 not independent review. Registry receipt verifies remote manifest/config identity.
 Existing tags and uncertain registry state block retries; failed uploads retain intent.
 See [image publication and recovery](tools/release/README.md). No workflow was dispatched or
