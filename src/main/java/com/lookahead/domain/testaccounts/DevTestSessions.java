@@ -19,8 +19,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <ul>
  *   <li>Only with the Gateway secret (constant-time compare), and only in DEV with test accounts on.</li>
- *   <li>The gate holder must be an admitted, enabled DEV account that is not disabled or deleted, and owner, co-author
- *       or admin; {@link TestAccountTemplates#allows} limits which test accounts each may use.</li>
+ *   <li>The gate holder must be an admitted, enabled DEV account that is not disabled or deleted. Its role (owner,
+ *       co-author, admin, or learner for an account without a staff role or with only reviewer or tester) goes through
+ *       {@link TestAccountTemplates#allows}, the one hierarchy (owner, 2026-11-04): a learner uses test learners only.
+ *       The session then acts as the test account, so its course access is the test account's own.</li>
  *   <li>The target must be an active DEV test account (its cloud_accounts row is on the test issuer).</li>
  * </ul>
  */
@@ -46,7 +48,7 @@ public class DevTestSessions {
         return MessageDigest.isEqual(supplied, secret);
     }
 
-    /** The test accounts this gate holder may use; empty for anyone who is not staff. */
+    /** The test accounts this gate holder may use; empty for anyone who is not admitted. */
     public List<Usable> usable(String holderSubject) {
         policy.requireCloud();
         String role = holderRole(holderSubject);
@@ -120,7 +122,10 @@ public class DevTestSessions {
         return new AccountPrincipal(target.accountId(), target.username(), target.displayName(), true, false, null);
     }
 
-    /** "owner", "co-author" or "admin" (a dual-role person gets the lower), or "" for anyone else. Any linked sign-in (S36) counts. */
+    /**
+     * {@link TestAccountTemplates#role}: "owner", "co-author", "admin" (a dual-role person gets the lower) or "learner"
+     * for an admitted, enabled, not disabled or deleted account; "" for anyone else. Any linked sign-in (S36) counts.
+     */
     private String holderRole(String subject) {
         if (subject == null || subject.isBlank() || subject.length() > 256) return "";
         var holders = jdbc.query("""
@@ -129,9 +134,8 @@ public class DevTestSessions {
                 """.formatted(com.lookahead.domain.cloud.CloudIdentities.ACCOUNT_OF_IDENTITY),
                 (row, n) -> new Object[]{row.getObject(1, UUID.class), row.getBoolean(2)}, issuer, subject, issuer, subject);
         if (holders.isEmpty()) return "";
-        if ((Boolean) holders.getFirst()[1]) return "owner";
-        var roles = roles((UUID) holders.getFirst()[0]);
-        return roles.contains("admin") ? "admin" : roles.contains("co-author") ? "co-author" : "";
+        boolean owner = (Boolean) holders.getFirst()[1];
+        return TestAccountTemplates.role(owner, owner ? Set.of() : roles((UUID) holders.getFirst()[0]));
     }
 
     private Set<String> roles(UUID account) {

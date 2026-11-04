@@ -13,15 +13,14 @@ import org.springframework.context.event.ContextClosedEvent;
 import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.mock.env.MockEnvironment;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.*;
 
 /** DLV-969 (owner, 2026-11-04): the start, availability and stop of a task are explained in the log. */
 class LifecycleLogTest {
-    @SuppressWarnings("unchecked")
+    /** A real provider, not a mock: mocking Spring's ObjectProvider trips Mockito's own assertion on the CI image's JDK. */
     private static ObjectProvider<BuildProperties> build(BuildProperties properties) {
-        ObjectProvider<BuildProperties> provider = mock(ObjectProvider.class);
-        when(provider.getIfAvailable()).thenReturn(properties);
-        return provider;
+        var beans = new org.springframework.beans.factory.support.DefaultListableBeanFactory();
+        if (properties != null) beans.registerSingleton("buildProperties", properties);
+        return beans.getBeanProvider(BuildProperties.class);
     }
 
     private static BuildProperties properties() {

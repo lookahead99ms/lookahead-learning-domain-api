@@ -51,7 +51,8 @@ class CloudTestAccountsDatabaseTest {
   var erasure=new AccountDataErasure(jdbc);var transactions=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source));
   for(UUID id:jdbc.queryForList("SELECT account_id FROM test_account_registry",UUID.class))transactions.executeWithoutResult(status->erasure.erase(id,false));
   jdbc.update("DELETE FROM cloud_sign_ins");jdbc.update("DELETE FROM cloud_account_states");
-  jdbc.update("DELETE FROM test_account_registry");jdbc.update("DELETE FROM test_account_creations");
+  // The reset ledger is append-only by row trigger; TRUNCATE (no row triggers) clears it between tests.
+  jdbc.execute("TRUNCATE test_account_resets");jdbc.update("DELETE FROM test_account_registry");jdbc.update("DELETE FROM test_account_creations");
   jdbc.update("DELETE FROM staff_access");jdbc.update("UPDATE cloud_accounts SET admitted=false");jdbc.update("DELETE FROM cloud_accounts");
   repository=mock(StaffAccessRepository.class);
   when(repository.forAccount(admin.accountId())).thenReturn(new StaffAccessRepository.Assignment(UUID.randomUUID(),admin.accountId(),null,Set.of("admin"),Set.of(),false,1));
@@ -109,19 +110,33 @@ class CloudTestAccountsDatabaseTest {
   assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE NOT admitted",Integer.class)).isZero();
   assertThatThrownBy(()->created.create(admin,null)).hasMessageContaining("request key");
  }
- @Test void scenariosFollowTheCreatorsRoleAndTheAllowanceListsOnlyThoseAllowed(){
-  assertThatThrownBy(()->created.create(admin,new CreatedTestAccounts.Create(UUID.randomUUID(),null,"co-author",false)))
-      .isInstanceOfSatisfying(AccountFailure.class,f->{assertThat(f.status()).isEqualTo(403);assertThat(f.code()).isEqualTo("SCENARIO_FORBIDDEN");});
+ /** DLV-969 (owner, 2026-11-04): "Create test account" makes learner test accounts only, for every role, the owner included. */
+ @Test void everyRoleCreatesLearnerTestAccountsOnlyAndTheAllowanceListsLearnerScenariosOnly(){
+  var coauthor=new AccountPrincipal(UUID.randomUUID(),"coauthor","Co",true,false);
+  jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",coauthor.accountId());
+  when(repository.forAccount(coauthor.accountId())).thenReturn(new StaffAccessRepository.Assignment(UUID.randomUUID(),coauthor.accountId(),null,Set.of("co-author"),Set.of(),false,1));
   assertThatThrownBy(()->created.create(admin,new CreatedTestAccounts.Create(UUID.randomUUID(),null,"learner99",false)))
       .isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.code()).isEqualTo("UNKNOWN_SCENARIO"));
-  var staffAccount=created.create(admin,new CreatedTestAccounts.Create(UUID.randomUUID(),null,"admin",false));
-  assertThat(jdbc.queryForObject("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,staffAccount.accountId())).isEqualTo("[\"admin\"]");
-  var ids=created.allowance(admin).scenarios().stream().map(TestAccountTemplates.Template::id).toList();
-  assertThat(ids).hasSize(28).contains("learner01","learner27","admin").doesNotContain("co-author");
-  assertThat(created.allowance(owner).scenarios()).hasSize(29);
+  try(var log=com.lookahead.domain.LogCapture.start()){
+   for(var creator:List.of(owner,coauthor,admin))for(String staffScenario:List.of("co-author","admin"))
+    assertThatThrownBy(()->created.create(creator,new CreatedTestAccounts.Create(UUID.randomUUID(),null,staffScenario,false))).as(creator.getUsername()+" "+staffScenario)
+        .isInstanceOfSatisfying(AccountFailure.class,f->{assertThat(f.status()).isEqualTo(403);assertThat(f.code()).isEqualTo("TEST_ACCOUNT_LEARNER_ONLY");
+          assertThat(f.getMessage()).isEqualTo("Only learner test accounts can be created. Staff test accounts come from the roster.");});
+   var refused=log.lines("test-account.create");
+   assertThat(refused).hasSize(6).allSatisfy(line->{assertThat(line.getLevel()).isEqualTo(ch.qos.logback.classic.Level.WARN);
+     assertThat(com.lookahead.domain.LogCapture.keys(line)).containsEntry("reason","TEST_ACCOUNT_LEARNER_ONLY");});
+  }
+  assertThat(jdbc.queryForObject("SELECT count(*) FROM test_account_registry",Integer.class)).isZero();
+  for(var creator:List.of(owner,coauthor,admin)){
+   var learner=created.create(creator,new CreatedTestAccounts.Create(UUID.randomUUID(),null,"learner03",false));
+   assertThat(jdbc.queryForList("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,learner.accountId())).isEmpty();
+   assertThat(created.allowance(creator).scenarios()).as(creator.getUsername()).hasSize(27).allSatisfy(t->assertThat(t.roles()).isEmpty())
+       .extracting(TestAccountTemplates.Template::id).contains("learner01","learner27").doesNotContain("co-author","admin");
+  }
   assertThat(created.allowance(owner).limit()).isEqualTo(Integer.MAX_VALUE);
-  // Nothing was reserved by a refused request.
-  assertThat(created.allowance(admin).used()).isEqualTo(1);
+  // Nothing was reserved by a refused request; limits are unchanged.
+  assertThat(created.allowance(admin)).extracting("limit","used").containsExactly(10,1);
+  assertThat(created.allowance(coauthor)).extracting("limit","used").containsExactly(20,1);
  }
  @Test void deleteKeepsTheAdmittedRowAndRemovesTheAccountFromEveryTestSession(){
   var learner=created.create(admin,new CreatedTestAccounts.Create(UUID.randomUUID(),null,"learner02",false));
@@ -195,7 +210,8 @@ class CloudTestAccountsDatabaseTest {
   // learner12: Advance ending soon with Grow scheduled next.
   var learner12=new TestAccountRoster.Entry("learner12",false).accountId();
   assertThat(jdbc.queryForList("SELECT plan_id FROM membership_purchases WHERE account_id=? ORDER BY starts_at",String.class,learner12)).containsExactly("advance","grow");
-  assertThat(rosterService(Set.of("admin")).list(admin)).hasSize(35);
+  // DLV-969 (owner, 2026-11-04): an admin sees admins and learners, never the two co-authors.
+  assertThat(rosterService(Set.of("admin")).list(admin)).hasSize(33);
   // Reset in DEV: only to the scenario, confirmed with the username the list shows.
   var service=rosterService(Set.of("admin"));
   long revision=jdbc.queryForObject("SELECT revision FROM test_account_registry WHERE account_id=?",Long.class,learner12);
@@ -263,13 +279,21 @@ class CloudTestAccountsDatabaseTest {
   var roster=roster();while(roster.next(owner).remaining()>0){}
   String ownerSub="sub-owner",coauthorSub="sub-coauthor",adminSub="sub-admin",learnerSub="sub-learner",disabledSub="sub-disabled";
   holder(ownerSub,true);holder(coauthorSub,false,"co-author");holder(adminSub,false,"admin");holder(learnerSub,false);
+  holder("sub-reviewer",false,"reviewer");holder("sub-tester",false,"tester");holder("sub-dual",false,"co-author","admin");
+  // Signed in but never admitted: nothing.
+  UUID waiting=UUID.randomUUID();jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",waiting);
+  jdbc.update("INSERT INTO cloud_accounts(account_id,issuer,subject,admitted,enabled,author_access,username,display_name) VALUES (?,?,'sub-waiting',false,true,false,'w','w')",waiting,ISSUER);
   UUID disabled=holder(disabledSub,false,"admin");
   jdbc.update("INSERT INTO cloud_account_states(account_id,state,changed_by) VALUES (?,'disabled',?)",disabled,owner.accountId());
   var sessions=sessions();
   assertThat(sessions.usable(ownerSub)).hasSize(35);
   assertThat(sessions.usable(coauthorSub)).hasSize(35);
   assertThat(sessions.usable(adminSub)).hasSize(33).noneMatch(u->u.roles().contains("co-author"));
-  for(String nobody:new String[]{learnerSub,disabledSub,"sub-unknown","",null})assertThat(sessions.usable(nobody)).as(String.valueOf(nobody)).isEmpty();
+  // DLV-969 (owner, 2026-11-04): learners, reviewers and testers never switch;
+  // a co-author who is also an admin is an admin here.
+  for(String never:List.of(learnerSub,"sub-reviewer","sub-tester"))assertThat(sessions.usable(never)).as(never).isEmpty();
+  assertThat(sessions.usable("sub-dual")).hasSize(33).noneMatch(u->u.roles().contains("co-author"));
+  for(String nobody:new String[]{disabledSub,"sub-waiting","sub-unknown","",null})assertThat(sessions.usable(nobody)).as(String.valueOf(nobody)).isEmpty();
   var first=sessions.usable(adminSub).getFirst();
   assertThat(first.username()).isEqualTo("admin01@lookahead.dev");assertThat(first.roles()).containsExactly("admin");
   assertThat(sessions.usable(ownerSub).stream().filter(u->u.username().equals("learner06@lookahead.dev")).findFirst().orElseThrow().scenario())
@@ -280,7 +304,14 @@ class CloudTestAccountsDatabaseTest {
   assertThat(principal.displayName()).isEqualTo("Learner07");assertThat(principal.isEnabled()).isTrue();assertThat(principal.cloudAuthor()).isFalse();
   assertThatThrownBy(()->sessions.actAs(adminSub,coauthor01)).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.code()).isEqualTo("TEST_SESSION_FORBIDDEN"));
   assertThat(sessions.actAs(coauthorSub,coauthor01).accountId()).isEqualTo(coauthor01);
-  assertThatThrownBy(()->sessions.actAs(learnerSub,learner07)).isInstanceOf(AccountFailure.class);
+  UUID admin01=new TestAccountRoster.Entry("admin01",true).accountId();
+  for(UUID target:List.of(admin01,coauthor01,learner07))for(String below:List.of(learnerSub,"sub-reviewer","sub-tester"))
+   assertThatThrownBy(()->sessions.actAs(below,target)).isInstanceOfSatisfying(AccountFailure.class,f->{assertThat(f.status()).isEqualTo(403);
+     assertThat(f.code()).isEqualTo("TEST_SESSION_FORBIDDEN");assertThat(f.getMessage()).isEqualTo("Your role cannot use this test account.");});
+  assertThatThrownBy(()->sessions.actAs("sub-dual",coauthor01)).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.code()).isEqualTo("TEST_SESSION_FORBIDDEN"));
+  assertThat(sessions.start(adminSub,learner07).accountId()).isEqualTo(learner07);
+  assertThatThrownBy(()->sessions.start(learnerSub,learner07)).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.code()).isEqualTo("TEST_SESSION_FORBIDDEN"));
+  assertThatThrownBy(()->sessions.actAs("sub-waiting",learner07)).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.code()).isEqualTo("TEST_SESSION_FORBIDDEN"));
   assertThatThrownBy(()->sessions.actAs(disabledSub,learner07)).isInstanceOf(AccountFailure.class);
   // DLV-969 S36: a second sign-in linked to the co-author's account (V19 cloud_identities) holds the gate as that account.
   UUID coauthorAccount=jdbc.queryForObject("SELECT account_id FROM cloud_accounts WHERE subject=?",UUID.class,coauthorSub);
@@ -302,6 +333,117 @@ class CloudTestAccountsDatabaseTest {
   var off=new DevTestSessions(jdbc,new TestAccountPolicy(TestAccountPolicyTest.cloud("prod")),ISSUER,"synthetic-gateway-secret");
   assertThatThrownBy(()->off.usable(ownerSub)).isInstanceOf(AccountFailure.class);
   assertThatThrownBy(()->off.actAs(ownerSub,learner07)).isInstanceOf(AccountFailure.class);
+ }
+
+ /** DLV-969 (owner, 2026-11-04): the session acts as the test account, so its courses are the test account's, not the holder's. */
+ @Test void aTestSessionHasTheTestAccountsCourseAccessNotTheHolders(){
+  var roster=roster();while(roster.next(owner).remaining()>0){}
+  // Learners never switch (owner, 2026-11-04), so an admin holds the gate here.
+  UUID holder=holder("sub-admin",false,"admin");
+  UUID learner05=new TestAccountRoster.Entry("learner05",false).accountId();
+  var principal=sessions().actAs("sub-admin",learner05);
+  assertThat(principal.accountId()).isEqualTo(learner05).isNotEqualTo(holder);
+  var summaries=new AccessSummaryService(jdbc,json,mock(StaffAccessService.class));
+  assertThat(summaries.get(principal,principal.accountId()).labels()).anySatisfy(label->assertThat(label).contains("Learn"));
+  assertThat(summaries.get(new AccountPrincipal(holder,"sub-admin","sub-admin",true,false),holder).label()).isEqualTo("Free");
+ }
+ /** DLV-969 (owner, 2026-11-04): each reader of the test-account list sees what the one hierarchy lets them act on. */
+ @Test void theTestAccountListFollowsTheReadersRole(){
+  var roster=roster();while(roster.next(owner).remaining()>0){}
+  var ownerList=new TestAccountsService(jdbc,json,policy,new ScenarioPurchases(jdbc,json,policy),plans,ownerStaff(),
+      new AccessSummaryService(jdbc,json,ownerStaff()),mock(SnapshotValidator.class));
+  var coauthor=new AccountPrincipal(UUID.randomUUID(),"coauthor","Co",true,false);
+  assertThat(ownerList.list(owner)).hasSize(35);
+  assertThat(rosterService(Set.of("co-author")).list(coauthor)).hasSize(35);
+  assertThat(rosterService(Set.of("admin")).list(admin)).hasSize(33)
+      .allSatisfy(row->assertThat(row.get("roles").toString()).doesNotContain("co-author"));
+  // Lower role wins: a co-author who is also an admin reads as an admin.
+  assertThat(rosterService(Set.of("co-author","admin")).list(admin)).hasSize(33);
+  assertThatThrownBy(()->rosterService(Set.of("reviewer")).list(admin)).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.code()).isEqualTo("STAFF_REQUIRED"));
+  // Reset stays owner or admin; an admin never resets a co-author test account.
+  UUID coauthor01=new TestAccountRoster.Entry("coauthor01",true).accountId(),admin02=new TestAccountRoster.Entry("admin02",true).accountId();
+  var service=rosterService(Set.of("admin"));
+  assertThatThrownBy(()->service.reset(admin,coauthor01,new TestAccountsService.Reset(UUID.randomUUID(),revision(coauthor01),"coauthor01@lookahead.dev","scenario")))
+      .isInstanceOfSatisfying(AccountFailure.class,f->{assertThat(f.status()).isEqualTo(403);assertThat(f.code()).isEqualTo("RESET_FORBIDDEN");});
+  assertThatThrownBy(()->rosterService(Set.of("co-author","admin")).reset(admin,coauthor01,new TestAccountsService.Reset(UUID.randomUUID(),revision(coauthor01),"coauthor01@lookahead.dev","scenario")))
+      .isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.code()).isEqualTo("RESET_FORBIDDEN"));
+  service.reset(admin,admin02,new TestAccountsService.Reset(UUID.randomUUID(),revision(admin02),"admin02@lookahead.dev","scenario"));
+  ownerList.reset(owner,coauthor01,new TestAccountsService.Reset(UUID.randomUUID(),revision(coauthor01),"coauthor01@lookahead.dev","scenario"));
+  assertThat(jdbc.queryForObject("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,coauthor01)).isEqualTo("[\"co-author\"]");
+ }
+ long revision(UUID id){return jdbc.queryForObject("SELECT revision FROM test_account_registry WHERE account_id=?",Long.class,id);}
+ /** As DELETE did before roster accounts were permanent: data erased, the registry row deleted, the admitted row kept. */
+ void deleteTheOldWay(UUID id){
+  new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source)).executeWithoutResult(status->{
+   new AccountDataErasure(jdbc).erase(id,false);
+   jdbc.update("UPDATE test_account_creations SET state='deleted' WHERE account_id=?",id);
+   jdbc.update("UPDATE test_account_registry SET creation_state='deleted',revision=revision+1,last_changed_by=? WHERE account_id=?",owner.accountId().toString(),id);
+  });
+ }
+ /** DLV-969 (owner, 2026-11-04): the owner's Restore of roster accounts deleted before they became permanent. */
+ @Test void theOwnerRestoresDeletedRosterAccountsFromTheirScenarioOnlyOnce(){
+  var roster=roster();while(roster.next(owner).remaining()>0){}
+  var created=this.created.create(admin,new CreatedTestAccounts.Create(UUID.randomUUID(),null,"learner02",false));
+  this.created.delete(admin,created.accountId());
+  UUID learner05=new TestAccountRoster.Entry("learner05",false).accountId(),coauthor02=new TestAccountRoster.Entry("coauthor02",true).accountId();
+  deleteTheOldWay(learner05);deleteTheOldWay(coauthor02);
+  // learner05's admitted row is gone as well; Restore admits it again on the test issuer.
+  jdbc.update("DELETE FROM cloud_identities WHERE account_id=?",learner05);
+  jdbc.update("UPDATE cloud_accounts SET admitted=false WHERE account_id=?",learner05);jdbc.update("DELETE FROM cloud_accounts WHERE account_id=?",learner05);
+  long before=revision(learner05);
+  assertThat(roster.statusFor(owner)).extracting("ready","deleted").containsExactly(33,2);
+  assertThat(sessions().usable("sub-owner")).isEmpty();
+  holder("sub-owner",true);
+  assertThat(sessions().usable("sub-owner")).hasSize(33);
+  // The owner check is the existing one: 403 OWNER_REQUIRED.
+  var catalog=mock(SnapshotValidator.class);
+  var realStaff=new StaffAccessService(repository,ownerAccess,catalog);
+  var service=new TestAccountsService(jdbc,json,policy,new ScenarioPurchases(jdbc,json,policy),plans,realStaff,new AccessSummaryService(jdbc,json,realStaff),catalog);
+  var restoring=new DevTestRoster(jdbc,new DataSourceTransactionManager(source),policy,ownerAccess,service);
+  try(var log=com.lookahead.domain.LogCapture.start()){
+   assertThatThrownBy(()->restoring.restore(admin,new DevTestRoster.Restore("RESTORE")))
+       .isInstanceOfSatisfying(AccountFailure.class,f->{assertThat(f.status()).isEqualTo(403);assertThat(f.code()).isEqualTo("OWNER_REQUIRED");});
+   assertThat(com.lookahead.domain.LogCapture.keys(log.only("test-account.restore"))).containsEntry("reason","OWNER_REQUIRED").containsEntry("account.id",admin.accountId());
+  }
+  for(var wrong:Arrays.asList(null,new DevTestRoster.Restore("restore"),new DevTestRoster.Restore(null)))
+   assertThatThrownBy(()->restoring.restore(owner,wrong)).isInstanceOfSatisfying(AccountFailure.class,f->{assertThat(f.status()).isEqualTo(422);assertThat(f.code()).isEqualTo("ACCOUNT_CONFIRMATION_REQUIRED");});
+  assertThatThrownBy(()->restoring.restore(null,new DevTestRoster.Restore("RESTORE"))).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.status()).isEqualTo(401));
+  assertThatThrownBy(()->new DevTestRoster(jdbc,new DataSourceTransactionManager(source),new TestAccountPolicy(TestAccountPolicyTest.local()),ownerAccess,service)
+      .restore(owner,new DevTestRoster.Restore("RESTORE"))).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.code()).isEqualTo("TEST_ACCOUNTS_DISABLED"));
+  assertThat(roster.statusFor(owner).deleted()).isEqualTo(2);
+  clearInvocations(plans);
+  DevTestRoster.Restored result;
+  try(var log=com.lookahead.domain.LogCapture.start()){
+   result=restoring.restore(owner,new DevTestRoster.Restore("RESTORE"));
+   var lines=log.lines("test-account.restore");
+   assertThat(lines).hasSize(2).extracting(line->com.lookahead.domain.LogCapture.keys(line).get("target.id")).containsExactlyInAnyOrder(learner05,coauthor02);
+   assertThat(lines).allSatisfy(line->assertThat(com.lookahead.domain.LogCapture.keys(line)).containsEntry("account.id",owner.accountId()));
+   log.containsNone("learner05");log.containsNone("coauthor02");
+  }
+  assertThat(result.restored()).isEqualTo(2);
+  assertThat(roster.statusFor(owner)).extracting("total","ready","deleted").containsExactly(35,35,0);
+  // Rebuilt like Reset: learner05's Learn membership and its study plan; coauthor02's role.
+  assertThat(jdbc.queryForList("SELECT plan_id FROM membership_purchases WHERE account_id=? AND superseded_at IS NULL",String.class,learner05)).containsExactly("learn");
+  verify(plans).populate(eq(learner05),argThat(scenario->scenario.number()==5),any());
+  assertThat(jdbc.queryForObject("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,coauthor02)).isEqualTo("[\"co-author\"]");
+  assertThat(jdbc.queryForMap("SELECT issuer,admitted,enabled,admitted_by FROM cloud_accounts WHERE account_id=?",learner05))
+      .containsEntry("issuer",TestAccountRoster.TEST_ISSUER).containsEntry("admitted",true).containsEntry("enabled",true).containsEntry("admitted_by",owner.accountId());
+  for(UUID id:List.of(learner05,coauthor02)){
+   assertThat(jdbc.queryForMap("SELECT creation_state,initialization,last_changed_by FROM test_account_registry WHERE account_id=?",id))
+       .containsEntry("creation_state","active").containsEntry("initialization","scenario").containsEntry("last_changed_by",owner.accountId().toString());
+   assertThat(jdbc.queryForObject("SELECT actor_id FROM test_account_resets WHERE account_id=? AND preset='restore'",UUID.class,id)).isEqualTo(owner.accountId());
+  }
+  assertThat(revision(learner05)).isGreaterThan(before);
+  // A created test account is never restored; the roster is usable again.
+  assertThat(jdbc.queryForObject("SELECT creation_state FROM test_account_registry WHERE account_id=?",String.class,created.accountId())).isEqualTo("deleted");
+  assertThat(sessions().usable("sub-owner")).hasSize(35);
+  assertThat(sessions().actAs("sub-owner",learner05).accountId()).isEqualTo(learner05);
+  // Again: nothing to restore, 200 with 0.
+  try(var log=com.lookahead.domain.LogCapture.start()){
+   assertThat(restoring.restore(owner,new DevTestRoster.Restore("RESTORE")).restored()).isZero();
+   assertThat(com.lookahead.domain.LogCapture.keys(log.only("test-account.restore"))).containsEntry("count",0);
+  }
+  assertThat(service.restoreRosterEntry(owner,new TestAccountRoster.Entry("learner99",false))).isFalse();
  }
 
  static JdbcTemplate fixtureJdbc; static org.springframework.transaction.PlatformTransactionManager fixtureTransactions;

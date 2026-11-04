@@ -190,6 +190,33 @@ row deleted; the admitted `cloud_accounts` row stays, because the runtime role c
 `enabled` and V17 never deletes an admitted row. `CloudTestAccountsDatabaseTest` (cloud-auth
 database, full schema plus V17) covers create, retry, delete and the roster refusal.
 
+One access hierarchy for DEV test accounts (DLV-969, owner 2026-11-04). `TestAccountTemplates.allows` is the
+single rule for the test-session picker and start (`DevTestSessions`), the test-account list
+(`GET /api/v1/admin/test-accounts`), Reset, creation scenarios and the People rows of `GET /api/v1/admin/access`.
+The acting person's role is the lower of their roles (`TestAccountTemplates.role`):
+
+| Acting role | May see or act on |
+| --- | --- |
+| owner | every account |
+| co-author | every account except the owner's |
+| admin (also co-author + admin) | admins and learners only |
+| learner, reviewer or tester | nothing: they never switch (owner 2026-11-04) |
+| not admitted, disabled or deleted | nothing |
+
+Who may open each page is unchanged (`requireAccessReader`, the staff reader of the test-account list, owner/admin
+Reset). A test session acts as the test account, so its course access is the test account's own. "Create test
+account" makes learner test accounts only, for every role (`TEST_ACCOUNT_LEARNER_ONLY`, 403); the allowance's
+`scenarios` lists learner scenarios only; staff test accounts exist only in the roster.
+
+Restore of deleted roster accounts (owner, DEV only), on the route the Gateway already forwards:
+`POST /api/v1/admin/test-accounts` with `{"restoreRoster": true, "confirm": "RESTORE"}` answers
+`{data:{restored:N}}`. Each deleted roster entry (`creation_state='deleted'`, owner-created, never a created test
+account) goes back to active in its own transaction and is rebuilt from its scenario like Reset; the admitted row is
+re-created if missing, the registry revision is bumped, a `test_account_resets` row with preset `restore` records the
+owner, and one `test-account.restore` event names the ids. Nothing to restore answers `restored: 0`. Refusals:
+`403 OWNER_REQUIRED`, `422 ACCOUNT_CONFIRMATION_REQUIRED`, `403 TEST_ACCOUNTS_DISABLED` outside DEV. The roster
+card's `roster.deleted` (allowance) is the restorable count.
+
 ## Configuration and validation
 
 Cloud requires `LOOKAHEAD_COGNITO_ISSUER`, `AWS_REGION`,

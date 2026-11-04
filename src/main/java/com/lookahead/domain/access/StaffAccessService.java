@@ -42,7 +42,20 @@ public class StaffAccessService {
         if (!current.manageAccess() && !"co-author".equals(current.feedbackRole()))
             throw new AccountFailure(403, "ACCESS_READER_REQUIRED", "Owner or co-author required.");
     }
-    public List<Assignment> list(AccountPrincipal actor) { requireAccessReader(actor);return repository.list(); }
+    /**
+     * DLV-969 (owner, 2026-11-04): the People rows the reader may see, by the one hierarchy
+     * ({@link com.lookahead.domain.testaccounts.TestAccountTemplates#allows}): the owner sees every row, a co-author
+     * never the owner's, an admin only admin and learner rows. Who may open the list is unchanged.
+     */
+    public List<Assignment> list(AccountPrincipal actor) {
+        requireAccessReader(actor);
+        var rows=repository.list();
+        String role=com.lookahead.domain.testaccounts.TestAccountTemplates.role(permissions(actor));
+        if("owner".equals(role))return rows;
+        var owners=repository.owners();
+        return rows.stream().filter(row->com.lookahead.domain.testaccounts.TestAccountTemplates.allows(role,
+            row.accountId()!=null&&(owners.contains(row.accountId())||LocalAuthorAccess.ACCOUNT_ID.equals(row.accountId()))?Set.of("owner"):row.roles())).toList();
+    }
     public Set<String> catalog(AccountPrincipal actor) { requireAccessReader(actor);return catalog.allTopicIds(); }
 
     @Transactional

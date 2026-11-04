@@ -34,10 +34,13 @@ class StaffAccessDatabaseTest {
         jdbc.execute("CREATE TABLE platform_subjects(id uuid PRIMARY KEY)");
         jdbc.execute("CREATE FUNCTION reject_author_review_mutation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'immutable'; END; $$");
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V6__staff_access.sql")));
+        // Only what the People list reads of V4: who has author (owner) access.
+        jdbc.execute("CREATE TABLE cloud_accounts(account_id uuid PRIMARY KEY, author_access boolean NOT NULL DEFAULT false)");
         repository=new StaffAccessRepository(jdbc,new ObjectMapper());
         var catalog=mock(SnapshotValidator.class);when(catalog.allTopicIds()).thenReturn(Set.of("java","system-design"));
         service=new StaffAccessService(repository,new LocalAuthorAccess(new MockEnvironment().withProperty("app.deployment-environment","dev")),catalog);
         owner=account(true);learner=account(false);other=account(false);
+        jdbc.update("INSERT INTO cloud_accounts(account_id,author_access) VALUES (?,true)",owner.accountId());
     }
     AccountPrincipal account(boolean owner) {
         UUID id=UUID.randomUUID();jdbc.update("INSERT INTO platform_subjects VALUES(?)",id);
@@ -78,6 +81,34 @@ class StaffAccessDatabaseTest {
         assertThat(service.permissions(coauthor).manageAccess()).isFalse();
         assertThatThrownBy(() -> service.list(account(false))).isInstanceOf(
                 com.lookahead.learning.content.exception.AccountFailure.class);
+    }
+    /** DLV-969 (owner, 2026-11-04): the People rows follow the one hierarchy; who may open the list is unchanged. */
+    @Test void thePeopleListShowsEachReaderOnlyTheRowsTheHierarchyAllows() {
+        var coauthor=account(false);var dual=account(false);var adminPerson=account(false);var reviewer=account(false);var plain=account(false);
+        UUID ownerRow=UUID.randomUUID();
+        // The owner's own row (topic grants only); the page cannot write it, so it is inserted directly.
+        jdbc.update("INSERT INTO staff_access(id,account_id,roles,topic_grants,full_curriculum,revision) VALUES (?,?,'[]','[\"java\"]',false,1)",ownerRow,owner.accountId());
+        UUID coauthorRow=save(owner,new StaffAccessService.Change(UUID.randomUUID(),coauthor.accountId(),null,Set.of("co-author"),Set.of(),false,0)).id();
+        UUID dualRow=save(owner,new StaffAccessService.Change(UUID.randomUUID(),dual.accountId(),null,Set.of("co-author","admin"),Set.of(),false,0)).id();
+        UUID adminRow=save(owner,new StaffAccessService.Change(UUID.randomUUID(),adminPerson.accountId(),null,Set.of("admin"),Set.of(),false,0)).id();
+        UUID reviewerRow=save(owner,new StaffAccessService.Change(UUID.randomUUID(),reviewer.accountId(),null,Set.of("reviewer"),Set.of(),false,0)).id();
+        UUID learnerRow=save(owner,new StaffAccessService.Change(UUID.randomUUID(),plain.accountId(),null,Set.of(),Set.of("java"),false,0)).id();
+        var mine=Set.of(ownerRow,coauthorRow,dualRow,adminRow,reviewerRow,learnerRow);
+        java.util.function.Function<AccountPrincipal,List<UUID>> seen=reader->service.list(reader).stream().map(StaffAccessRepository.Assignment::id).filter(mine::contains).toList();
+        assertThat(seen.apply(owner)).containsExactlyInAnyOrderElementsOf(mine);
+        assertThat(seen.apply(coauthor)).containsExactlyInAnyOrder(coauthorRow,dualRow,adminRow,reviewerRow,learnerRow);
+        // Lower role wins: a co-author who is also an admin opens the list as before, and sees admin and learner rows only.
+        assertThat(seen.apply(dual)).containsExactlyInAnyOrder(adminRow,learnerRow);
+        // An admin alone still cannot open it, as before.
+        assertThatThrownBy(()->service.list(adminPerson)).isInstanceOfSatisfying(com.lookahead.learning.content.exception.AccountFailure.class,
+            f->assertThat(f.code()).isEqualTo("ACCESS_READER_REQUIRED"));
+        // The Local author account counts as the owner too.
+        var local=new StaffAccessRepository.Assignment(UUID.randomUUID(),LocalAuthorAccess.ACCOUNT_ID,null,Set.of(),Set.of(),false,1);
+        var stubbed=mock(StaffAccessRepository.class);
+        when(stubbed.list()).thenReturn(List.of(local));when(stubbed.owners()).thenReturn(Set.of());
+        when(stubbed.forAccount(coauthor.accountId())).thenReturn(new StaffAccessRepository.Assignment(UUID.randomUUID(),coauthor.accountId(),null,Set.of("co-author"),Set.of(),false,1));
+        var catalog=mock(SnapshotValidator.class);
+        assertThat(new StaffAccessService(stubbed,new LocalAuthorAccess(new MockEnvironment().withProperty("app.deployment-environment","dev")),catalog).list(coauthor)).isEmpty();
     }
     @Test void pendingClaimRequiresVerifiedIdentityAndNeverMergesAccountsOrReplays() {
         UUID id=UUID.randomUUID();var recipient=account(false);var impostor=account(false);

@@ -63,22 +63,25 @@ public class TestAccountsService {
         return created;
     }
     @Transactional(readOnly=true)
-    public List<ObjectNode> list(AccountPrincipal actor){reader(actor);var actorRole=staff.permissions(actor).feedbackRole();
+    public List<ObjectNode> list(AccountPrincipal actor){reader(actor);var permissions=staff.permissions(actor);var actorRole=permissions.feedbackRole();
+    // DLV-969 (owner, 2026-11-04): each reader sees the test accounts the one hierarchy lets them act on.
+    String hierarchyRole=TestAccountTemplates.role(permissions);
     boolean named=aliases==null||aliases.seesIdentities(actor);
     // Cloud mode: learners created through CreatedTestAccounts, and the DEV roster the owner created (it records its
     // creator; Local's seed does not, and never runs in cloud mode).
     String rows=policy.cloud()?"SELECT * FROM test_account_registry WHERE creation_state='active' AND (initialization='created' OR creator_id IS NOT NULL) ORDER BY username"
         :"SELECT * FROM test_account_registry WHERE creation_state='active' ORDER BY username";
     return jdbc.query(rows,(r,n)->{
-        var item=json.createObjectNode().put("accountId",r.getString("account_id")).put("username",r.getString("username"))
-                .put("isTestAccount",true).put("revision",r.getLong("revision")).put("initialization",r.getString("initialization"))
-                .put("lastChangedBy",person(actor,named,r.getString("last_changed_by"))).put("lastChangedAt",r.getTimestamp("last_changed_at").toInstant().toString());
-        if(r.getObject("creator_id",UUID.class)!=null)item.put("creatorId",person(actor,named,r.getObject("creator_id",UUID.class).toString()));
         UUID id=r.getObject("account_id",UUID.class);
         var roleRows=jdbc.queryForList("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,id);
         var targetRoles=new HashSet<String>();
         var roleNode=roleRows.isEmpty()?json.createArrayNode():json.readTree(roleRows.getFirst());
         roleNode.forEach(role -> targetRoles.add(role.asText()));
+        if(!TestAccountTemplates.allows(hierarchyRole,targetRoles))return null;
+        var item=json.createObjectNode().put("accountId",r.getString("account_id")).put("username",r.getString("username"))
+                .put("isTestAccount",true).put("revision",r.getLong("revision")).put("initialization",r.getString("initialization"))
+                .put("lastChangedBy",person(actor,named,r.getString("last_changed_by"))).put("lastChangedAt",r.getTimestamp("last_changed_at").toInstant().toString());
+        if(r.getObject("creator_id",UUID.class)!=null)item.put("creatorId",person(actor,named,r.getObject("creator_id",UUID.class).toString()));
         item.set("roles",roleNode);
         item.put("canDelete",policy.cloud()
                 ?TestAccountDeletionPolicy.allowsInDev("owner".equals(actorRole),actor.accountId(),id,r.getObject("creator_id",UUID.class))
@@ -86,7 +89,7 @@ public class TestAccountsService {
         item.set("access",json.valueToTree(summaries.get(actor,id)));
         item.put("legacyPresetAvailable",policy.local()&&r.getString("username").matches("learner(0[1-9]|10)"));
         return item;
-    });}
+    }).stream().filter(Objects::nonNull).toList();}
     @Transactional
     public void reset(AccountPrincipal actor,UUID id,Reset request){
         try{
@@ -111,6 +114,9 @@ public class TestAccountsService {
         }else policy.requireLocal();
         if(!permissions.manageAccess()&&!permissions.triageFeedback())throw new AccountFailure(403,"RESET_FORBIDDEN","Only owner or admin can reset test accounts");
         var entry=entry(id);
+        // DLV-969 (owner, 2026-11-04): the one hierarchy; an admin never resets a co-author test account.
+        if(!TestAccountTemplates.allows(TestAccountTemplates.role(permissions),targetRoles(id)))
+            throw new AccountFailure(403,"RESET_FORBIDDEN","Your role cannot reset this test account.");
         String shown=policy.cloud()?entry.cloudUsername():entry.username(); // the username the list shows
         if(request==null||request.key()==null||!shown.equals(request.confirmation())||(request.preset()==null||!Set.of("scenario","legacy").contains(request.preset())))
             throw new AccountFailure(422,"RESET_CONFIRMATION_REQUIRED","Confirm the exact test username and preset");
@@ -135,6 +141,44 @@ public class TestAccountsService {
         jdbc.update("UPDATE test_account_registry SET initialization=?,revision=revision+1,last_changed_by=?,last_changed_at=clock_timestamp() WHERE account_id=?",request.preset(),actor.accountId().toString(),id);
         jdbc.update("INSERT INTO test_account_resets(account_id,mutation_key,actor_id,preset) VALUES (?,?,?,?)",id,request.key(),actor.accountId(),request.preset());
         return false;
+    }
+    private Set<String> targetRoles(UUID id){
+        var roles=new HashSet<String>();
+        for(String row:jdbc.queryForList("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,id))json.readTree(row).forEach(role->roles.add(role.asText()));
+        return roles;
+    }
+    /** DLV-969: the existing owner check (403 OWNER_REQUIRED), for the roster's Restore. */
+    void requireOwner(AccountPrincipal actor){staff.requireOwner(actor);}
+    /**
+     * DLV-969 (owner, 2026-11-04): one deleted DEV roster account back to active, rebuilt from its scenario exactly like
+     * Reset (membership, purchases and study plan for a learner; the role for staff), inside the caller's transaction.
+     * Only a roster id whose owner-created registry row is deleted; a created test account is never restored.
+     * @return true when it was restored now, false when there was nothing to restore.
+     */
+    boolean restoreRosterEntry(AccountPrincipal owner,TestAccountRoster.Entry entry){
+        policy.requireCloud();
+        UUID id=entry.accountId();
+        if(!TestAccountRoster.isRoster(id))return false;
+        jdbc.query("SELECT id FROM platform_subjects WHERE id=? FOR UPDATE",rs->{},id);
+        if(jdbc.queryForList("SELECT 1 FROM test_account_registry WHERE account_id=? AND creation_state='deleted' AND creator_id IS NOT NULL AND initialization<>'created' FOR UPDATE",Integer.class,id).isEmpty())
+            return false;
+        actor(owner.accountId().toString());
+        // As Reset: purchase history stays (superseded), everything else the scenario sets is rebuilt.
+        jdbc.update("UPDATE membership_purchases SET superseded_at=COALESCE(superseded_at,now()),updated_at=now() WHERE account_id=?",id);
+        jdbc.update("UPDATE mutation_receipts SET deleted=true,response=NULL WHERE account_id=?",id);
+        jdbc.update("DELETE FROM plans WHERE account_id=?",id);
+        jdbc.update("DELETE FROM account_grants WHERE account_id=?",id);
+        jdbc.update("UPDATE staff_access SET roles='[]',topic_grants='[]',full_curriculum=false,revision=revision+1,updated_at=clock_timestamp() WHERE account_id=?",id);
+        // Its admitted cloud row stays on deletion (V17); a roster account deleted before that rule gets one again.
+        if(jdbc.queryForList("SELECT 1 FROM cloud_accounts WHERE account_id=?",Integer.class,id).isEmpty())
+            admitTestAccount(id,entry.cloudUsername(),entry.firstName(),owner.accountId());
+        jdbc.update("UPDATE test_account_registry SET creation_state='active',initialization='scenario',revision=revision+1,last_changed_by=?,last_changed_at=clock_timestamp() WHERE account_id=?",
+                owner.accountId().toString(),id);
+        jdbc.update("UPDATE test_account_creations SET state='active' WHERE account_id=? AND state='deleted'",id);
+        defaults(entry,owner.accountId(),"scenario",Instant.now());
+        // The append-only reset ledger records who restored it and when.
+        jdbc.update("INSERT INTO test_account_resets(account_id,mutation_key,actor_id,preset) VALUES (?,?,?,'restore')",id,UUID.randomUUID(),owner.accountId());
+        return true;
     }
     private void defaults(TestAccountRoster.Entry entry,UUID actor,String preset,Instant now){
         applyTemplate(entry.accountId(),entry.template(),actor,preset,now);

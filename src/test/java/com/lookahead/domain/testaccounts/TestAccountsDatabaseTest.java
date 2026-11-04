@@ -71,7 +71,8 @@ class TestAccountsDatabaseTest {
   assertThat(jdbc.queryForObject("SELECT count(*) FROM account_grants WHERE topic_id IN ('owner-private','learner-private')",Integer.class)).isEqualTo(2);
   assertThat(jdbc.queryForObject("SELECT count(*) FROM test_account_registry WHERE account_id=?",Integer.class,LocalAuthorAccess.ACCOUNT_ID)).isZero();
   assertThat(jdbc.queryForObject("SELECT count(*) FROM reportable_platform_subjects WHERE id=?",Integer.class,learner(1))).isZero();
-  assertThat(service.list(admin)).hasSize(35);
+  // DLV-969 (owner, 2026-11-04): an admin sees admins and learners, never the two co-authors.
+  assertThat(service.list(admin)).hasSize(33);
  }
  @Test void resetIsConfirmedRevisionCheckedRetrySafeAndRetainsPurchaseHistory(){
   seed();UUID id=learner(17);long before=revision(id);
@@ -92,6 +93,7 @@ class TestAccountsDatabaseTest {
   assertThatThrownBy(()->tx.executeWithoutResult(t->service.reset(admin,id,new TestAccountsService.Reset(UUID.randomUUID(),before,"learner06","scenario")))).hasMessageContaining("fixture failure");
   assertThat(revision(id)).isEqualTo(before);
   when(staff.permissions(admin)).thenReturn(StaffPermissions.forRoles(false,Set.of("co-author")));
+  // A co-author sees every test account (none is the owner).
   assertThat(service.list(admin)).hasSize(35);
   assertThatThrownBy(()->service.reset(admin,id,new TestAccountsService.Reset(UUID.randomUUID(),before,"learner06","scenario"))).hasMessageContaining("Only owner or admin");
   when(staff.permissions(admin)).thenReturn(StaffPermissions.forRoles(false,Set.of()));

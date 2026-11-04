@@ -25,6 +25,8 @@ public class StaffAccessRepository {
     private Set<String> strings(String json) { return Set.copyOf(mapper.readValue(json, mapper.getTypeFactory().constructCollectionType(List.class,String.class))); }
     public Assignment forAccount(UUID account) { return jdbc.query("SELECT * FROM staff_access WHERE account_id=?",this::row,account).stream().findFirst().orElse(null); }
     public List<Assignment> list() { return jdbc.query("SELECT * FROM staff_access ORDER BY updated_at DESC LIMIT 500",this::row); }
+    /** DLV-969: the owner's account ids (cloud author access); the People list never shows their row to other staff. */
+    public Set<UUID> owners() { return Set.copyOf(jdbc.queryForList("SELECT account_id FROM cloud_accounts WHERE author_access",UUID.class)); }
     public Assignment lock(UUID id) { return jdbc.query("SELECT * FROM staff_access WHERE id=? FOR UPDATE",this::row,id).stream().findFirst().orElse(null); }
     public Assignment pending(String email) { return jdbc.query("SELECT * FROM staff_access WHERE account_id IS NULL AND pending_email=? AND updated_at > clock_timestamp()-interval '14 days' AND (roles <> '[]'::jsonb OR topic_grants <> '[]'::jsonb OR full_curriculum) FOR UPDATE",this::row,email).stream().findFirst().orElse(null); }
     public void insert(Assignment a) {

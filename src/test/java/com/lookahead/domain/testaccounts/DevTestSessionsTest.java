@@ -147,5 +147,11 @@ class DevTestSessionsTest {
         assertThat(controller.allowance(owner).data()).isEqualTo(new CreatedTestAccounts.Allowance(1, 0, 1, status, null));
         assertThat(status.remaining()).isEqualTo(30);
         assertThat(new CreatedTestAccounts.Create(ACCOUNT, "x").toString()).isEqualTo("Create[redacted]");
+        // DLV-969 (owner, 2026-11-04): {"restoreRoster": true, "confirm": "RESTORE"} on the same route goes to the roster's Restore.
+        when(roster.restore(owner, new DevTestRoster.Restore("RESTORE"))).thenReturn(new DevTestRoster.Restored(2));
+        assertThat(controller.create(owner, new CreatedTestAccounts.Create(null, null, null, false, true, "RESTORE")).data()).isEqualTo(new DevTestRoster.Restored(2));
+        assertThat(controller.create(owner, new CreatedTestAccounts.Create(null, null, null, true, true, "RESTORE")).data()).isEqualTo(new DevTestRoster.Restored(2));
+        verify(roster, times(1)).next(owner);
+        verify(created, times(1)).create(any(), any());
     }
 }
