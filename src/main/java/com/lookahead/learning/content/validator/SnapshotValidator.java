@@ -120,7 +120,10 @@ public final class SnapshotValidator {
         String templateCatalog = text(pins, "catalogVersion", 256);
         require(catalogVersion().equals(templateCatalog) || optionalStrings(catalog, "compatibleTemplateCatalogVersions", 100).contains(templateCatalog), "Unresolvable template catalog version");
         String ranking = optionalText(pins, "rankingVersion", 256);
-        require(ranking == null || strings(catalog, "rankingVersions", 100).contains(ranking), "Unresolvable template ranking version");
+        // DLV-969: like the catalog pin, a template's historical DSA ranking is accepted only when the release lists it after
+        // checking the template against today's lessons; new custom plans still need a current ranking (validateProvenance).
+        require(ranking == null || strings(catalog, "rankingVersions", 100).contains(ranking)
+                || optionalStrings(catalog, "compatibleTemplateRankingVersions", 100).contains(ranking), "Unresolvable template ranking version");
         Set<String> selected = new HashSet<>(strings(template, "topicIds", 100));
         require(!selected.isEmpty() && topicIds.containsAll(selected), "Unknown template topic");
         Map<String, String> canonical = new LinkedHashMap<>();
