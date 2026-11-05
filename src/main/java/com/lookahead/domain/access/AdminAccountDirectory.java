@@ -13,11 +13,18 @@ public class AdminAccountDirectory {
     public record Row(UUID accountId,String username,String displayName,String email,Set<String> roles,
         boolean testAccount,boolean fullCurriculum,AccessSummaryService.Summary access,
         boolean canDowngrade,boolean canDelete,String signIn,boolean canDisable,boolean canEnable,boolean canRemove,int sameEmailAccounts,
-        List<Map<String,Object>> signInMethods) {
+        List<Map<String,Object>> signInMethods,String github) {
         /**
          * sameEmailAccounts (DLV-969 S36): other accounts, not deleted or test, with this verified email; signInMethods:
-         * each sign-in of the account, oldest first, as {provider, email?}, test identities left out. The owner only.
+         * each sign-in of the account, oldest first, as {provider, email?}, test identities left out. github (DLV-969,
+         * owner 2026-11-05): the GitHub profile link the person saved (cloud_account_profile_links), null when none or for
+         * a test account, so the owner can add staff to repositories and workflows. The owner only; never logged.
          */
+        public Row(UUID accountId,String username,String displayName,String email,Set<String> roles,boolean testAccount,boolean fullCurriculum,
+                AccessSummaryService.Summary access,boolean canDowngrade,boolean canDelete,String signIn,boolean canDisable,boolean canEnable,boolean canRemove,int sameEmailAccounts,
+                List<Map<String,Object>> signInMethods) {
+            this(accountId,username,displayName,email,roles,testAccount,fullCurriculum,access,canDowngrade,canDelete,signIn,canDisable,canEnable,canRemove,sameEmailAccounts,signInMethods,null);
+        }
         public Row(UUID accountId,String username,String displayName,String email,Set<String> roles,boolean testAccount,boolean fullCurriculum,
                 AccessSummaryService.Summary access,boolean canDowngrade,boolean canDelete,String signIn,boolean canDisable,boolean canEnable,boolean canRemove) {
             this(accountId,username,displayName,email,roles,testAccount,fullCurriculum,access,canDowngrade,canDelete,signIn,canDisable,canEnable,canRemove,0);
@@ -62,8 +69,15 @@ public class AdminAccountDirectory {
                 eligible&&localPolicy.local()&&!privileged&&!purchases&&!grants&&"Free".equals(summary.label()),
                 options.signIn(),options.canDisable(),options.canEnable(),options.canRemove(),
                 test?0:com.lookahead.domain.cloud.CloudIdentities.sameEmailAccounts(jdbc,account.accountId(),account.email()),
-                test?List.of():com.lookahead.domain.cloud.CloudIdentities.signInMethods(jdbc,account.accountId()));
+                test?List.of():com.lookahead.domain.cloud.CloudIdentities.signInMethods(jdbc,account.accountId()),
+                test?null:github(account.accountId()));
         }).toList();
         return new Page(rows,source.page(),source.hasNext());
+    }
+
+    /** The account's saved GitHub profile link, or null. Read only for the owner's directory (requireOwner ran first). */
+    private String github(UUID account) {
+        var links=jdbc.queryForList("SELECT url FROM cloud_account_profile_links WHERE account_id=? AND kind='github'",String.class,account);
+        return links==null||links.isEmpty()?null:links.get(0);
     }
 }

@@ -62,6 +62,22 @@ class AdminAccountDirectoryTest {
   var third=new AdminAccountDirectory(directory,access,staff,summaries,jdbc,localPolicy,removal).list(actor,"",0);
   assertThat(third.accounts().get(1).signInMethods()).containsExactly(Map.of("provider","google","email","real@example.test"),Map.of("provider","cognito"));
   verify(jdbc,never()).query(contains("FROM cloud_identities"),any(org.springframework.jdbc.core.RowMapper.class),eq(admin));
+  // DLV-969 (owner, 2026-11-05): the owner sees each person's saved GitHub link; none is null; a test account asks nothing.
+  assertThat(third.accounts().get(1).github()).isNull();
+  when(jdbc.queryForList(contains("cloud_account_profile_links"),eq(String.class),eq(real))).thenReturn(List.of("https://github.com/real-person"));
+  var fourth=new AdminAccountDirectory(directory,access,staff,summaries,jdbc,localPolicy,removal).list(actor,"",0);
+  assertThat(fourth.accounts().get(1).github()).isEqualTo("https://github.com/real-person");
+  assertThat(fourth.accounts().get(2).github()).isNull();
+  verify(jdbc,never()).queryForList(contains("cloud_account_profile_links"),eq(String.class),eq(admin));
+  assertThat(compatible.github()).isNull();
+ }
+ @Test void aNonOwnerNeverReachesAnyGithubLink() {
+  var directory=mock(AccountDirectory.class);var access=mock(StaffAccessService.class);var jdbc=mock(JdbcTemplate.class);
+  var actor=new AccountPrincipal(UUID.randomUUID(),"coauthor","Co-author",true);
+  doThrow(new AccountFailure(403,"OWNER_REQUIRED","Owner required")).when(access).requireOwner(actor);
+  var service=new AdminAccountDirectory(directory,access,mock(StaffAccessRepository.class),mock(AccessSummaryService.class),jdbc,mock(TestAccountPolicy.class),mock(AccountRemovalService.class));
+  assertThatThrownBy(()->service.list(actor,"",0)).isInstanceOf(AccountFailure.class);
+  verifyNoInteractions(directory,jdbc);
  }
  @Test void controllerDisablesCaching() {
   var service=mock(AdminAccountDirectory.class);var response=new org.springframework.mock.web.MockHttpServletResponse();
