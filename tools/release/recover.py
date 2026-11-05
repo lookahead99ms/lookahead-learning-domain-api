@@ -243,7 +243,7 @@ def runStage(name, planned, receipt, root, call, sleep=time.sleep, now=None, fet
         stage.update(busyStackPark=busy, busyStackStatus=status if busy else None)
     deployer = deploy.Deployer(stage, config, templateText, call, sleep=sleep, now=now, fetch=fetch, mode='deploy', log=log,
                                stackSeconds=planned['healthyMinutes'] * 60 if serving else PARK_SECONDS,
-                               observeRounds=stage['refreshObservationMinutes'] if serving else None)
+                               observeRounds=stage['refreshObservationMinutes'] if serving else None, parkOffHours=False)
     result = {'schema': SCHEMA_STAGE, 'stage': name, 'runId': planned['runId'], 'releaseVersion': stage['releaseVersion'], 'imageTag': stage['imageTag'],
               'desiredCount': stage['desiredCount'], 'busyStackPark': stage['busyStackPark'], 'startedAt': now().isoformat()}
     try:
