@@ -5,7 +5,9 @@ ARG SOURCE_REVISION=local
 WORKDIR /workspace
 # Keep the wrapper on the checksum-pinned ZIP distribution (its tar fallback
 # has different bytes). This package is needed only in the build stage.
-RUN apt-get update && apt-get install -y --no-install-recommends unzip \
+# DLV-969: Acquire::Retries=0 closes the retry path of CVE-2026-109518 (apt, no Ubuntu fix yet).
+RUN apt-get -o Acquire::Retries=0 update \
+    && apt-get -o Acquire::Retries=0 install -y --no-install-recommends unzip \
     && rm -rf /var/lib/apt/lists/*
 COPY .mvn .mvn
 COPY mvnw ./

@@ -208,6 +208,8 @@ class CloudTestAccountsDatabaseTest {
   assertThat(roster.next(owner)).isEqualTo(status);
   // Plans are faked here, so every learner whose scenario has a plan counts as still without one (all but 01 and 10).
   assertThat(status.withoutPlan()).isEqualTo(25);
+  // DLV-969 (owner, 2026-11-04): a learner still without its plan is one Reset away from its scenario, so it counts as changed.
+  assertThat(status.changed()).isEqualTo(25);
   assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE issuer=? AND admitted AND admitted_by=?",Integer.class,TestAccountRoster.TEST_ISSUER,owner.accountId())).isEqualTo(35);
   var learner01=TestAccountRoster.entries().getFirst();
   assertThat(jdbc.queryForMap("SELECT username,display_name FROM cloud_accounts WHERE account_id=?",learner01.accountId()))
@@ -240,6 +242,72 @@ class CloudTestAccountsDatabaseTest {
   }
   assertThat(roster.next(owner)).extracting("total","ready","deleted").containsExactly(35,35,0);
   assertThat(service.list(admin)).allSatisfy(row->assertThat(row.get("canDelete").asBoolean()).isFalse());
+ }
+ /** A minimal real study plan (plan, version, activity) for a learner, in the caller's transaction or its own. */
+ void fakePlan(UUID account){
+  new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source)).executeWithoutResult(status->{
+   UUID plan=UUID.randomUUID(),version=UUID.randomUUID();
+   jdbc.update("INSERT INTO plans(id,account_id,revision,current_version,goal,progress,name,plan_number) VALUES (?,?,1,?,'Synthetic','{}'::jsonb,'Synthetic',(SELECT coalesce(max(plan_number),0)+1 FROM plans WHERE account_id=?))",plan,account,version,account);
+   jdbc.update("INSERT INTO plan_versions(id,account_id,plan_id,snapshot,snapshot_digest,membership,provenance,recovery,reason) VALUES (?,?,?,'{}'::jsonb,'synthetic','{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'create')",version,account,plan);
+   jdbc.update("INSERT INTO plan_activity(id,account_id,plan_id,version_id,revision,kind,payload) VALUES (?,?,?,?,1,'test-account-seed','{}'::jsonb)",UUID.randomUUID(),account,plan,version);
+  });
+ }
+ TestAccountsService.Reset resetFor(UUID id,String username){return new TestAccountsService.Reset(UUID.randomUUID(),revision(id),username+"@lookahead.dev","scenario");}
+ /**
+  * DLV-969 (owner, 2026-11-04): the roster's {@code changed} count, which greys out "Reset all" at 0. A fresh roster is
+  * unchanged; each kind of change after an account's scenario start counts that account once; its Reset clears it.
+  */
+ @Test void theRosterCountsTheAccountsThatChangedSinceTheirScenarioStart(){
+  // Real plan rows here, so every learner has the plan its scenario includes.
+  doAnswer(call->{fakePlan(call.getArgument(0));return null;}).when(plans).populate(any(),any(),any());
+  var roster=roster();DevTestRoster.Status status;
+  do{status=roster.next(owner);}while(status.remaining()>0);
+  assertThat(status).extracting("ready","withoutPlan","changed").containsExactly(35,0,0);
+  // Each account's creation is its scenario start in the reset ledger, written by the owner.
+  assertThat(jdbc.queryForObject("SELECT count(*) FROM test_account_resets WHERE preset='create' AND actor_id=?",Integer.class,owner.accountId())).isEqualTo(35);
+  java.util.function.IntSupplier changed=()->roster.statusFor(owner).changed();
+  UUID learner05=rosterId("learner05"),learner06=rosterId("learner06"),learner07=rosterId("learner07"),learner02=rosterId("learner02"),
+      learner01=rosterId("learner01"),learner04=rosterId("learner04"),admin02=new TestAccountRoster.Entry("admin02",true).accountId();
+  // A purchase changed (a decision, a request): membership_purchases.updated_at.
+  jdbc.update("UPDATE membership_purchases SET provider_status=provider_status,updated_at=now() WHERE account_id=?",learner05);
+  assertThat(changed.getAsInt()).isEqualTo(1);
+  // A plan renamed: plans.updated_at.
+  jdbc.update("UPDATE plans SET name='Renamed',revision=revision+1,updated_at=now() WHERE account_id=?",learner06);
+  assertThat(changed.getAsInt()).isEqualTo(2);
+  // A plan deleted: no row left, the registry's trigger stamp counts; it is also without its plan, still counted once.
+  jdbc.update("DELETE FROM plans WHERE account_id=?",learner07);
+  assertThat(roster.statusFor(owner)).extracting("withoutPlan","changed").containsExactly(1,3);
+  // Plan activity written: plan_activity.recorded_at.
+  jdbc.update("INSERT INTO plan_activity(id,account_id,plan_id,version_id,revision,kind,payload) SELECT ?,p.account_id,p.id,p.current_version,1,'progress','{}'::jsonb FROM plans p WHERE p.account_id=?",UUID.randomUUID(),learner02);
+  assertThat(changed.getAsInt()).isEqualTo(4);
+  // Course grants have no timestamp: an insert or a delete counts through the registry's trigger stamp.
+  jdbc.update("INSERT INTO account_grants(account_id,topic_id) VALUES (?,'learn:core-java')",learner01);
+  assertThat(changed.getAsInt()).isEqualTo(5);
+  jdbc.update("DELETE FROM account_grants WHERE account_id=?",learner04);
+  assertThat(changed.getAsInt()).isEqualTo(6);
+  // A staff role changed: staff_access.updated_at.
+  jdbc.update("UPDATE staff_access SET full_curriculum=false,revision=revision+1,updated_at=clock_timestamp() WHERE account_id=?",admin02);
+  assertThat(changed.getAsInt()).isEqualTo(7);
+  // A second change to an already changed account counts it once.
+  jdbc.update("UPDATE membership_purchases SET updated_at=now() WHERE account_id=?",learner05);
+  assertThat(changed.getAsInt()).isEqualTo(7);
+  // Reset puts each back to its scenario start.
+  var service=rosterService(Set.of("admin"));
+  service.reset(admin,learner05,resetFor(learner05,"learner05"));
+  assertThat(changed.getAsInt()).isEqualTo(6);
+  service.reset(admin,learner07,resetFor(learner07,"learner07"));
+  assertThat(roster.statusFor(owner)).extracting("withoutPlan","changed").containsExactly(0,5);
+  for(var entry:List.of("learner06","learner02","learner01","learner04"))service.reset(admin,rosterId(entry),resetFor(rosterId(entry),entry));
+  service.reset(admin,admin02,resetFor(admin02,"admin02"));
+  assertThat(roster.statusFor(owner)).extracting("total","ready","deleted","withoutPlan","changed").containsExactly(35,35,0,0,0);
+  // Reset needs the revision it was read at: without one, 428 REVISION_REQUIRED.
+  assertThatThrownBy(()->service.reset(admin,learner05,new TestAccountsService.Reset(UUID.randomUUID(),null,"learner05@lookahead.dev","scenario")))
+      .isInstanceOfSatisfying(AccountFailure.class,f->{assertThat(f.status()).isEqualTo(428);assertThat(f.code()).isEqualTo("REVISION_REQUIRED");});
+  // A roster account with no scenario start recorded (created before the creation row) counts as changed until reset.
+  jdbc.execute("TRUNCATE test_account_resets");
+  assertThat(changed.getAsInt()).isEqualTo(35);
+  service.reset(admin,learner05,resetFor(learner05,"learner05"));
+  assertThat(changed.getAsInt()).isEqualTo(34);
  }
  /** DLV-969 (owner, 2026-11-04): in DEV a created test account is deleted by its creator or the owner, nobody else. */
  @Test void inDevOnlyTheCreatorOrTheOwnerDeletesACreatedTestAccount(){

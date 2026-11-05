@@ -29,12 +29,18 @@ public class CreatedTestAccounts {
      * DEV roster accounts ({@link DevTestRoster#restore}), on the route the Gateway already forwards.
      * {@code purchaseDecision}: DLV-969 (owner, 2026-11-04), the owner's or an admin's decision on a DEV purchase
      * request ({@link TestAccountsService#decidePurchase}), on the same route.
+     * <p>Each request sends only its own fields, so the flags are {@code Boolean}: a JSON reader refuses an absent value
+     * for a primitive {@code boolean} (DLV-969, 2026-11-04).
      */
-    public record Create(UUID key, String password, String scenario, boolean roster, boolean restoreRoster, String confirm,
+    public record Create(UUID key, String password, String scenario, Boolean roster, Boolean restoreRoster, String confirm,
             com.lookahead.domain.membership.MembershipService.Decision purchaseDecision) {
         public Create(UUID key, String password, String scenario, boolean roster, boolean restoreRoster, String confirm) {
             this(key, password, scenario, roster, restoreRoster, confirm, null);
         }
+        /** True only when the body asked for the next DEV roster accounts. */
+        public boolean createsRoster() { return Boolean.TRUE.equals(roster); }
+        /** True only when the body asked to restore deleted DEV roster accounts. */
+        public boolean restoresRoster() { return Boolean.TRUE.equals(restoreRoster); }
         public Create(UUID key, String password, String scenario, boolean roster) { this(key, password, scenario, roster, false, null); }
         public Create(UUID key, String password) { this(key, password, null, false); }
         @Override public String toString() { return "Create[redacted]"; }

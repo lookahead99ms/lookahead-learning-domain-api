@@ -38,7 +38,25 @@ public class AccountErrorHandler {
     }
     @ExceptionHandler(HttpMessageNotReadableException.class)
     ResponseEntity<?> malformed(HttpMessageNotReadableException ex, HttpServletRequest request) {
+        // DLV-969 (2026-11-04): say which field could not be read, by name only (never a value), so a body that does not fit
+        // its record is found from one log line instead of guessed at.
+        String field = fieldOf(ex);
+        com.lookahead.domain.Events.refused(com.lookahead.domain.Events.EVENT, "request.json", "MALFORMED_JSON")
+                .addKeyValue("url.path", com.lookahead.domain.Events.path(request)).addKeyValue("json.field", field)
+                .addKeyValue("error.type", com.lookahead.domain.Events.types(ex))
+                .log("Request body on {} {} refused with 400: {} could not be read ({})", GlobalExceptionHandler.forLog(request.getMethod()),
+                        com.lookahead.domain.Events.path(request), field.isEmpty() ? "the body" : "field " + field, com.lookahead.domain.Events.types(ex));
         return failure(new AccountFailure(400, "MALFORMED_JSON", "Request body is not valid JSON"), request);
+    }
+
+    /** The JSON path of the field that failed, e.g. "roster" or "purchaseDecision.purchaseId"; names only, never values. */
+    static String fieldOf(Throwable failure) {
+        for (Throwable at = failure; at != null; at = at.getCause())
+            if (at instanceof tools.jackson.databind.DatabindException databind && !databind.getPath().isEmpty())
+                return databind.getPath().stream()
+                        .map(reference -> reference.getPropertyName() != null ? reference.getPropertyName() : "[" + reference.getIndex() + "]")
+                        .collect(java.util.stream.Collectors.joining(".")).replace(".[", "[");
+        return "";
     }
     // Connection acquisition and failed commit/rollback can bypass JdbcTemplate's translation.
     @ExceptionHandler({DataAccessException.class, CannotCreateTransactionException.class,

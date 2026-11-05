@@ -31,6 +31,13 @@ public class MembershipController {
     @PostMapping("/api/v1/admin/accounts/{id}/plan-upgrades") public ApiResponse<?> upgrade(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable UUID id,@RequestBody MembershipService.Buy request,@RequestHeader(value="Idempotency-Key",required=false) String key){return ApiResponse.success(service.buy(actor,id,request,key,true));}
     @PostMapping("/api/v1/admin/sales") public ApiResponse<?> start(@AuthenticationPrincipal AccountPrincipal actor,@RequestBody MembershipService.Sale sale){return ApiResponse.success(service.startSale(actor,sale));}
     @PostMapping("/api/v1/admin/sales/{id}/stop") public ApiResponse<?> stop(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable UUID id){service.stopSale(actor,id);return ApiResponse.success(Map.of("stopped",true));}
-    public record Price(int priceCents) {}
-    @PostMapping("/api/v1/admin/membership/plans/{id}/price") public ApiResponse<?> price(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable String id,@RequestBody Price price){return ApiResponse.success(service.price(actor,id,price.priceCents()));}
+    /**
+     * {@code priceCents} is an {@code Integer}: a JSON reader refuses an absent value for a primitive (400 MALFORMED_JSON);
+     * without it the price is now refused as invalid, 422 (DLV-969, 2026-11-04).
+     */
+    public record Price(Integer priceCents) {
+        /** The price sent, or 0 (an invalid price) when the body has none. */
+        public int cents(){return priceCents==null?0:priceCents;}
+    }
+    @PostMapping("/api/v1/admin/membership/plans/{id}/price") public ApiResponse<?> price(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable String id,@RequestBody Price price){return ApiResponse.success(service.price(actor,id,price.cents()));}
 }

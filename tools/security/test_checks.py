@@ -318,9 +318,15 @@ class SecurityGateTests(unittest.TestCase):
             checks.scan('config')
             self.assertEqual('',(Path(directory)/'scanner-config'/'ignore').read_text())
 
-    def test_repository_carries_no_vulnerability_exception_after_the_temurin_repin(self):
+    def test_repository_carries_only_the_reviewed_apt_exception(self):
         # DLV-968: the 2026-10-31 eclipse-temurin noble rebuild ships libbrotli1 1.1.0-2ubuntu0.1, so the CVE-2026-111497 entry is gone.
-        self.assertEqual({},dict(checks.load_vulnerability_exceptions()))
+        # DLV-969 (owner, 2026-11-05): CVE-2026-109518 in apt has no Ubuntu fix yet; it is carried for one week and nothing else is.
+        accepted=checks.load_vulnerability_exceptions(today=date(2026,11,5))
+        self.assertEqual(['CVE-2026-109518'],sorted(accepted))
+        self.assertEqual('apt',accepted['CVE-2026-109518']['package'])
+        self.assertLessEqual(date.fromisoformat(accepted['CVE-2026-109518']['expiresAt']),date(2026,11,12))
+        with self.assertRaisesRegex(ValueError,'Expired vulnerability exception'):
+            checks.load_vulnerability_exceptions(today=date(2026,11,13))
 
     def test_misconfiguration_exceptions_are_exact_expiring_and_bound_to_an_existing_target(self):
         # DLV-968: a trivy check that is a false positive on one named file may be carried for a bounded time; nothing else is ignored.
