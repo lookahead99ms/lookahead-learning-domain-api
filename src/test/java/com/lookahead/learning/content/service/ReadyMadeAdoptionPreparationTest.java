@@ -364,6 +364,24 @@ class ReadyMadeAdoptionPreparationTest {
         org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,()->new SnapshotValidator(mapper,current).validateTemplateReferences(altered));
     }
 
+    @org.junit.jupiter.api.Test void historicalTemplateRankingRequiresExplicitCompatibilityForTemplatesOnly() {
+        // DLV-969: DEV releases moved the DSA ranking while the authored templates kept their original pin.
+        var pinned=template.deepCopy();
+        ((ObjectNode)pinned.path("provenance")).put("rankingVersion","2026.09-release.782.1");
+        var current=(ObjectNode)trustedCatalog(pinned);
+        current.putArray("rankingVersions").add("2026.10-release.858.1");
+        var refused=org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,()->new SnapshotValidator(mapper,current).validateTemplateReferences(pinned));
+        org.junit.jupiter.api.Assertions.assertEquals("Unresolvable template ranking version",refused.getMessage());
+        current.putArray("compatibleTemplateRankingVersions").add("2026.09-release.782.1");
+        new SnapshotValidator(mapper,current).validateTemplateReferences(pinned);
+        // The compatible list never widens the ranking a new plan may pin.
+        org.junit.jupiter.api.Assertions.assertEquals(List.of("2026.10-release.858.1"),
+                mapper.convertValue(new SnapshotValidator(mapper,current).metadata().path("rankingVersions"),List.class));
+        var other=pinned.deepCopy();
+        ((ObjectNode)other.path("provenance")).put("rankingVersion","2026.08-release.700.1");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,()->new SnapshotValidator(mapper,current).validateTemplateReferences(other));
+    }
+
     private void publish(JsonNode source, Set<String> scopes, String tier, String scopeMatch, String mediaType)
             throws Exception {
         byte[] bytes = mapper.writeValueAsBytes(source);
