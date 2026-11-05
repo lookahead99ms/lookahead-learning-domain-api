@@ -1,6 +1,6 @@
 """Tests for the per-application DEV deploy tool (one ECS service per application, ECS rolling updates); AWS and GitHub are
 injected fakes, nothing is called for real."""
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import shutil
@@ -22,13 +22,14 @@ TASK = 'arn:aws:ecs:us-east-2:509614632283:task/lookahead-dev-cluster/0123456789
 # repository's real deploy-config.json is checked by test_workflow, and the repository's real template is used here for its
 # Task/Service shape.
 CONFIG = {
-    'schema': 'lookahead-app-deploy-config/v2', 'app': APP, 'service': 'web', 'account': '509614632283', 'region': 'us-east-2',
+    'schema': 'lookahead-app-deploy-config/v3', 'app': APP, 'service': 'web', 'account': '509614632283', 'region': 'us-east-2',
     'imageRepository': '509614632283.dkr.ecr.us-east-2.amazonaws.com/lookahead-dev-ecr',
     'deployRoleArn': 'arn:aws:iam::509614632283:role/lookahead-dev-deploy', 'cloudFormationRoleArn': 'arn:aws:iam::509614632283:role/lookahead-dev-cfn-provision',
     'sessionPrefix': 'web-deploy', 'cluster': 'arn:aws:ecs:us-east-2:509614632283:cluster/lookahead-dev-cluster', 'clusterName': 'lookahead-dev-cluster',
     'stack': 'lookahead-dev-web', 'logGroup': '/lookahead/dev/web', 'namespaceName': 'lookahead-dev.internal',
     'discovery': {'serviceName': 'web', 'serviceId': 'srv-web000000000001', 'serviceArn': 'arn:aws:servicediscovery:us-east-2:509614632283:service/srv-web000000000001'},
     'targetGroupArn': None, 'observationMinutes': 15, 'refreshObservationMinutes': 5, 'probeUrl': 'https://dev.devlookahead.com/',
+    'probeRequired': False,
     'parameters': {'Cluster': 'arn:aws:ecs:us-east-2:509614632283:cluster/lookahead-dev-cluster', 'ApplicationSubnets': 'subnet-a,subnet-b', 'ServiceSecurityGroup': 'sg-1',
                    'TaskRoleArn': 'arn:aws:iam::509614632283:role/lookahead-dev-app-task', 'ExecutionRoleArn': 'arn:aws:iam::509614632283:role/lookahead-dev-ecs-execution',
                    'TlsSecretArn': 'arn:aws:secretsmanager:us-east-2:509614632283:secret:lookahead-dev-web-tls-pX1NCN', 'TlsVersion': '98331e44-009a-4d74-a6b5-22124e75c170',
@@ -55,6 +56,8 @@ class FakeAws:
         # Busy-stack park (DLV-969): describe-stacks keeps the busy status for `busyPolls` more reads, then shows `settleStatus`;
         # `restoreDesired` times a stuck rollback puts DesiredCount 1 back; `scaleDenied` makes the direct scale-down fail.
         self.busyPolls, self.settleStatus, self.restoreDesired, self.scaleDenied = None, 'UPDATE_COMPLETE', 0, False
+        # Observation (DLV-968): `onRound` runs at each list-tasks read, so a test can crash, replace or degrade the task mid-watch.
+        self.taskArns, self.onRound, self.rounds = None, None, 0
 
     def __call__(self, *args):
         self.calls.append(args)
@@ -97,6 +100,11 @@ class FakeAws:
             self.service = {'desired': 0, 'running': 0, 'rolloutState': 'COMPLETED'}
             return {'service': {'desiredCount': 0}}
         if key == 'ecs list-tasks':
+            self.rounds += 1
+            if self.onRound:
+                self.onRound(self.rounds)
+            if self.taskArns is not None:
+                return {'taskArns': self.taskArns}
             return {'taskArns': [TASK] if self.service and self.service['running'] else []}
         if key == 'ecs describe-tasks':
             running = self.stack['parameters']['ApplicationImage']
@@ -111,6 +119,7 @@ class FakeAws:
         if key == 'cloudformation create-change-set':
             name = opts['--change-set-name']
             assert opts['--stack-name'] == self.config['stack'] and '--template-body' in opts and '--tags' in opts, opts
+            self.tags = {row['Key']: row['Value'] for row in json.loads(opts['--tags'])}
             params = {r['ParameterKey']: r['ParameterValue'] for r in json.loads(opts['--parameters'])}
             create = opts['--change-set-type'] == 'CREATE'
             if not create and self.stack is None:
@@ -202,8 +211,15 @@ class DeployFixture(unittest.TestCase):
     def deployer(self, planned, **kw):
         template = (self.root / 'deployment/dev/service.template.json').read_text()
         self.logged = []
-        return m.Deployer(planned, m.loadConfig(self.root), template, self.aws, sleep=lambda s: None, now=self.clock, fetch=kw.get('fetch', lambda url: 200),
-                          mode=kw.get('mode', planned['choices'][0]), log=lambda line, **_: self.logged.append(line))
+        return m.Deployer(planned, m.loadConfig(self.root), template, self.aws, sleep=lambda s: None, now=kw.get('now', self.clock), fetch=kw.get('fetch', lambda url: 200),
+                          mode=kw.get('mode', planned['choices'][0]), log=lambda line, **_: self.logged.append(line),
+                          **({'parkOffHours': kw['parkOffHours']} if 'parkOffHours' in kw else {}))
+
+    def gatewayShape(self):
+        """Gateway's configuration: target group, its own DEV gate page through the public entrance, and the probe as a gate."""
+        self.config.update({'discovery': None, 'probeRequired': True, 'probeUrl': 'https://dev.devlookahead.com/dev/access',
+                            'targetGroupArn': 'arn:aws:elasticloadbalancing:us-east-2:509614632283:targetgroup/lookahead-dev-gateway/0123456789abcdef'})
+        self.writeConfig(); self.aws = FakeAws(self.config)
 
 
 class PlanTests(DeployFixture):
@@ -307,6 +323,15 @@ class PlanTests(DeployFixture):
         both = dict(self.config); both['targetGroupArn'] = 'arn:aws:elasticloadbalancing:us-east-2:509614632283:targetgroup/x/1'
         (self.root / 'deployment/dev/deploy-config.json').write_text(json.dumps(both))
         with self.assertRaisesRegex(ValueError, 'Exactly one of discovery'):
+            m.loadConfig(self.root)
+        # Only the target-group shape (Gateway) may gate on the public probe; Web and Domain never, so a stopped Gateway cannot fail them.
+        for shape in ({'probeRequired': True}, {'probeRequired': 'false'},
+                      {'discovery': None, 'probeRequired': False, 'targetGroupArn': 'arn:aws:elasticloadbalancing:us-east-2:509614632283:targetgroup/x/1'}):
+            (self.root / 'deployment/dev/deploy-config.json').write_text(json.dumps({**self.config, **shape}))
+            with self.assertRaisesRegex(ValueError, 'probeRequired is true for Gateway'):
+                m.loadConfig(self.root)
+        (self.root / 'deployment/dev/deploy-config.json').write_text(json.dumps({**self.config, 'probeUrl': 'http://dev.devlookahead.com/'}))
+        with self.assertRaisesRegex(ValueError, 'https probe URL required'):
             m.loadConfig(self.root)
         slotted = dict(self.config); slotted['stack'] = 'lookahead-dev-web-blue'
         (self.root / 'deployment/dev/deploy-config.json').write_text(json.dumps(slotted))
@@ -418,6 +443,8 @@ class ExecuteTests(DeployFixture):
         self.assertEqual(['identity', 'change-set', 'executed', 'verified', 'observed'], [s['step'] for s in outcome['steps']])
         create = self.aws.ops('cloudformation', 'create-change-set')[0]
         self.assertEqual(('CREATE', 'app-12'), (create[create.index('--change-set-type') + 1], create[create.index('--change-set-name') + 1]))
+        # The stack says what it serves (user 2026-11-05): release tag, deploy run and source commit, next to the environment tag.
+        self.assertEqual({'LookAheadEnvironment': 'dev', 'ReleaseVersion': planned['releaseVersion'], 'DeployRun': self.run, 'SourceSha': planned['sourceSha']}, self.aws.tags)
         self.assertEqual(self.aws.stack['parameters']['ApplicationImage'], planned['image'])
         self.assertEqual(1, len(self.aws.ops('servicediscovery', 'list-instances')))
         self.assertEqual([], self.aws.ops('elbv2', 'describe-target-health'))
@@ -543,9 +570,13 @@ class ExecuteTests(DeployFixture):
             self.deployer(self.planned()).run()
 
     def test_probe_failure_or_lost_task_during_observation_fails_the_run(self):
+        self.gatewayShape()
         planned = self.planned()
-        with self.assertRaisesRegex(ValueError, 'Public probe returned 503'):
+        with self.assertRaisesRegex(ValueError, 'Public probe of https://dev.devlookahead.com/dev/access returned 503'):
             self.deployer(planned, fetch=lambda url: 503).run()
+        self.aws.stack = None; self.aws.service = None
+        with self.assertRaisesRegex(ValueError, 'returned no answer during observation'):
+            self.deployer(self.planned(), fetch=lambda url: None).run()
         self.aws.stack = None; self.aws.service = None
         rounds = []
         def flaky(url):
@@ -568,9 +599,7 @@ class ExecuteTests(DeployFixture):
             self.deployer(self.planned()).run()
 
     def test_target_group_shape_checks_target_health_instead_of_discovery(self):
-        self.config['discovery'] = None
-        self.config['targetGroupArn'] = 'arn:aws:elasticloadbalancing:us-east-2:509614632283:targetgroup/lookahead-dev-gateway/0123456789abcdef'
-        self.writeConfig(); self.aws = FakeAws(self.config)
+        self.gatewayShape()
         planned = self.planned()
         self.assertEqual(self.config['targetGroupArn'], planned['parameters']['TargetGroupArn'])
         self.assertNotIn('DiscoveryServiceArn', planned['parameters'])
@@ -579,6 +608,142 @@ class ExecuteTests(DeployFixture):
         self.assertEqual([], self.aws.ops('servicediscovery', 'list-instances'))
         self.aws.targets = 'unhealthy'; self.aws.stack = None; self.aws.service = None
         with self.assertRaisesRegex(ValueError, 'target health did not complete'):
+            self.deployer(self.planned()).run()
+
+
+EASTERN_3AM = datetime(2026, 11, 5, 8, 0, tzinfo=timezone.utc)  # 03:00 in New York (EST): DEV's off hours
+EASTERN_2PM = datetime(2026, 11, 5, 19, 0, tzinfo=timezone.utc)  # 14:00 in New York: on hours
+
+
+class IndependentDeployTests(DeployFixture):
+    """DLV-968 (user 2026-11-05): each application deploys on its own, whether the other two run or are stopped."""
+
+    def stoppedBySwitch(self):
+        """The stack serves an older image at DesiredCount 1, but `Application · Start or stop DEV` set the service to zero."""
+        self.aws.serving()
+        self.aws.service = {'desired': 0, 'running': 0, 'rolloutState': 'COMPLETED'}
+
+    def test_web_and_domain_pass_with_the_public_page_down_and_only_record_it(self):
+        probes = []
+        outcome = self.deployer(self.planned(), fetch=lambda url: probes.append(url) or None).run()
+        self.assertEqual('success', outcome['outcome'])
+        observed = outcome['steps'][-1]
+        self.assertEqual(('observed', None, False), (observed['step'], observed['probeStatus'], observed['probeRequired']))
+        self.assertIn('not a gate for this application', observed['publicPage'])
+        self.assertEqual(['https://dev.devlookahead.com/'], probes)  # once, at the end, never per round
+        # every round re-read this application's own task: 1 at verification + 15 observation rounds
+        self.assertEqual(16, len(self.aws.ops('ecs', 'list-tasks')))
+        self.assertEqual(16, len(self.aws.ops('logs', 'filter-log-events')))
+        self.assertTrue(all('task healthy' in line for line in self.logged if line.startswith('observation ')))
+        self.aws.stack = None; self.aws.service = None
+        self.assertEqual('answered 200', self.deployer(self.planned(), fetch=lambda url: 200).run()['steps'][-1]['publicPage'])
+
+    def test_gateway_probes_its_own_gate_page_every_round(self):
+        self.gatewayShape()
+        probes = []
+        outcome = self.deployer(self.planned(), fetch=lambda url: probes.append(url) or 200).run()
+        self.assertEqual(('success', 200, True), (outcome['outcome'], outcome['steps'][-1]['probeStatus'], outcome['steps'][-1]['probeRequired']))
+        self.assertEqual(['https://dev.devlookahead.com/dev/access'] * 15, probes)
+        self.assertTrue(all(line.endswith('probe 200') for line in self.logged if line.startswith('observation ')))
+
+    def test_a_crash_replacement_unhealthy_task_or_new_log_marker_during_observation_fails_the_run(self):
+        replaced = TASK.rsplit('/', 1)[0] + '/' + 'f' * 32
+        for change, message in ((lambda aws: setattr(aws, 'taskArns', [replaced]), 'was replaced or stopped during observation'),
+                                (lambda aws: setattr(aws, 'taskArns', []), 'was replaced or stopped during observation'),
+                                (lambda aws: setattr(aws, 'health', 'UNHEALTHY'), 'Task became RUNNING/UNHEALTHY during observation'),
+                                (lambda aws: setattr(aws, 'logs', [{'message': 'ERROR pool exhausted'}]), 'failure markers: ERROR pool exhausted')):
+            self.aws = FakeAws(self.config)
+            self.aws.onRound = lambda count, change=change: change(self.aws) if count == 3 else None
+            with self.assertRaisesRegex(ValueError, message):
+                self.deployer(self.planned()).run()
+
+    def test_an_off_hours_deploy_stops_a_service_it_found_stopped(self):
+        self.stoppedBySwitch()
+        outcome = self.deployer(self.planned(), now=lambda: EASTERN_3AM).run()
+        self.assertEqual('success', outcome['outcome'])
+        self.assertEqual(['identity', 'change-set', 'executed', 'verified', 'observed', 'stopped-for-off-hours'], [s['step'] for s in outcome['steps']])
+        self.assertEqual('America/New_York 0:00-10:00', outcome['steps'][-1]['window'])
+        self.assertEqual({'desired': 0, 'running': 0}, {k: self.aws.service[k] for k in ('desired', 'running')})
+        self.assertEqual('1', self.aws.stack['parameters']['DesiredCount'])  # the stack keeps serving count; 10:00 start serves it again
+
+    def test_on_hours_running_services_and_recovery_are_never_stopped(self):
+        for setup, now, kw in ((self.stoppedBySwitch, EASTERN_2PM, {}),  # daytime: leave it serving
+                               (lambda: self.aws.serving(), EASTERN_3AM, {}),  # it was running at night (started by hand): leave it
+                               (self.stoppedBySwitch, EASTERN_3AM, {'parkOffHours': False})):  # 05 · Recover DEV ends serving
+            self.aws = FakeAws(self.config)
+            setup()
+            outcome = self.deployer(self.planned(), now=lambda now=now: now, **kw).run()
+            self.assertEqual(('success', 'observed', 1), (outcome['outcome'], outcome['steps'][-1]['step'], self.aws.service['running']))
+            self.assertEqual([], self.aws.ops('ecs', 'update-service'))
+
+    def test_a_failed_off_hours_deploy_still_stops_the_service_and_keeps_the_original_error(self):
+        self.stoppedBySwitch()
+        self.aws.onRound = lambda count: setattr(self.aws, 'health', 'UNHEALTHY') if count == 2 else None
+        deployer = self.deployer(self.planned(), now=lambda: EASTERN_3AM)
+        with self.assertRaisesRegex(ValueError, 'Task became RUNNING/UNHEALTHY'):
+            deployer.run()
+        self.assertEqual(('failure', 'stopped-for-off-hours'), (deployer.outcome['outcome'], deployer.steps[-1]['step']))
+        self.assertIn('UNHEALTHY', deployer.outcome['error'])
+        self.aws = FakeAws(self.config)
+        self.stoppedBySwitch(); self.aws.scaleDenied = True
+        self.aws.onRound = lambda count: setattr(self.aws, 'health', 'UNHEALTHY') if count == 2 else None
+        deployer = self.deployer(self.planned(), now=lambda: EASTERN_3AM)
+        with self.assertRaisesRegex(ValueError, 'Task became RUNNING/UNHEALTHY'):
+            deployer.run()
+        self.assertEqual('off-hours-stop-failed', deployer.steps[-1]['step'])
+        self.assertIn('AccessDeniedException', deployer.steps[-1]['error'])
+
+    def issueBody(self):
+        self.approved(self.planned())
+        issues = [key for key in self.github.data if key.startswith('issues/') and key.count('/') == 1]
+        return self.github.data[max(issues, key=lambda key: int(key.split('/')[1]))]['body']
+
+    def test_the_approval_issue_says_what_this_deploy_watches(self):
+        web = self.issueBody()
+        self.assertIn('watch this application alone for 15 minutes', web)
+        self.assertIn('is checked once and only recorded, since it also needs the other applications', web)
+        self.assertIn('Between 00:00 and 10:00 New York time', web)
+        self.gatewayShape()
+        self.assertIn('/dev/access` answers 200 every minute', self.issueBody())
+
+NY_2350 = datetime(2026, 11, 6, 4, 50, tzinfo=timezone.utc)  # 23:50 New York (EST): inside the overnight blackout
+NY_0020 = datetime(2026, 11, 6, 5, 20, tzinfo=timezone.utc)  # 00:20 New York: still inside
+NY_0031 = datetime(2026, 11, 6, 5, 31, tzinfo=timezone.utc)  # 00:31 New York: outside
+
+
+class BlackoutTests(DeployFixture):
+    """DLV-968 (user 2026-11-05): no serving deploy 23:30-00:30 New York; DEV has no emergencies, so there is no override."""
+
+    def test_blackout_refuses_a_serving_plan_but_not_a_park(self):
+        for now in (NY_2350, NY_0020):
+            with self.assertRaisesRegex(ValueError, 'No deploy between 23:30 and 00:30 New York time \\(at planning\\)'):
+                m.plan(self.env, self.aws, self.root, self.get, now=now)
+        self.assertEqual(0, len(self.aws.ops('ecr', 'batch-get-image')))  # refused before any AWS read
+        self.assertEqual(0, m.plan({**self.env, 'DEPLOY_DESIRED_COUNT': '0'}, self.aws, self.root, self.get, now=NY_2350)['desiredCount'])
+        self.assertNotIn('emergency', m.plan(self.env, self.aws, self.root, self.get, now=NY_0031))
+        self.assertTrue(m.inBlackout(NY_2350) and m.inBlackout(NY_0020) and not m.inBlackout(NY_0031) and not m.inBlackout(EASTERN_2PM))
+
+    def test_execution_rechecks_the_blackout_after_a_late_approval(self):
+        planned = self.planned()  # planned in the daytime
+        deployer = self.deployer(planned, now=lambda: NY_2350)
+        with self.assertRaisesRegex(ValueError, 'No deploy between 23:30 and 00:30 New York time \\(at execution\\)'):
+            deployer.run()
+        self.assertEqual(('failure', []), (deployer.outcome['outcome'], self.aws.ops('cloudformation', 'create-change-set')))
+        # a park and a verify-only answer are not deploys
+        self.assertEqual('success', self.deployer(self.planned(count='0'), now=lambda: NY_2350).run()['outcome'])
+        self.aws.serving('b'); self.aws.image = 'sha256:' + 'b' * 64
+        self.assertEqual('success', self.deployer(self.planned(answer='verify'), now=lambda: NY_2350, mode='verify').run()['outcome'])
+
+    def test_a_scheduled_stop_during_observation_ends_the_run_cleanly(self):
+        self.aws.onRound = lambda count: self.aws.service.update({'desired': 0}) if count == 4 else None
+        outcome = self.deployer(self.planned()).run()
+        stopped = outcome['steps'][-1]
+        self.assertEqual(('success', 'stopped-during-observation', 3), (outcome['outcome'], stopped['step'], stopped['minutes']))
+        self.assertIn('served 3 clean minute(s)', stopped['note'])
+        # a crash keeps the desired count at 1 and still fails the run
+        self.aws = FakeAws(self.config)
+        self.aws.onRound = lambda count: self.aws.service.update({'running': 0}) if count == 4 else None
+        with self.assertRaisesRegex(ValueError, 'replaced or stopped during observation'):
             self.deployer(self.planned()).run()
 
 
@@ -606,6 +771,11 @@ class TransportAndCliTests(DeployFixture):
         def failing(request, timeout):
             raise m.urllib.error.HTTPError(request.full_url, 503, 'unavailable', {}, None)
         self.assertEqual(503, m.probe('https://dev.devlookahead.com/', opener=failing))
+        # Nothing answering (the Web run of 2026-11-05 died on this timeout) is None, never an exception.
+        for error in (m.urllib.error.URLError(TimeoutError('timed out')), TimeoutError('timed out'), ConnectionRefusedError()):
+            def silent(request, timeout, error=error):
+                raise error
+            self.assertIsNone(m.probe('https://dev.devlookahead.com/', opener=silent))
         with self.assertRaisesRegex(ValueError, 'https'):
             m.probe('http://dev.devlookahead.com/')
 

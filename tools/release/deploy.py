@@ -6,7 +6,11 @@ One approved run = one CloudFormation change set `app-<run>` on the stack this r
 published image and the service gets `DesiredCount` (1 serves, 0 parks the service). ECS performs the rolling update
 (surge to two tasks, the old task drained once the new one is healthy) and its deployment circuit breaker rolls a failed
 revision back by itself; manual rollback is a new run with the previous tag. The run then verifies the running task, the
-log window, service discovery or target health, and watches the public probe for the observation window. AWS is reached
+log window, service discovery or target health, and watches this application alone for the observation window (DLV-968,
+user 2026-11-05: each application deploys on its own, whether the other two run or are stopped). Only Gateway, whose own DEV
+gate page answers through the public entrance, must pass the public probe; for Web and Domain the public page needs the other
+applications, so it is probed once and only recorded. In DEV's off hours a service that was stopped before the deploy is
+stopped again afterwards. AWS is reached
 only through the `aws` CLI with the credentials the workflow assumed; the plan and the receipt bind every identifier, and
 the approval comment names the image tag.
 """
@@ -21,6 +25,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import issue_template as issueTemplate
 import owner_approval as owner
@@ -32,7 +37,7 @@ RECOVER_WORKFLOW = '.github/workflows/recover-dev.yml'
 # `01 · Full` (release.yml) and `03 · Publish` (publish.yml) call deploy-dev.yml after the image is published; a reusable-workflow
 # call keeps the caller's workflow ref, run path and event (push or dispatch).
 DEPLOY_WORKFLOWS = (WORKFLOW, '.github/workflows/release.yml', '.github/workflows/publish.yml', RECOVER_WORKFLOW)
-SCHEMA_CONFIG = 'lookahead-app-deploy-config/v2'
+SCHEMA_CONFIG = 'lookahead-app-deploy-config/v3'
 SCHEMA_PLAN = 'app-deploy-plan/v3'
 SCHEMA_RECEIPT = 'app-deploy-approval/v2'
 SCHEMA_RESULT = 'app-deploy-result/v2'
@@ -49,9 +54,16 @@ REVIEW = 'REVIEW_IN_PROGRESS'
 BUSY_PARKABLE = {'UPDATE_IN_PROGRESS', 'UPDATE_ROLLBACK_IN_PROGRESS'}
 BUSY_SETTLE_SECONDS = 1800
 NO_CHANGES = "didn't contain changes"
+# DEV is off from midnight to 10:00 America/New_York (user decision 2026-11-05), the window of Infra's
+# `Application · Start or stop DEV` schedule. A deploy in that window stops its service again if it found it stopped.
+OFF_HOURS = ('America/New_York', 0, 10)
+# The scheduled stops land from 00:00 New York (Gateway 00:00, Web 00:03, Domain 00:06; starts 10:00 to 10:08). A serving deploy is
+# refused from 23:30 to 00:30 (user decision 2026-11-05: DEV has no emergencies, so there is no override; deploy after 00:30).
+BLACKOUT = ('America/New_York', 23 * 60 + 30, 30)  # zone, start and end as minutes past midnight (wraps)
+BLACKOUT_TEXT = 'between 23:30 and 00:30 New York time'
 CONFIG_KEYS = {'schema', 'app', 'service', 'account', 'region', 'imageRepository', 'deployRoleArn', 'cloudFormationRoleArn',
                'sessionPrefix', 'cluster', 'clusterName', 'stack', 'logGroup', 'namespaceName', 'discovery', 'targetGroupArn',
-               'observationMinutes', 'refreshObservationMinutes', 'probeUrl', 'parameters', 'logFailurePatterns'}
+               'observationMinutes', 'refreshObservationMinutes', 'probeUrl', 'probeRequired', 'parameters', 'logFailurePatterns'}
 require = owner.require
 digest = owner.digest
 
@@ -109,6 +121,10 @@ def loadConfig(root):
     require((discovery is None) != (group is None), 'Exactly one of discovery (Web, Domain) or targetGroupArn (Gateway) is required')
     if discovery is not None:
         require({'serviceName', 'serviceId', 'serviceArn'} <= set(discovery), 'Discovery needs serviceName, serviceId and serviceArn')
+    require(isinstance(config['probeUrl'], str) and config['probeUrl'].startswith('https://'), 'https probe URL required')
+    # Only the application behind the public entrance (Gateway, the target-group shape) may make the public probe a gate; Web and
+    # Domain would otherwise fail whenever Gateway is stopped (Web run 41993985015, 2026-11-05).
+    require(config['probeRequired'] is (group is not None), 'probeRequired is true for Gateway (target group) and false for Web and Domain')
     return config
 
 
@@ -150,6 +166,19 @@ def provenance(env, get=owner.api):
     release = versions.recheck(record, lambda path: get(repository, path), sha, app)
     require(env.get('RELEASE_VERSION') == release['releaseVersion'], 'Dispatched release tag differs from resolved record')
     return {**{k: release[k] for k in versions.FIELDS}, 'repository': repository, 'sourceSha': release['sourceSha'], 'workflowSha': sha, 'runId': runId}
+
+
+def inBlackout(now):
+    zone, start, end = BLACKOUT
+    local = now.astimezone(ZoneInfo(zone))
+    minute = local.hour * 60 + local.minute
+    return minute >= start or minute < end
+
+
+def requireOutsideBlackout(count, now, stage):
+    """A park (count 0) is never a deploy; a serving deploy waits for 00:30, when the scheduled stops are done."""
+    require(count == 0 or not inBlackout(now), 'No deploy ' + BLACKOUT_TEXT + ' (' + stage + '): the scheduled stops of DEV land from 00:00.'
+            ' Deploy after 00:30 by dispatching 04 · Deploy DEV with this tag')
 
 
 def desiredCount(env):
@@ -230,6 +259,7 @@ def plan(env, call, root, get=owner.api, now=None, stage=None, session=1, recove
     config, (templateText, _) = loadConfig(root), loadTemplate(root)
     require(release['app'] == config['app'], 'Configuration belongs to another application')
     count = desiredCount(env)
+    requireOutsideBlackout(count, utc(now), 'at planning')
     image = publishedImage(call, config, release['imageTag'])
     state = stackState(call, config['stack'])
     busy = state is not None and state['status'] in BUSY_PARKABLE
@@ -254,6 +284,7 @@ def plan(env, call, root, get=owner.api, now=None, stage=None, session=1, recove
               'changeSet': 'app-' + release['runId'] + ('-' + stage if stage else ''), 'parameters': rendered,
               'currentImage': current.get('ApplicationImage'), 'currentDesiredCount': current.get('DesiredCount'),
               'observationMinutes': config['observationMinutes'], 'refreshObservationMinutes': config['refreshObservationMinutes'], 'probeUrl': config['probeUrl'],
+              'probeRequired': config['probeRequired'],
               'templateSha256': hashlib.sha256(templateText.encode()).hexdigest(),
               'configSha256': hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest(),
               'busyStackPark': busy and count == 0, 'busyStackStatus': state['status'] if busy and count == 0 else None,
@@ -312,7 +343,10 @@ def gist(planned, env=None):
                '3. ECS performs the rolling update: the new task starts beside the old one and the old one is drained once the new one is healthy; '
                'if the new revision never becomes healthy the deployment circuit breaker rolls the service back to the previous revision and this run fails.',
                '4. Verify: task HEALTHY, log window clean, ' + ('service discovery lists the task' if planned['parameters'].get('DiscoveryServiceArn') else 'target group healthy')
-               + ', then watch the public probe for ' + str(planned['observationMinutes']) + ' minutes.')
+               + ', then watch this application alone for ' + str(planned['observationMinutes']) + ' minutes: the same task stays RUNNING and HEALTHY with a clean log'
+               + (' and `' + t(planned['probeUrl']) + '` answers 200 every minute.' if planned.get('probeRequired') else
+                  '; `' + t(planned['probeUrl']) + '` is checked once and only recorded, since it also needs the other applications.')
+               + ' Between 00:00 and 10:00 New York time, a service that was stopped before this deploy is stopped again afterwards.')
     parked = ('1. Recheck the tag, the plan digest, the template and the configuration; then assume `' + t(planned['deployRoleArn']) + '` as session `' + t(planned['sessionName']) + '`.',
               '2. Change set `' + t(planned['changeSet']) + '` on stack `' + t(planned['stack']) + '`: DesiredCount 0. The stack, service and task definition stay; a later run with DesiredCount 1 starts it again.')
     if planned.get('busyStackPark'):
@@ -431,11 +465,14 @@ class Deployer:
     """Executes one approved plan; every AWS step is recorded in `self.steps` and written whatever the outcome."""
 
     def __init__(self, planned, config, templateText, call, sleep=time.sleep, now=None, fetch=None, mode='deploy', log=print,
-                 stackSeconds=1200, observeRounds=None):
+                 stackSeconds=1200, observeRounds=None, parkOffHours=True):
         self.plan, self.config, self.template, self.call = planned, config, templateText, call
         self.sleep, self.now, self.fetch, self.mode, self.log = sleep, now or (lambda: utc()), fetch or probe, mode, log
         # `05 · Recover DEV` bounds the wait for a serving stage (its healthy_minutes input) and observes for the shorter refresh window.
         self.stackSeconds, self.observeRounds = stackSeconds, observeRounds
+        # `05 · Recover DEV` passes False: a recovery ends serving, whatever the hour.
+        self.parkOffHours, self.wasStopped = parkOffHours, False
+        self.task = self.logStart = None
         self.steps = []
 
     def note(self, step, **detail):
@@ -468,7 +505,7 @@ class Deployer:
         rows = [{'ParameterKey': k, 'ParameterValue': str(v)} for k, v in self.parameters().items()]
         args = ['cloudformation', 'create-change-set', '--stack-name', p['stack'], '--change-set-name', p['changeSet'],
                 '--change-set-type', 'UPDATE' if p['stackExists'] else 'CREATE', '--role-arn', p['cloudFormationRoleArn'],
-                '--template-body', self.template, '--tags', json.dumps([{'Key': 'LookAheadEnvironment', 'Value': 'dev'}]), '--parameters', json.dumps(rows)]
+                '--template-body', self.template, '--tags', json.dumps(self.stackTags()), '--parameters', json.dumps(rows)]
         created = self.call(*args)
         described = self.waitFor('change set ' + p['changeSet'], self.describeChangeSet, 120, 10)
         if described['Status'] == 'FAILED':
@@ -483,6 +520,13 @@ class Deployer:
                 'Change set preview differs from the approved plan: ' + json.dumps(changes))
         self.note('change-set', stack=p['stack'], name=p['changeSet'], id=created.get('Id'), changes=changes)
         return changes
+
+    def stackTags(self):
+        """The stack says what it serves (user 2026-11-05): the release tag, the run that put it there and the source commit, readable
+        with describe-stacks and by the Infra status switch; the environment tag stays."""
+        p = self.plan
+        return [{'Key': 'LookAheadEnvironment', 'Value': 'dev'}, {'Key': 'ReleaseVersion', 'Value': p['releaseVersion']},
+                {'Key': 'DeployRun', 'Value': p['runId']}, {'Key': 'SourceSha', 'Value': p['sourceSha']}]
 
     def describeChangeSet(self):
         described = self.call('cloudformation', 'describe-change-set', '--stack-name', self.plan['stack'], '--change-set-name', self.plan['changeSet'])
@@ -516,11 +560,8 @@ class Deployer:
         require(container is not None and digest in (str(container.get('imageDigest', '')) + ' ' + str(container.get('image', ''))),
                 'Running task does not carry the approved image')
         startedAt = owner.timestamp(task['startedAt']) if task.get('startedAt') else self.now() - timedelta(minutes=10)
-        taskId = arns[0].rsplit('/', 1)[-1]
-        pattern = ' '.join('?"' + word + '"' for word in cfg['logFailurePatterns'])
-        events = self.call('logs', 'filter-log-events', '--log-group-name', cfg['logGroup'], '--log-stream-name-prefix', cfg['service'] + '/' + cfg['service'] + '/' + taskId,
-                           '--start-time', str(int(startedAt.timestamp() * 1000)), '--filter-pattern', pattern).get('events', [])
-        require(not events, 'Log window contains failure markers: ' + (events[0].get('message', '')[:200] if events else ''))
+        self.task, self.logStart = arns[0], int(startedAt.timestamp() * 1000)
+        self.requireCleanLog()
         registered = None
         if cfg['discovery'] is not None:
             registered = len(self.call('servicediscovery', 'list-instances', '--service-id', cfg['discovery']['serviceId']).get('Instances', []))
@@ -556,23 +597,75 @@ class Deployer:
         status = self.waitFor('stack ' + p['stack'] + ' to finish its update or rollback', check, BUSY_SETTLE_SECONDS)
         self.note('stack-settled', stack=p['stack'], status=status)
 
+    def requireCleanLog(self):
+        cfg = self.config
+        pattern = ' '.join('?"' + word + '"' for word in cfg['logFailurePatterns'])
+        events = self.call('logs', 'filter-log-events', '--log-group-name', cfg['logGroup'], '--log-stream-name-prefix',
+                           cfg['service'] + '/' + cfg['service'] + '/' + self.task.rsplit('/', 1)[-1],
+                           '--start-time', str(self.logStart), '--filter-pattern', pattern).get('events', [])
+        require(not events, 'Log window contains failure markers: ' + (events[0].get('message', '')[:200] if events else ''))
+
+    def requireSameHealthyTask(self):
+        """The task verification accepted is still the only running task (no crash, no replacement), HEALTHY, with a clean log."""
+        cfg = self.config
+        arns = self.call('ecs', 'list-tasks', '--cluster', cfg['cluster'], '--service-name', self.plan['stack'], '--desired-status', 'RUNNING').get('taskArns', [])
+        require(arns == [self.task], 'The verified task ' + self.task.rsplit('/', 1)[-1] + ' was replaced or stopped during observation')
+        task = self.call('ecs', 'describe-tasks', '--cluster', cfg['cluster'], '--tasks', self.task)['tasks'][0]
+        require(task.get('lastStatus') == 'RUNNING' and task.get('healthStatus') == 'HEALTHY',
+                'Task became ' + str(task.get('lastStatus')) + '/' + str(task.get('healthStatus')) + ' during observation')
+        self.requireCleanLog()
+
+    def requireOutsideBlackout(self):
+        requireOutsideBlackout(self.plan['desiredCount'], self.now(), 'at execution')
+
+    def offHours(self):
+        zone, start, end = OFF_HOURS
+        return start <= self.now().astimezone(ZoneInfo(zone)).hour < end
+
+    def stopAgainForOffHours(self):
+        """A deploy in DEV's off hours leaves the service as it found it: stopped (user 2026-11-05). Only this application's service is
+        touched, directly as `Application · Start or stop DEV` does; the stack keeps DesiredCount 1, so the 10:00 start serves it again."""
+        if not (self.parkOffHours and self.wasStopped and self.offHours()):
+            return
+        p, cfg = self.plan, self.config
+        self.call('ecs', 'update-service', '--cluster', cfg['cluster'], '--service', p['stack'], '--desired-count', '0')
+        counts = self.waitFor('ECS scale-in of ' + p['stack'],
+                              lambda: (lambda c: c if c and c['running'] == 0 and c['desired'] == 0 else None)(serviceCounts(self.call, cfg)), 300)
+        self.note('stopped-for-off-hours', stack=p['stack'], counts=counts, window=OFF_HOURS[0] + ' ' + str(OFF_HOURS[1]) + ':00-' + str(OFF_HOURS[2]) + ':00')
+
     def verifyParked(self):
         counts = self.waitFor('ECS scale-in of ' + self.plan['stack'],
                               lambda: (lambda c: c if c and c['running'] == 0 and c['desired'] == 0 else None)(serviceCounts(self.call, self.config)), 300)
         self.note('parked', counts=counts)
 
     def observe(self, rounds=None):
+        """Every minute: the service still runs its one task, the same task verification accepted, HEALTHY, with a clean log. Gateway
+        (`probeRequired`) also needs the public probe to answer 200 each round; Web and Domain record one probe at the end, never a gate."""
         p, cfg = self.plan, self.config
         rounds = rounds or p['observationMinutes']
+        required = p['probeRequired']
+        status = None
         for minute in range(rounds):
             counts = serviceCounts(self.call, cfg)
+            if counts and counts['desired'] == 0 and minute > 0:
+                # DesiredCount 0 is set only by the start/stop switch or the scheduled stop, never by a crash (a crash keeps
+                # the desired count at 1); the revision verified clean and served every round so far.
+                self.note('stopped-during-observation', minutes=minute, by='the start/stop switch or the scheduled stop',
+                          note='the verified revision served ' + str(minute) + ' clean minute(s); the next start serves it again')
+                return
             require(counts and counts['running'] == 1 and counts['rolloutState'] == 'COMPLETED', 'Service stopped serving during observation')
-            status = self.fetch(p['probeUrl'])
-            require(status == 200, 'Public probe returned ' + str(status) + ' during observation')
-            self.log('observation ' + str(minute + 1) + '/' + str(rounds) + ': running ' + str(counts['running']) + ', probe ' + str(status), flush=True)
+            self.requireSameHealthyTask()
+            if required:
+                status = self.fetch(p['probeUrl'])
+                require(status == 200, 'Public probe of ' + p['probeUrl'] + ' returned ' + ('no answer' if status is None else str(status)) + ' during observation')
+            self.log('observation ' + str(minute + 1) + '/' + str(rounds) + ': running ' + str(counts['running']) + ', task healthy'
+                     + (', probe ' + str(status) if required else ''), flush=True)
             if minute < rounds - 1:
                 self.sleep(60)
-        self.note('observed', minutes=rounds)
+        if not required:
+            status = self.fetch(p['probeUrl'])
+        self.note('observed', minutes=rounds, probe=p['probeUrl'], probeStatus=status, probeRequired=required,
+                  publicPage='answered ' + str(status) if status is not None else 'no answer (another application may be stopped); not a gate for this application')
 
     def run(self):
         outcome = {'schema': SCHEMA_RESULT, 'runId': self.plan['runId'], 'planDigest': self.plan['planDigest'], 'app': self.plan['app'],
@@ -580,7 +673,12 @@ class Deployer:
         try:
             require(self.mode in self.plan['choices'], 'Approved mode ' + str(self.mode) + ' is not one this plan offers')
             outcome['mode'] = self.mode
+            if self.mode != 'verify':
+                self.requireOutsideBlackout()
             self.identity()
+            if self.mode != 'verify' and self.plan['desiredCount'] == 1:
+                before = serviceCounts(self.call, self.config)
+                self.wasStopped = bool(before) and before['desired'] == 0
             if self.mode == 'verify':
                 self.note('unchanged', stack=self.plan['stack'], verifyOnly=True)
             else:
@@ -599,9 +697,15 @@ class Deployer:
                     self.observe(self.observeRounds)
             else:
                 self.verifyParked()
+            self.stopAgainForOffHours()
             outcome['outcome'] = 'success'
         except Exception as error:
             outcome.update({'outcome': 'failure', 'error': str(error)[:500]})
+            if not any(step['step'] == 'stopped-for-off-hours' for step in self.steps):
+                try:  # a failed night-time deploy does not leave DEV running either; the original error stays the outcome
+                    self.stopAgainForOffHours()
+                except Exception as stop:
+                    self.note('off-hours-stop-failed', error=str(stop)[:200])
             raise
         finally:
             outcome.update({'steps': self.steps, 'finishedAt': self.now().isoformat()})
@@ -610,6 +714,7 @@ class Deployer:
 
 
 def probe(url, opener=urllib.request.urlopen):
+    """The HTTP status, or None when nothing answered (timeout, refused connection, DNS); the caller decides what that means."""
     require(url.startswith('https://'), 'https probe URL required')
     try:
         with opener(urllib.request.Request(url, headers={'User-Agent': 'lookahead-deploy-probe'}), timeout=10) as response:
@@ -617,6 +722,8 @@ def probe(url, opener=urllib.request.urlopen):
     except urllib.error.HTTPError as error:
         error.close()
         return error.code
+    except (urllib.error.URLError, OSError):
+        return None
 
 
 def output(env, **values):

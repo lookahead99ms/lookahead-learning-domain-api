@@ -326,6 +326,9 @@ class DeployWorkflowTests(unittest.TestCase):
             self.assertEqual((False, '1'), (count['required'], count['default']))
         self.assertEqual(('choice', ['1', '0']), (self.wf['on']['workflow_dispatch']['inputs']['desired_count']['type'], self.wf['on']['workflow_dispatch']['inputs']['desired_count']['options']))
         self.assertEqual("${{ inputs.desired_count || '1' }}", self.wf['env']['DEPLOY_DESIRED_COUNT'])
+        # DLV-968 (user 2026-11-05): DEV has no emergencies, so the overnight blackout has no override input.
+        self.assertEqual({'release_version', 'desired_count'}, set(self.wf['on']['workflow_dispatch']['inputs']))
+        self.assertNotIn('DEPLOY_EMERGENCY', self.wf['env'])
         self.assertEqual({'contents': 'read'}, self.wf['permissions'])
         self.assertEqual({'group': 'deploy-dev', 'cancel-in-progress': False}, self.wf['concurrency'])
         self.assertEqual("${{ vars.DEV_DEPLOY_ROLE_ARN || 'arn:aws:iam::509614632283:role/lookahead-dev-deploy' }}", self.wf['env']['DEPLOY_ROLE'])
@@ -406,7 +409,11 @@ class DeployWorkflowTests(unittest.TestCase):
         config = json.loads((ROOT / 'deployment/dev/deploy-config.json').read_text())
         template = json.loads((ROOT / 'deployment/dev/service.template.json').read_text())
         self.assertEqual((APP, self.app, self.app + '-deploy'), (config['app'], config['service'], config['sessionPrefix']))
-        self.assertEqual(('lookahead-app-deploy-config/v2', 'lookahead-dev-' + self.app), (config['schema'], config['stack']))
+        self.assertEqual(('lookahead-app-deploy-config/v3', 'lookahead-dev-' + self.app), (config['schema'], config['stack']))
+        # DLV-968 (user 2026-11-05): each application deploys on its own. Only Gateway gates on a public probe, its own DEV gate page.
+        gateway = config['targetGroupArn'] is not None
+        self.assertEqual((gateway, 'https://dev.devlookahead.com/dev/access' if gateway else 'https://dev.devlookahead.com/'),
+                         (config['probeRequired'], config['probeUrl']))
         self.assertEqual('lookahead-dev-' + self.app, template['Resources']['Service']['Properties']['ServiceName'])
         self.assertEqual('lookahead-dev-' + self.app, template['Resources']['Task']['Properties']['Family'])
         self.assertNotIn('Slot', template['Parameters'])

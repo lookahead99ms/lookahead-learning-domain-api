@@ -100,13 +100,33 @@ scheduled scale-down from 2026-11-05). `01 · Full` always passes `1`.
    (valid for 15 minutes from the approval comment, not from the issue, so an answer late in the wait
    still leaves this job its whole window), the plan digest, the template and the configuration before OIDC; the deploy session
    `<app>-deploy-<run>-1` (60 minutes) runs `deploy.py execute`: one change set `app-<run>`
-   (CREATE for the first stack, UPDATE afterwards; its preview must show only the task definition
+   (CREATE for the first stack, UPDATE afterwards, tagged `ReleaseVersion`, `DeployRun` and `SourceSha` so the stack
+   itself says what it serves; its preview must show only the task definition
    and the service), execution, then for `desired_count` 1 the ECS rollout `COMPLETED` with exactly
    one `HEALTHY` task whose container reports the approved image digest (`describe-tasks`; the deploy
    session is denied `DescribeTaskDefinition` by the Infra bundle and does not need it), a clean log window, service discovery listing
-   the task (Web, Domain) or healthy target health (GW-BFF), and the observation window (service,
-   task and public probe every minute: 15 minutes after a deploy, `refreshObservationMinutes`, 5, after
-   a refresh, none after a verify). Each recorded step and each observation round prints one line to
+   the task (Web, Domain) or healthy target health (GW-BFF), and the observation window: 15 minutes after a
+   deploy, `refreshObservationMinutes`, 5, after a refresh, none after a verify. **Each application deploys on
+   its own** (DLV-968, user 2026-11-05), whether the other two run or are stopped: every minute the service
+   still runs one task, it is the task verification accepted (no crash or replacement), still `HEALTHY`, and
+   its log stream has no failure marker. Only the GW-BFF (`probeRequired: true`) gates on a public probe, its
+   own DEV gate page `https://dev.devlookahead.com/dev/access`, which Gateway serves from its own classpath
+   without a session, so it proves the public entrance (API Gateway, load balancer, Gateway) without Web or
+   Domain. Gateway's `/actuator/health` addresses do not work for this: on the public side the DEV gate answers
+   them with a redirect to that page. Web and Domain (`probeRequired: false`) check
+   `https://dev.devlookahead.com/` once at the end and only record the answer, because that address passes
+   through Gateway; a timeout there is "no answer", never a failure (Web run 41993985015 failed on it while Gateway
+   was stopped). Between 00:00 and 10:00 America/New_York (the window of Infra's `Application · Start or stop
+   DEV` schedule), a service that was stopped before the deploy is stopped again afterwards, directly with
+   `ecs update-service`, also when the deploy failed; the stack keeps `DesiredCount` 1, so the scheduled start (10:00 to 10:08)
+   serves it again. `05 · Recover DEV` never does this. **Overnight blackout** (user decision 2026-11-05): a serving
+   deploy is refused between 23:30 and 00:30 New York time, at planning and again at execution, because the
+   scheduled stops land from 00:00 (Gateway, then Web, then Domain, three minutes apart); the message says to deploy
+   after 00:30 by dispatching `04 · Deploy DEV` with the tag. There is no override: DEV has no emergencies (user
+   decision 2026-11-05), and a merge-driven `01 · Full` that reaches its deploy in the window simply ends there with
+   the image published. If the start/stop switch or the scheduled stop sets the desired count
+   to 0 during the observation, the run records `stopped-during-observation` with the clean minutes and ends
+   successfully: a crash never changes the desired count, so 0 is always an intentional stop. Each recorded step and each observation round prints one line to
    the job log, so the long waits are visible. For `desired_count` 0 it waits until the service runs zero
    tasks. A stack that ends in a rollback state fails the run; the previous revision keeps serving.
    The result is retained whatever happened (`deploy-result`) and the approval issue is closed with
