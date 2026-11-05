@@ -25,9 +25,11 @@ public class DevTestRoster {
      * {@code withoutPlan}: ready learners whose scenario has a study plan they don't have yet (DLV-969 S37).
      * {@code deleted}: roster accounts deleted before "roster accounts are never deleted", which is also how many the
      * owner's Restore brings back ({@link #restore}).
+     * {@code changed}: active roster accounts that differ from their scenario start (DLV-969, owner 2026-11-04), so the
+     * page greys out "Reset all" at 0; see {@link #STATUS} for what counts. Every account in {@code withoutPlan} counts.
      */
-    public record Status(int total, int ready, int deleted, int withoutPlan) {
-        public Status(int total, int ready, int deleted) { this(total, ready, deleted, 0); }
+    public record Status(int total, int ready, int deleted, int withoutPlan, int changed) {
+        public Status(int total, int ready, int deleted) { this(total, ready, deleted, 0, 0); }
         public int remaining() { return total - ready - deleted; }
     }
     /** The owner types {@code RESTORE}. */
@@ -103,21 +105,49 @@ public class DevTestRoster {
         return new Restored(restored);
     }
 
+    /**
+     * The roster's status in one query, run on every allowance read: each owner-created roster row, whether it has a
+     * study plan, and whether it changed since its scenario start. The start is its latest {@code test_account_resets}
+     * row (Reset, Restore, or the creation row {@link TestAccountsService#admitRosterEntry} writes), always the last
+     * write of that transaction. Changed after it: the registry row (its triggers stamp {@code last_changed_at} on every
+     * insert, update or delete of the account's plans, {@code account_grants}, {@code membership_purchases} and
+     * {@code staff_access}, so deletions and the timestamp-less grants count too), or a newer timestamp on its purchases
+     * ({@code created_at}, {@code updated_at}), plans ({@code created_at}, {@code updated_at}), {@code plan_versions}
+     * ({@code created_at}), {@code plan_activity} ({@code recorded_at}) or {@code staff_access} ({@code updated_at}).
+     * {@code plan_lifecycle} has no timestamp; every lifecycle change also updates its plan and writes plan activity.
+     * A roster account without any such row (created before the creation row existed) counts as changed until reset.
+     */
+    static final String STATUS = """
+            WITH roster AS (
+              SELECT r.account_id,r.creation_state,r.last_changed_at,
+                     (SELECT max(x.recorded_at) FROM test_account_resets x WHERE x.account_id=r.account_id) AS since
+              FROM test_account_registry r WHERE r.creator_id IS NOT NULL AND r.initialization<>'created'),
+            written AS (
+              SELECT m.account_id,greatest(m.created_at,m.updated_at) AS at,false AS plan FROM membership_purchases m JOIN roster USING(account_id)
+              UNION ALL SELECT p.account_id,greatest(p.created_at,p.updated_at),true FROM plans p JOIN roster USING(account_id)
+              UNION ALL SELECT v.account_id,v.created_at,false FROM plan_versions v JOIN roster USING(account_id)
+              UNION ALL SELECT a.account_id,a.recorded_at,false FROM plan_activity a JOIN roster USING(account_id)
+              UNION ALL SELECT s.account_id,s.updated_at,false FROM staff_access s JOIN roster USING(account_id))
+            SELECT r.account_id,r.creation_state,coalesce(bool_or(w.plan),false) AS has_plan,
+                   (r.since IS NULL OR r.last_changed_at>r.since OR coalesce(max(w.at)>r.since,false)) AS changed
+            FROM roster r LEFT JOIN written w USING(account_id)
+            GROUP BY r.account_id,r.creation_state,r.last_changed_at,r.since
+            """;
+
     private Status status() {
         var roster = new HashSet<UUID>();
         for (var entry : TestAccountRoster.entries()) roster.add(entry.accountId());
-        int ready = 0, deleted = 0, withoutPlan = 0;
-        var withPlans = new HashSet<>(jdbc.queryForList(
-                "SELECT DISTINCT p.account_id FROM plans p JOIN test_account_registry r ON r.account_id=p.account_id"
-                + " WHERE r.creator_id IS NOT NULL AND r.initialization<>'created'", UUID.class));
-        for (var row : jdbc.queryForList("SELECT account_id,creation_state FROM test_account_registry WHERE creator_id IS NOT NULL AND initialization<>'created'")) {
+        int ready = 0, deleted = 0, withoutPlan = 0, changed = 0;
+        for (var row : jdbc.queryForList(STATUS)) {
             UUID id = (UUID) row.get("account_id");
             if (!roster.contains(id)) continue;
             if ("deleted".equals(row.get("creation_state"))) { deleted++; continue; }
             ready++;
-            if (needsPlan(id) && !withPlans.contains(id)) withoutPlan++;
+            boolean planMissing = needsPlan(id) && !Boolean.TRUE.equals(row.get("has_plan"));
+            if (planMissing) withoutPlan++;
+            if (planMissing || Boolean.TRUE.equals(row.get("changed"))) changed++;
         }
-        return new Status(roster.size(), ready, deleted, withoutPlan);
+        return new Status(roster.size(), ready, deleted, withoutPlan, changed);
     }
 
     /** A roster learner whose scenario includes a study plan. */

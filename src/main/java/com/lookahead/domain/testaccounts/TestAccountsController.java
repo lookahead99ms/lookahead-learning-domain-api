@@ -29,8 +29,8 @@ public class TestAccountsController {
         // is the owner's or an admin's decision on a DEV purchase request.
         if(request!=null&&request.purchaseDecision()!=null)return ApiResponse.success(service.decidePurchase(actor,request.purchaseDecision()));
         // DLV-969 (owner, 2026-11-04): {"restoreRoster": true, "confirm": "RESTORE"} brings back deleted DEV roster accounts.
-        if(request!=null&&request.restoreRoster())return ApiResponse.success(roster.restore(actor,new DevTestRoster.Restore(request.confirm())));
-        if(request!=null&&request.roster())return ApiResponse.success(roster.next(actor));
+        if(request!=null&&request.restoresRoster())return ApiResponse.success(roster.restore(actor,new DevTestRoster.Restore(request.confirm())));
+        if(request!=null&&request.createsRoster())return ApiResponse.success(roster.next(actor));
         return ApiResponse.success(created.create(actor,request));
     }
     @DeleteMapping("/api/v1/admin/test-accounts/{id}") public ApiResponse<?> delete(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable UUID id){

@@ -23,7 +23,15 @@ public class TestAccountsService {
             ScenarioPlans plans,StaffAccessService staff,AccessSummaryService summaries,SnapshotValidator catalog){
         this.jdbc=jdbc;this.json=json;this.policy=policy;this.purchases=purchases;this.plans=plans;this.staff=staff;this.summaries=summaries;this.catalog=catalog;
     }
-    public record Reset(UUID key,long expectedRevision,String confirmation,String preset) {}
+    /**
+     * {@code expectedRevision} is a {@code Long}: a JSON reader refuses an absent value for a primitive, which answered
+     * 400 MALFORMED_JSON; without it the reset now answers 428 REVISION_REQUIRED (DLV-969, 2026-11-04).
+     */
+    public record Reset(UUID key,Long expectedRevision,String confirmation,String preset) {
+        public Reset(UUID key,long expectedRevision,String confirmation,String preset){this(key,Long.valueOf(expectedRevision),confirmation,preset);}
+        /** True only when the body sent this revision. */
+        public boolean expects(long revision){return expectedRevision!=null&&expectedRevision==revision;}
+    }
     private void actor(String actor){jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor);}
     private StaffAliases aliases;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
@@ -172,7 +180,8 @@ public class TestAccountsService {
         }
         var revisions=jdbc.queryForList("SELECT revision FROM test_account_registry WHERE account_id=? AND creation_state='active' FOR UPDATE",Long.class,id);
         if(revisions.isEmpty())throw new AccountFailure(404,"TEST_ACCOUNT_NOT_FOUND","Managed test account not found");
-        if(revisions.getFirst()!=request.expectedRevision())throw new AccountFailure(409,"REVISION_CONFLICT","Test account changed; reload before resetting");
+        if(request.expectedRevision()==null)throw new AccountFailure(428,"REVISION_REQUIRED","An expected revision is required");
+        if(!request.expects(revisions.getFirst()))throw new AccountFailure(409,"REVISION_CONFLICT","Test account changed; reload before resetting");
         actor(actor.accountId().toString());
         // Preserve purchase/audit history. Superseded purchases grant nothing.
         jdbc.update("UPDATE membership_purchases SET superseded_at=COALESCE(superseded_at,now()),updated_at=now() WHERE account_id=?",id);
@@ -274,6 +283,9 @@ public class TestAccountsService {
                 entry.accountId(),entry.cloudUsername(),owner.accountId(),owner.accountId().toString());
         admitTestAccount(entry.accountId(),entry.cloudUsername(),entry.firstName(),owner.accountId());
         defaults(entry,owner.accountId(),"scenario",Instant.now());
+        // DLV-969 (owner, 2026-11-04): its scenario start in the reset ledger, the transaction's last write, so the
+        // roster's "changed" count (DevTestRoster.STATUS) has a start for an account that was never reset.
+        jdbc.update("INSERT INTO test_account_resets(account_id,mutation_key,actor_id,preset) VALUES (?,?,?,'create')",entry.accountId(),UUID.randomUUID(),owner.accountId());
     }
     /** DLV-969 S35: the admitted cloud_accounts row of a DEV test account, on the test issuer, its identity (S36) and its 'admit' event. */
     void admitTestAccount(UUID id,String username,String displayName,UUID admittedBy){

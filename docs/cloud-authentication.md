@@ -217,6 +217,37 @@ owner, and one `test-account.restore` event names the ids. Nothing to restore an
 `403 OWNER_REQUIRED`, `422 ACCOUNT_CONFIRMATION_REQUIRED`, `403 TEST_ACCOUNTS_DISABLED` outside DEV. The roster
 card's `roster.deleted` (allowance) is the restorable count.
 
+Roster status (owner, DEV only): `GET /api/v1/admin/test-accounts/allowance` carries `roster` for the owner (null for
+everyone else and outside DEV), and `POST /api/v1/admin/test-accounts` with `{"roster": true}` answers the same
+object. It is computed by one SQL query (`DevTestRoster.STATUS`) on every read:
+
+| Field | Meaning |
+| --- | --- |
+| `total` | roster entries (35) |
+| `ready` | active owner-created roster accounts |
+| `deleted` | roster accounts deleted before they became permanent; what Restore brings back |
+| `withoutPlan` | ready learners whose scenario has a study plan they do not have (S37) |
+| `changed` | ready accounts that differ from their scenario start; the card greys out "Reset all" at 0 (owner 2026-11-04) |
+
+An account's scenario start is its latest `test_account_resets` row: Reset (`scenario`), Restore (`restore`) or, since
+2026-11-04, the `create` row roster creation writes; each is the last write of its transaction. An account counts in
+`changed` when, after that row, its registry row was stamped (the V10 triggers set `last_changed_at` on every insert,
+update or delete of its `plans`, `account_grants`, `membership_purchases` and `staff_access`, which also covers plan
+deletion and the timestamp-less `account_grants`), or any of these is newer: `membership_purchases.created_at` or
+`updated_at`, `plans.created_at` or `updated_at`, `plan_versions.created_at`, `plan_activity.recorded_at`,
+`staff_access.updated_at`. `plan_lifecycle` has no timestamp and is not read; a lifecycle change through the API also
+updates its plan and writes plan activity. Every account in `withoutPlan` also counts in `changed` (once). A roster
+account created before the `create` row existed has no start recorded and counts as changed until it is reset once.
+No migration.
+
+Every action on `POST /api/v1/admin/test-accounts` sends only its own fields (`{"roster":true}`,
+`{"restoreRoster":true,"confirm":"RESTORE"}`, `{"purchaseDecision":{...}}`, `{"key":...,"scenario":...}`); the flags
+are optional booleans, so an omitted flag is false rather than `400 MALFORMED_JSON`. A Reset body without
+`expectedRevision` answers `428 REVISION_REQUIRED` (it was a 400), and a price body without `priceCents`
+(`POST /api/v1/admin/membership/plans/{id}/price`) the existing `422 MEMBERSHIP_INVALID`. A body that still cannot
+be read logs one `request.json` line naming the field (never its value). `TestAccountsControllerTest` sends these
+exact bodies through the controller with Spring Boot's JSON mapper.
+
 ### Owner-approved purchases for DEV test accounts (DLV-969, owner 2026-11-04)
 
 In DEV (`app.deployment-environment=dev`) payments stay simulated, and only a test account staff created can
