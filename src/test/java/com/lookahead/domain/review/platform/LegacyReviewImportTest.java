@@ -101,6 +101,32 @@ class LegacyReviewImportTest {
         assertThat(Files.exists(root.resolve("reviews/.imported.json"))).isFalse();
     }
 
+    /** A day file written before DLV-971 has no kind, requestType or reference keys: its items import as reviews with every field kept. */
+    @Test void aDayFileWithoutTheKindFieldsImportsAsReviews() throws Exception {
+        var day0 = new PlatformReviewModels.DayFile(PlatformReviewModels.DAY_SCHEMA, "2026-10-11", List.of(
+                new PlatformReviewModels.StoredItem("item-0", reviewer, "abc", "First Reviewer", "content", "Lesson Reader", "/learn/x", "Old item", "Older body", "medium",
+                        List.of(), "new", "", "2026-10-11T09:00:00Z", "2026-10-11T09:00:00Z", UUID.randomUUID(), "hash", UUID.randomUUID(), "reviewer", null, null, null)));
+        var tree = mapper.readTree(mapper.writeValueAsString(day0));
+        for (var node : tree.path("items")) ((tools.jackson.databind.node.ObjectNode) node).remove(List.of("kind", "requestType", "reference"));
+        String file = mapper.writeValueAsString(tree);
+        assertThat(file).doesNotContain("\"kind\"", "\"requestType\"", "\"reference\"");
+        legacy.put("reviews/2026-10-11.json", file.getBytes());
+        assertThat(new LegacyReviewImport(legacy, stores, mapper).run().orElseThrow()).isEqualTo(new LegacyReviewImport.Counts(3, 1, 1, 3));
+        // Oldest first: the keyless item is REV-000001, in the review store, with the kind filled in and nothing else changed.
+        var first = stores.reviews().find("REV-000001").orElseThrow().record();
+        assertThat(first.kind()).isEqualTo("review");
+        assertThat(first.requestType()).isNull();
+        assertThat(first.reference()).isNull();
+        assertThat(first.title()).isEqualTo("Old item");
+        assertThat(first.details()).isEqualTo("Older body");
+        assertThat(first.page()).isEqualTo("Lesson Reader");
+        assertThat(first.status()).isEqualTo("new");
+        assertThat(first.submitter()).isEqualTo(new PlatformReviewModels.Submitter(reviewer, "reviewer", "First Reviewer"));
+        assertThat(Files.readString(root.resolve("reviews/records/2026/10/11/REV-000001.json"))).contains("\"kind\" : \"review\"");
+        assertThat(stores.requests().all()).hasSize(1);
+        assertThat(stores.reviews().all()).hasSize(3);
+    }
+
     @Test void aDamagedDayFileStopsTheImportWithoutAMarkerSoTheNextStartTriesAgain() throws Exception {
         legacy.put("reviews/2026-10-14.json", "{ not json".getBytes());
         try (var log = LogCapture.start()) {
