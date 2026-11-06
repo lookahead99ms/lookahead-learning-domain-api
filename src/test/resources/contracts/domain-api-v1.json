@@ -18,8 +18,8 @@
      "callers": ["AuthorPreviewProxy.fetch"], "note": "exactly 204 authorizes the artifact fetch; 401/403 are relayed, anything else becomes 503"},
 
     {"id": "cloud-admit", "method": "POST", "path": "/internal/v1/cloud-sign-ins/admit", "example": "/internal/v1/cloud-sign-ins/admit", "statuses": [200],
-     "reads": ["data.signInId", "data.challengeToken"], "readsOptional": [], "requestContentType": "application/json", "exampleBody": {},
-     "callers": ["GatewaySecurityHandlers.loginSucceeded"], "note": "a non-empty challengeToken redirects to /sign-in/choose; otherwise signInId must be present"},
+     "reads": ["data.signInId", "data.challengeToken"], "readsOptional": ["data.mergeAvailable"], "requestContentType": "application/json", "exampleBody": {},
+     "callers": ["GatewaySecurityHandlers.loginSucceeded"], "note": "a non-empty challengeToken redirects to /sign-in/choose; otherwise signInId must be present. DLV-969 S36: a literal mergeAvailable true sends the redirect sign-in to /account/merge?offer=1 and the password SIGNED_IN step carries mergeAvailable"},
     {"id": "cloud-logout", "method": "POST", "path": "/internal/v1/cloud-sign-ins/logout", "example": "/internal/v1/cloud-sign-ins/logout", "statuses": [200],
      "reads": [], "readsOptional": [], "requestContentType": "application/json", "exampleBody": {},
      "callers": ["GatewayController.cloudLogout"], "note": "200 or 401 confirm the Domain sign-out; any other status fails the browser sign-out"},
@@ -35,8 +35,8 @@
     {"id": "cloud-profile-read", "method": "GET", "path": "/internal/v1/cloud-sign-ins/profile", "example": "/internal/v1/cloud-sign-ins/profile", "statuses": [200],
      "reads": [], "readsOptional": ["data.reauthenticationRequired"], "callers": ["CloudAccountController.read"], "note": "browser route /api/v1/account/profile"},
     {"id": "cloud-replace", "method": "POST", "path": "/internal/v1/cloud-sign-ins/replace", "example": "/internal/v1/cloud-sign-ins/replace", "statuses": [200],
-     "reads": ["data.accountId"], "readsOptional": [], "requestContentType": "application/json", "exampleBody": {"signInId": "0f6d1c0e-6c3a-4a4e-9d6a-2f8c1b7e5a10"},
-     "callers": ["CloudAccountController.mutate"], "note": "browser route /api/v1/auth/sign-in-challenge/replace; an empty accountId becomes 503"},
+     "reads": ["data.accountId"], "readsOptional": ["data.mergeAvailable"], "requestContentType": "application/json", "exampleBody": {"signInId": "0f6d1c0e-6c3a-4a4e-9d6a-2f8c1b7e5a10"},
+     "callers": ["CloudAccountController.mutate"], "note": "browser route /api/v1/auth/sign-in-challenge/replace; an empty accountId becomes 503. DLV-969 S36: a literal mergeAvailable true is relayed and the /bff/login that completes the challenge redirects to /account/merge?offer=1"},
     {"id": "cloud-cancel", "method": "POST", "path": "/internal/v1/cloud-sign-ins/cancel", "example": "/internal/v1/cloud-sign-ins/cancel", "statuses": [200],
      "reads": [], "readsOptional": [], "requestContentType": "application/json", "exampleBody": {},
      "callers": ["CloudAccountController.mutate"], "note": "browser route /api/v1/auth/sign-in-challenge/cancel; 200 always ends the Gateway session"},
@@ -89,6 +89,12 @@
 
     {"id": "membership-plans", "method": "GET", "path": "/api/v1/membership/plans", "example": "/api/v1/membership/plans", "statuses": [200], "reads": [], "readsOptional": [], "callers": ["GatewayController.proxy"], "note": "public; no sign-in required"},
     {"id": "sales-active", "method": "GET", "path": "/api/v1/sales/active", "example": "/api/v1/sales/active", "statuses": [200], "reads": [], "readsOptional": [], "callers": ["GatewayController.proxy"], "note": "public; no sign-in required"},
+    {"id": "account-merge-request", "method": "POST", "path": "/api/v1/account/merge/request", "example": "/api/v1/account/merge/request", "statuses": [202], "reads": [], "readsOptional": [], "requestContentType": "application/json", "exampleBody": {},
+     "callers": ["AccountMergeProxyController.forward"], "note": "DLV-969 S36: browser route /api/v1/account/merge/request (no /bff prefix); status and body relayed unchanged"},
+    {"id": "account-merge-candidates", "method": "GET", "path": "/api/v1/account/merge/{token}", "example": "/api/v1/account/merge/abcdefghijklmnopqrstuvwxyzABCDEFGHIJ0123-_Z", "statuses": [200], "reads": [], "readsOptional": [],
+     "callers": ["AccountMergeProxyController.forward"], "note": "DLV-969 S36: the token must be 43 url-safe characters or the Gateway answers 404 MERGE_TOKEN_INVALID itself; 404/409 from Domain are relayed"},
+    {"id": "account-merge", "method": "POST", "path": "/api/v1/account/merge/{token}", "example": "/api/v1/account/merge/abcdefghijklmnopqrstuvwxyzABCDEFGHIJ0123-_Z", "statuses": [200], "reads": [], "readsOptional": [], "requestContentType": "application/json", "exampleBody": {"keepAccountId": "2c7e9a4d-1b3f-4c5e-8d9a-0b1c2d3e4f5a"},
+     "callers": ["AccountMergeProxyController.forward"], "note": "DLV-969 S36: 400/404/409/422 from Domain are relayed unchanged"},
     {"id": "account-access-records", "method": "GET", "path": "/api/v1/account/access-records", "example": "/api/v1/account/access-records", "statuses": [200], "reads": [], "readsOptional": [], "callers": ["GatewayController.proxy"]},
     {"id": "account-access-summary", "method": "GET", "path": "/api/v1/account/access-summary", "example": "/api/v1/account/access-summary", "statuses": [200], "reads": [], "readsOptional": [], "callers": ["GatewayController.proxy"]},
     {"id": "account-purchase", "method": "GET", "path": "/api/v1/account/purchases/{id}", "example": "/api/v1/account/purchases/2c7e9a4d-1b3f-4c5e-8d9a-0b1c2d3e4f5a", "statuses": [200], "reads": [], "readsOptional": [], "callers": ["GatewayController.proxy"]},
@@ -133,6 +139,6 @@
     {"id": "executions-cancel", "method": "DELETE", "path": "/api/v1/executions/jobs/{jobId}", "example": "/api/v1/executions/jobs/aa852488-aead-4b3d-a91f-c5d189539a52", "callers": ["GatewayController.proxy"]}
   ],
   "forwardedWithoutProviderNote": "The Gateway relays these execution routes, but Domain has no handler for them today (learner code execution is deferred, DLV-310 / ADR-007); Domain answers 404. The provider test asserts they stay unmapped so adding them means moving them to calls.",
-  "webPaths": ["/", "/index.html", "/sign-in", "/sign-in/choose", "/welcome", "/account", "/pricing", "/delivery-plan", "/study-plan", "/learn", "/grow", "/blaze", "/look-ahead", "/search", "/support", "/author", "/admin"],
+  "webPaths": ["/", "/index.html", "/sign-in", "/sign-in/choose", "/welcome", "/account", "/account/merge", "/pricing", "/delivery-plan", "/study-plan", "/learn", "/grow", "/blaze", "/look-ahead", "/search", "/support", "/author", "/admin"],
   "webPathsNote": "DevWebProxy forwards every safe GET/HEAD path to the Web origin (DevServiceOrigins.web); these are the paths the Gateway itself sends browsers to: the sign-in redirects of GatewaySecurityHandlers/GatewayController and the return destinations GatewayConfiguration.safeReturn accepts. Each must resolve on the built Web site to a file, a route snapshot or the application shell."
 }

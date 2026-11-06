@@ -271,6 +271,24 @@ Mocked JDBC tests do not certify real PostgreSQL permissions, migration transfer
 cross-replica transaction behavior, backup/restore or the three-application login
 flow. Those require the isolated infrastructure integration gate before cutover.
 
+## Contracts with other repositories
+
+No repository clones another at build or deploy time (owner decision, 2026-11-05). Every
+expectation another repository has of this one, or this one has of another, is a committed
+contract file: the producer owns it, each side keeps its own copy, and each side tests its copy
+on its own pull request. Contracts are public by nature; anything that would need to stay
+private is not a contract but configuration, and it belongs to Infra.
+
+| Contract file | Owner | Checked on this repo's PR by | Checked by the other side | Change order | What a failure means |
+| --- | --- | --- | --- | --- | --- |
+| `src/test/resources/contracts/domain-api-v1.json` (`gateway-domain-contract/v1`: every Domain call the Gateway makes, its method, path, success statuses and the response fields the Gateway reads) | Domain, the provider | `DomainProviderContractTest`: every call is a real controller mapping, deferred routes stay unmapped, and the calls whose answer the Gateway interprets are driven through the real controllers on stubbed services | Content's registry check (`docs/contracts/registry.json`) compares every copy with the master on Content pull requests; this repo keeps its copy and tests it locally | Domain first (route, status or field), then Gateway, then Web | A listed route is missing from Domain or answers an unlisted status or field: Domain is behind the contract. The copies differ: a contract change merged on one side has not reached the other; update the copy that is behind |
+| `src/test/resources/contracts/release-layout.json` (`release-layout/v1`: the `live/<tag>/` layout, the keys of `manifest.json` and `publication.json`, and the keys and record fields of `account-catalog.json`) | Content (`docs/contracts/release-layout.json`) | `ReleaseLayoutContractTest`: builds a minimal release from the contract alone and loads it through `PublicationBootstrap` and `SnapshotValidator`; a release or catalog missing a required key is refused the way the readers refuse, an absent optional key is accepted, and an unknown record field is shown to be ignored | Content's registry check (`docs/contracts/registry.json`) compares every copy with the master on Content pull requests; this repo keeps its copy and tests it locally | Content first, then this copy and its test in the same Domain change | The release Content would publish cannot be loaded by Domain, or Domain's copy no longer says what Domain reads |
+
+Today the Domain API contract file's own header and the Gateway test describe it as the
+Gateway's consumer-driven list (consumer Gateway, provider Domain); the owner decision makes
+the producer its owner, and the change order above follows that decision. Content is the single
+registry of all copies; no workflow of this repository reads another repository.
+
 ## Author review decisions
 
 The local DLV-921 candidate records immutable, version-bound author review events. See [API, manifest configuration, migration and verification](docs/author-review-api.md) and [OpenAPI source](docs/author-review-openapi.json). Recording a decision does not update delivery status or Git.
