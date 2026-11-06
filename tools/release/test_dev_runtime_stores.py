@@ -20,13 +20,14 @@ class DevRuntimeStoreSettingsTests(unittest.TestCase):
             self.assertIn(parameter, self.template['Parameters'], parameter)
             self.assertEqual(self.environment[variable], {'Ref': parameter}, variable)
 
-    def test_dev_values_follow_the_approved_layout_and_the_live_tar_waits_for_the_cutover(self):
+    def test_dev_values_follow_the_approved_layout_and_serve_the_live_tar(self):
         self.assertEqual(self.config['ReviewsPrefix'], 'reviews/')
         self.assertEqual(self.config['SupportRequestsPrefix'], 'support-requests/')
         self.assertEqual(self.config['DeliveryPrefix'], 'delivery/')
         self.assertEqual(self.config['PlatformReviewsLegacyPrefix'], 'platform-reviews/')
-        self.assertEqual(self.config['PublicationLivePrefix'], '', 'empty until the AWS lane has copied the tar to release/live/')
-        self.assertEqual(self.template['Parameters']['PublicationLivePrefix']['Default'], '')
+        # 2026-11-06 late evening: the owner copied the live tar to release/live/ and IAM A is installed, so DEV serves the single tar.
+        self.assertEqual(self.config['PublicationLivePrefix'], 'release/live/')
+        self.assertEqual(self.template['Parameters']['PublicationLivePrefix']['Default'], '', 'the template default stays empty; the DEV value is the config')
         self.assertLessEqual(len((ROOT / 'deployment/dev/service.template.json').read_text()), 51200)
 
 

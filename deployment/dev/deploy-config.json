@@ -42,7 +42,7 @@
     "ScopePrefix": "lookahead-dev",
     "DatabaseAddress": "lookahead-dev-db.cxe4k4w40as7.us-east-2.rds.amazonaws.com",
     "PublicationBucket": "lookahead-assets-dev-use2",
-    "PublicationLivePrefix": "",
+    "PublicationLivePrefix": "release/live/",
     "DiscoveryServiceArn": "arn:aws:servicediscovery:us-east-2:509614632283:service/srv-kjp3rm76n4xr45ss",
     "PlatformReviewsBucket": "lookahead-assets-dev-use2",
     "PlatformReviewsPrefix": "platform-reviews/",
