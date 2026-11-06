@@ -41,7 +41,7 @@
     "optional": ["compatibleTemplateCatalogVersions", "compatibleTemplateRankingVersions"],
     "catalogVersion": "sha256:[a-f0-9]{64}",
     "versionList": {"maxEntries": 100, "maxLength": 256, "note": "algorithmVersions, rankingVersions and the two optional lists: distinct non-blank strings; a list may be empty"},
-    "pinPattern": "[A-Za-z0-9:._-]{1,128}",
+    "pinPattern": "[A-Za-z0-9:./_-]{1,128}",
     "pinNote": "The producer refuses an entry of the two optional lists outside pinPattern (at most 128 characters); Domain accepts up to maxLength.",
     "records": {"maxEntries": 50000},
     "record": {
