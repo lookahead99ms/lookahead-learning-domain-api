@@ -135,7 +135,7 @@ class DevTestSessionsTest {
         var accounts = mock(TestAccountsService.class, settings);
         var controller = new TestAccountsController(accounts, created, roster);
         var owner = new AccountPrincipal(UUID.randomUUID(), "owner", "Owner", true, true);
-        var status = new DevTestRoster.Status(35, 5, 0);
+        var status = new DevTestRoster.Status(27, 5, 0);
         when(roster.next(owner)).thenReturn(status);
         assertThat(controller.create(owner, new CreatedTestAccounts.Create(null, null, null, true)).data()).isEqualTo(status);
         verify(created, never()).create(any(), any());
@@ -146,7 +146,7 @@ class DevTestSessionsTest {
         when(created.allowance(owner)).thenReturn(new CreatedTestAccounts.Allowance(1, 0, 1));
         when(roster.statusFor(owner)).thenReturn(status);
         assertThat(controller.allowance(owner).data()).isEqualTo(new CreatedTestAccounts.Allowance(1, 0, 1, status, null));
-        assertThat(status.remaining()).isEqualTo(30);
+        assertThat(status.remaining()).isEqualTo(22);
         assertThat(new CreatedTestAccounts.Create(ACCOUNT, "x").toString()).isEqualTo("Create[redacted]");
         // DLV-969 (owner, 2026-11-04): {"restoreRoster": true, "confirm": "RESTORE"} on the same route goes to the roster's Restore.
         when(roster.restore(owner, new DevTestRoster.Restore("RESTORE"))).thenReturn(new DevTestRoster.Restored(2));

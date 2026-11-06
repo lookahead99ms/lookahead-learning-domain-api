@@ -43,9 +43,9 @@
     "DatabaseAddress": "lookahead-dev-db.cxe4k4w40as7.us-east-2.rds.amazonaws.com",
     "PublicationBucket": "lookahead-assets-dev-use2",
     "DiscoveryServiceArn": "arn:aws:servicediscovery:us-east-2:509614632283:service/srv-kjp3rm76n4xr45ss",
-    "PlatformReviewsBucket": "",
-    "PlatformReviewsPrefix": "",
-    "PlatformReviewsKmsKeyArn": "",
+    "PlatformReviewsBucket": "lookahead-assets-dev-use2",
+    "PlatformReviewsPrefix": "platform-reviews/",
+    "PlatformReviewsKmsKeyArn": "arn:aws:kms:us-east-2:509614632283:key/861f7cfd-5136-4ad9-b77c-0f9c37494d62",
     "TestAccountIdentity": "dev",
     "EmailEnabled": "false"
   },

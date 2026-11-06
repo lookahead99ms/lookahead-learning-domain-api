@@ -84,7 +84,7 @@ public class TestAccountsControllerTest {
     }
 
     @Test void theRosterFlagReachesTheRostersNextBatch() throws Exception {
-        when(roster.next(OWNER)).thenReturn(new DevTestRoster.Status(35, 5, 0, 4, 4));
+        when(roster.next(OWNER)).thenReturn(new DevTestRoster.Status(27, 5, 0, 4, 4));
         send("/api/v1/admin/test-accounts", "{\"roster\":true}")
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.ready").value(5)).andExpect(jsonPath("$.data.changed").value(4));
         verify(roster).next(OWNER);
@@ -105,9 +105,9 @@ public class TestAccountsControllerTest {
     /** The owner's roster card reads {@code roster.changed} from the allowance to grey out "Reset all". */
     @Test void theAllowanceCarriesTheRostersChangedCount() throws Exception {
         when(created.allowance(OWNER)).thenReturn(new CreatedTestAccounts.Allowance(10, 1, 9));
-        when(roster.statusFor(OWNER)).thenReturn(new DevTestRoster.Status(35, 35, 0, 0, 3));
+        when(roster.statusFor(OWNER)).thenReturn(new DevTestRoster.Status(27, 27, 0, 0, 3));
         mvc.perform(get("/api/v1/admin/test-accounts/allowance")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.roster.total").value(35)).andExpect(jsonPath("$.data.roster.ready").value(35))
+                .andExpect(jsonPath("$.data.roster.total").value(27)).andExpect(jsonPath("$.data.roster.ready").value(27))
                 .andExpect(jsonPath("$.data.roster.deleted").value(0)).andExpect(jsonPath("$.data.roster.withoutPlan").value(0))
                 .andExpect(jsonPath("$.data.roster.changed").value(3)).andExpect(jsonPath("$.data.remaining").value(9));
     }

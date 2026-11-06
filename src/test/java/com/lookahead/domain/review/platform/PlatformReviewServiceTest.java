@@ -60,6 +60,8 @@ class PlatformReviewServiceTest {
         assertThat(item.submitterRole()).isEqualTo("tester");
         when(access.permissions(learner)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(false, Set.of()));
         assertThat(reviews.viewer(learner).role()).isEqualTo("user");
+        // DLV-971: with no review role today the account keeps its earlier items but cannot add new ones.
+        assertFailure(() -> reviews.create(learner, UUID.randomUUID(), fields("Nothing new"), List.of()), 403);
         assertThat(reviews.update(learner, item.id(), UUID.randomUUID(), fields("Updated finding"), List.of(), List.of()).submitterRole()).isEqualTo("tester");
         when(access.permissions(first)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(false, Set.of("reviewer")));
         assertFailure(() -> reviews.item(first, item.id()), 404);

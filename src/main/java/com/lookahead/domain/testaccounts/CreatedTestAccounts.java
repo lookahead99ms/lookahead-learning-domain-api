@@ -75,12 +75,6 @@ public class CreatedTestAccounts {
     @org.springframework.beans.factory.annotation.Autowired
     public void configureAccounts(TestAccountsService accounts) { this.accounts=accounts; }
     private TestIdentity identity() { return policy.cloud() ? NO_SIGN_IN : local; }
-    /** The creator's place in {@link TestAccountTemplates#allows}; a dual-role actor gets the lower one, as for the allowance. */
-    private String role(AccountPrincipal actor) {
-        if (owner.allowed(actor)) return "owner";
-        var assignment=staff.forAccount(actor.accountId());
-        return TestAccountTemplates.role(false,assignment==null?Set.of():assignment.roles());
-    }
     private int limit(AccountPrincipal actor) {
         policy.requireEnabled();
         if (actor == null || !actor.isEnabled()) throw new AccountFailure(401,"AUTHENTICATION_REQUIRED","Sign in to continue.");
@@ -95,10 +89,9 @@ public class CreatedTestAccounts {
     public Allowance allowance(AccountPrincipal actor) {
         int cap=limit(actor);
         int used=jdbc.queryForObject("SELECT count(*) FROM test_account_creations WHERE creator_id=? AND state IN ('active','deleted')",Integer.class,actor.accountId());
-        String role=role(actor);
-        // DLV-969 (owner, 2026-11-04): learner scenarios only, for every role; staff test accounts come from the roster.
-        var scenarios=TestAccountTemplates.creatable().stream().filter(t->TestAccountTemplates.allows(role,Set.copyOf(t.roles()))).toList();
-        return new Allowance(cap,used,cap==Integer.MAX_VALUE?Integer.MAX_VALUE:Math.max(0,cap-used),null,scenarios);
+        // DLV-969 (owner, 2026-11-04): learner scenarios only, for every role. DLV-971 (owner, 2026-11-06): there are no
+        // other scenarios; staff test accounts no longer exist anywhere.
+        return new Allowance(cap,used,cap==Integer.MAX_VALUE?Integer.MAX_VALUE:Math.max(0,cap-used),null,TestAccountTemplates.creatable());
     }
     public Created create(AccountPrincipal actor, Create request) {
         try {
@@ -121,15 +114,9 @@ public class CreatedTestAccounts {
                 || request.password().getBytes(StandardCharsets.UTF_8).length>72))
             throw new AccountFailure(422,"INVALID_TEST_ACCOUNT",cloud?"Provide a request key.":"Provide a request key and a password of 15 to 72 UTF-8 bytes.");
         String scenario=request.scenario();
-        if (scenario!=null) {
-            if (!TestAccountTemplates.known(scenario)) throw new AccountFailure(422,"UNKNOWN_SCENARIO","Choose one of the listed scenarios.");
-            limit(actor);
-            // DLV-969 (owner, 2026-11-04): only learner test accounts are created, whoever asks, the owner included.
-            if (!TestAccountTemplates.creatable(scenario))
-                throw new AccountFailure(403,"TEST_ACCOUNT_LEARNER_ONLY","Only learner test accounts can be created. Staff test accounts come from the roster.");
-            if (!TestAccountTemplates.allows(role(actor),TestAccountTemplates.roles(scenario)))
-                throw new AccountFailure(403,"SCENARIO_FORBIDDEN","Your role cannot create a test account with this role.");
-        }
+        // DLV-971 (owner, 2026-11-06): every known scenario is a learner scenario; anything else (the former co-author
+        // and admin scenarios included) is simply unknown.
+        if (scenario!=null && !TestAccountTemplates.known(scenario)) throw new AccountFailure(422,"UNKNOWN_SCENARIO","Choose one of the listed scenarios.");
         var identity=identity();
         var reservation=transactions.execute(status -> reserve(actor,request.key()));
         if (reservation==null) throw new IllegalStateException("Reservation did not complete");

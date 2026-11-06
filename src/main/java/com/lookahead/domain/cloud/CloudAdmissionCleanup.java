@@ -41,7 +41,8 @@ public final class CloudAdmissionCleanup {
                 Events.success(Events.EVENT,"admission.cleanup").addKeyValue("count",0).log("Admission cleanup skipped: another task is running it");
                 return 0;
             }
-            var expired=jdbc.query("SELECT account_id,issuer,subject FROM cloud_accounts WHERE NOT admitted AND requested_at < clock_timestamp() - make_interval(hours => ?) FOR UPDATE SKIP LOCKED",
+            // DLV-971: a waiting row the owner disabled keeps its state and its block; only untouched requests expire.
+            var expired=jdbc.query("SELECT account_id,issuer,subject FROM cloud_accounts WHERE NOT admitted AND requested_at < clock_timestamp() - make_interval(hours => ?) AND NOT EXISTS (SELECT 1 FROM cloud_account_states s WHERE s.account_id=cloud_accounts.account_id) FOR UPDATE SKIP LOCKED",
                 (r,i)->new Waiting(r.getObject("account_id",UUID.class),r.getString("issuer"),r.getString("subject")),(int)WAITING_EXPIRY.toHours());
             for(Waiting row:expired){
                 jdbc.update("INSERT INTO cloud_admission_events(id,account_id,issuer,subject,actor_id,action,roles) VALUES(?,?,?,?,NULL,'expire','[]'::jsonb)",UUID.randomUUID(),row.accountId,row.issuer,row.subject);
