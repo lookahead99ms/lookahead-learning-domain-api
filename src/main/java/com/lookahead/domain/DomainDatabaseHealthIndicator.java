@@ -48,6 +48,8 @@ public class DomainDatabaseHealthIndicator implements HealthIndicator {
      * Since V19 (DLV-969 S36, run before this release) it records, links and refreshes the provider identities of an
      * account (cloud_identities) and removes those of an expired waiting account.
      * Since V20 (DLV-969 S36, run before this release) it keeps the single-use merge links (cloud_merge_tokens).
+     * Since V21 (DLV-971, run before this release) the test roster holds learners only: the eight staff test accounts
+     * are retired in the database, so the lists and the test-account picker agree with the roster this release serves.
      */
     public static final String CLOUD_SQL = """
         SELECT EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='4' AND success)
@@ -55,6 +57,7 @@ public class DomainDatabaseHealthIndicator implements HealthIndicator {
           AND EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='18' AND success)
           AND EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='19' AND success)
           AND EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='20' AND success)
+          AND EXISTS(SELECT 1 FROM public.flyway_schema_history WHERE version='21' AND success)
           AND has_table_privilege(current_user,'public.cloud_accounts','SELECT')
           AND has_table_privilege(current_user,'public.cloud_accounts','INSERT')
           AND has_table_privilege(current_user,'public.cloud_accounts','DELETE')
@@ -90,7 +93,7 @@ public class DomainDatabaseHealthIndicator implements HealthIndicator {
             WHERE NOT has_table_privilege(current_user,t.name,p.privilege))
         """;
     /** Migrations each check needs; the diagnosis names the ones missing. */
-    static final List<String> BASE_MIGRATIONS = List.of("2"), CLOUD_MIGRATIONS = List.of("4", "17", "18", "19", "20");
+    static final List<String> BASE_MIGRATIONS = List.of("2"), CLOUD_MIGRATIONS = List.of("4", "17", "18", "19", "20", "21");
     static final List<String> BASE_TABLES = List.of("public.author_review_events", "public." + LegacyStorageNames.SUBJECTS_TABLE,
             "public.account_grants", "public.plans", "public.plan_versions", "public.plan_activity", "public.mutation_receipts",
             "public.support_receipts");

@@ -270,7 +270,7 @@ class CloudSignInRegistryDatabaseTest {
         // This suite builds the tables in its own schema; the readiness SQL names public, as the deployed database does.
         jdbc.execute("CREATE TABLE IF NOT EXISTS flyway_schema_history(version text, success boolean)");
         jdbc.execute("GRANT SELECT ON flyway_schema_history TO lookahead_platform_app");
-        jdbc.update("INSERT INTO flyway_schema_history VALUES ('4',true),('17',true),('18',true),('19',true),('20',true)");
+        jdbc.update("INSERT INTO flyway_schema_history VALUES ('4',true),('17',true),('18',true),('19',true),('20',true),('21',true)");
         String sql=com.lookahead.domain.DomainDatabaseHealthIndicator.CLOUD_SQL.replace("public.",schema+".");
         java.util.function.Supplier<Boolean> asApp=()->tx.execute(status->{jdbc.execute("SET LOCAL ROLE lookahead_platform_app");
             return jdbc.queryForObject(sql,Boolean.class);});
