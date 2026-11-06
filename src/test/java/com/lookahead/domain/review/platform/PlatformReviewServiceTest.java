@@ -68,10 +68,124 @@ class PlatformReviewServiceTest {
         assertFailure(() -> reviews.triage(first, item.id(), "accepted", ""), 403);
         when(access.permissions(second)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(false, Set.of("admin")));
         assertThat(reviews.list(second, null).items()).extracting(Summary::id).containsExactly(item.id());
-        // DLV-971 (owner, 2026-11-06): an admin reads every item but only the owner sets a status.
+        // DLV-971 (owner, 2026-11-06): an admin reads every item but sets the status of a learner's request only.
         assertFailure(() -> reviews.triage(second, item.id(), "accepted", "Investigating"), 403);
+        var request = reviews.recordRequest(learner, "question", "How do plans renew?", "Asked on the Support page", List.of(), UUID.randomUUID().toString());
+        assertThat(request.submitterRole()).isEqualTo("user");
+        assertThat(reviews.triage(second, request.id(), "done", "Answered by email").status()).isEqualTo("done");
         when(access.permissions(owner)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(true, Set.of()));
         assertThat(reviews.triage(owner, item.id(), "accepted", "Investigating").submitterRole()).isEqualTo("tester");
+        assertThat(reviews.triage(owner, request.id(), "declined", "").status()).isEqualTo("declined");
+    }
+
+    /**
+     * DLV-971 (owner, 2026-11-06): a learner's support request is recorded next to the reviews with its kind, type and
+     * receipt reference; the owner and admins see it, a reviewer never does, and the same reference is recorded once.
+     */
+    @Test void aSupportRequestIsRecordedWithItsKindForTheOwnerAndAdmins() throws Exception {
+        var access = mock(com.lookahead.domain.access.StaffAccessService.class);
+        reviews.configureStaffAccess(access);
+        when(access.permissions(learner)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(false, Set.of()));
+        when(access.permissions(first)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(false, Set.of("reviewer")));
+        when(access.permissions(second)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(false, Set.of("admin")));
+        when(access.permissions(owner)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(true, Set.of()));
+        String reference = UUID.randomUUID().toString();
+        Item request;
+        try (var log = com.lookahead.domain.LogCapture.start()) {
+            request = reviews.recordRequest(learner, "problem", "  Search page hangs  ", "Private steps", List.of(new Upload("screenshot-1.png", "image/png", png())), reference);
+            var line = log.only("platform-review.request");
+            assertThat(line.getFormattedMessage()).isEqualTo("Support request " + reference + " recorded as Team Reviews item " + request.id()
+                    + " for account " + learner.accountId() + ": problem with 1 image(s)");
+            assertThat(com.lookahead.domain.LogCapture.keys(line)).containsEntry("support.reference", reference).containsEntry("request.type", "problem");
+            log.containsNone("Search page hangs", "Private steps", "Learner");
+        }
+        assertThat(request.kind()).isEqualTo("request");
+        assertThat(request.requestType()).isEqualTo("problem");
+        assertThat(request.reference()).isEqualTo(reference);
+        assertThat(request.category()).isEqualTo("problem");
+        assertThat(request.page()).isEqualTo("Support");
+        assertThat(request.pageUrl()).isNull();
+        assertThat(request.title()).isEqualTo("Search page hangs");
+        assertThat(request.details()).isEqualTo("Private steps");
+        assertThat(request.priority()).isEqualTo("medium");
+        assertThat(request.status()).isEqualTo("new");
+        assertThat(request.submitterRole()).isEqualTo("user");
+        assertThat(request.reviewerName()).isEqualTo("Learner");
+        assertThat(request.attachments()).extracting(Attachment::contentType).containsExactly("image/png");
+        // Feedback and questions are ideas for the category list; the type says what they are.
+        assertThat(reviews.recordRequest(learner, "feedback", "Nice", "Thanks", List.of(), UUID.randomUUID().toString()).category()).isEqualTo("idea");
+        assertThat(reviews.recordRequest(learner, "question", "Why", "Because", List.of(), UUID.randomUUID().toString()).category()).isEqualTo("idea");
+        // The same reference is recorded once, whatever the retry carries.
+        assertThat(reviews.recordRequest(learner, "problem", "Retry", "Again", List.of(), reference).id()).isEqualTo(request.id());
+        assertThat(reviews.list(owner, null).items()).hasSize(3);
+        var review = create(first, "A review");
+
+        var summary = reviews.list(owner, null).items().stream().filter(i -> i.id().equals(request.id())).findFirst().orElseThrow();
+        assertThat(summary.kind()).isEqualTo("request");
+        assertThat(summary.requestType()).isEqualTo("problem");
+        assertThat(summary.reference()).isEqualTo(reference);
+        assertThat(summary.attachmentCount()).isEqualTo(1);
+        assertThat(reviews.list(owner, null).items().stream().filter(i -> i.id().equals(review.id())).findFirst().orElseThrow())
+                .extracting(Summary::kind, Summary::requestType, Summary::reference).containsExactly("review", null, null);
+        assertThat(reviews.item(second, request.id()).kind()).isEqualTo("request");
+        assertThat(reviews.attachment(second, request.id(), request.attachments().getFirst().id()).contentType()).isEqualTo("image/png");
+        // A reviewer sees reviews they wrote, never a request; the learner has no review access at all.
+        assertThat(reviews.list(first, null).items()).extracting(Summary::id).containsExactly(review.id());
+        assertFailure(() -> reviews.item(first, request.id()), 404);
+        assertThat(reviews.list(learner, null).items()).isEmpty();
+        assertFailure(() -> reviews.item(learner, request.id()), 404);
+
+        // Triage: the owner any item; an admin a request only; a reviewer nothing.
+        assertFailure(() -> reviews.triage(second, review.id(), "accepted", ""), 403);
+        assertFailure(() -> reviews.triage(first, request.id(), "accepted", ""), 403);
+        assertThat(reviews.triage(second, request.id(), "accepted", "Looking into it").ownerNote()).isEqualTo("Looking into it");
+        assertThat(reviews.triage(owner, review.id(), "planned", "").status()).isEqualTo("planned");
+        assertThat(reviews.triage(owner, request.id(), "done", "").status()).isEqualTo("done");
+        // A request is never edited through the review API; the owner alone removes it (an admin or its writer cannot).
+        assertFailure(() -> reviews.update(learner, request.id(), UUID.randomUUID(), fields("Edited"), List.of(), List.of()), 404);
+        assertFailure(() -> reviews.update(owner, request.id(), UUID.randomUUID(), fields("Edited"), List.of(), List.of()), 404);
+        assertFailure(() -> reviews.delete(second, request.id()), 404);
+        assertFailure(() -> reviews.delete(learner, request.id()), 404);
+        reviews.delete(owner, request.id());
+        assertFailure(() -> reviews.item(owner, request.id()), 404);
+        assertThat(Files.exists(root.resolve("review-images").resolve(request.id()))).isFalse();
+        assertFailure(() -> reviews.recordRequest(learner, "complaint", "x", "y", List.of(), UUID.randomUUID().toString()), 422);
+        assertFailure(() -> reviews.recordRequest(learner, "problem", "x", "y", List.of(), " "), 422);
+        assertFailure(() -> reviews.recordRequest(null, "problem", "x", "y", List.of(), "ref"), 401);
+    }
+
+    /** Without staff access (the legacy reviewer list) a request still records; the owner's own request says so. */
+    @Test void withoutStaffAccessARequestRecordsTheRoleFromTheAuthorCapability() {
+        var reference = UUID.randomUUID().toString();
+        assertThat(reviews.recordRequest(learner, "feedback", "Idea", "Text", List.of(), reference).submitterRole()).isEqualTo("user");
+        assertThat(reviews.recordRequest(owner, "feedback", "Idea", "Text", List.of(), UUID.randomUUID().toString()).submitterRole()).isEqualTo("owner");
+        assertThat(reviews.list(owner, null).items()).extracting(Summary::kind).containsExactly("request", "request");
+        assertThat(reviews.list(first, null).items()).isEmpty();
+        try (var log = com.lookahead.domain.LogCapture.start()) {
+            reviews.triage(owner, reviews.list(owner, null).items().getFirst().id(), "done", "");
+            assertThat(log.only("platform-review.status").getFormattedMessage()).endsWith("status changed by the owner: new -> done");
+        }
+    }
+
+    /** A day file written before DLV-971 has no kind, requestType or reference: it reads as reviews and keeps every field. */
+    @Test void aDayFileWithoutTheKindFieldsReadsAsReviews() throws Exception {
+        var sent = create(first, "Old item");
+        Path day = root.resolve("reviews/2026-10-12.json");
+        String file = Files.readString(day);
+        assertThat(file).contains("\"kind\" : \"review\"", "\"requestType\" : null", "\"reference\" : null");
+        var mapper = JsonMapper.builder().build();
+        var tree = mapper.readTree(file);
+        for (var node : tree.path("items")) ((tools.jackson.databind.node.ObjectNode) node).remove(List.of("kind", "requestType", "reference"));
+        Files.writeString(day, mapper.writeValueAsString(tree));
+        assertThat(Files.readString(day)).doesNotContain("\"kind\"", "\"requestType\"", "\"reference\"");
+        var item = reviews.item(first, sent.id());
+        assertThat(item.kind()).isEqualTo("review");
+        assertThat(item.requestType()).isNull();
+        assertThat(item.reference()).isNull();
+        assertThat(item.title()).isEqualTo("Old item");
+        assertThat(reviews.list(owner, null).items().getFirst().kind()).isEqualTo("review");
+        reviews.triage(owner, sent.id(), "accepted", "");
+        assertThat(Files.readString(day)).contains("\"kind\" : \"review\"");
     }
 
     /** DLV-969 (owner decision 2026-11-03): an admin sees who wrote an item as a role label; the owner sees the name. */

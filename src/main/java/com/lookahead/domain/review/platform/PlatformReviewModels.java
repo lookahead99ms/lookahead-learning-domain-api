@@ -12,6 +12,13 @@ public final class PlatformReviewModels {
     public static final Set<String> CATEGORIES = Set.of("problem", "change", "idea", "content");
     public static final Set<String> PRIORITIES = Set.of("high", "medium", "low");
     public static final Set<String> STATUSES = Set.of("new", "accepted", "planned", "done", "declined");
+    /**
+     * DLV-971 (owner, 2026-11-06): an item is a review written on Write Review ({@code kind} "review") or a learner's
+     * support request recorded next to the reviews ({@code kind} "request", {@code requestType} the support form's type,
+     * {@code reference} the support receipt reference). Day files written before this read as reviews.
+     */
+    public static final String KIND_REVIEW = "review", KIND_REQUEST = "request";
+    public static final Set<String> REQUEST_TYPES = Set.of("problem", "feedback", "question");
     /** Mirrors `reviewedPages` in the web app's platform-review.model.ts. */
     public static final Set<String> PAGES = Set.of("Home", "Learn Catalog", "Grow Catalog", "Blaze Catalog",
             "Course Overview", "Lesson Reader", "Question & Answer Reader", "Hands-on DSA Catalog",
@@ -30,7 +37,31 @@ public final class PlatformReviewModels {
     public record StoredItem(String id, UUID reviewerAccountId, String reviewerId, String reviewerName,
                              String category, String page, String pageUrl, String title, String details,
                              String priority, List<StoredAttachment> attachments, String status, String ownerNote,
-                             String createdAt, String updatedAt, UUID createKey, String createHash, UUID lastWriteKey, String submitterRole) {}
+                             String createdAt, String updatedAt, UUID createKey, String createHash, UUID lastWriteKey, String submitterRole,
+                             String kind, String requestType, String reference) {
+        public boolean request() { return KIND_REQUEST.equals(kind); }
+        /** The same item with the fields a reviewer edits replaced. */
+        public StoredItem withFields(Fields fields, List<StoredAttachment> attachments, UUID lastWriteKey, String updatedAt) {
+            return new StoredItem(id, reviewerAccountId, reviewerId, reviewerName, fields.category(), fields.page(), fields.pageUrl(),
+                    fields.title(), fields.details(), fields.priority(), attachments, status, ownerNote, createdAt, updatedAt,
+                    createKey, createHash, lastWriteKey, submitterRole, kind, requestType, reference);
+        }
+        public StoredItem withStatus(String status, String ownerNote, String updatedAt) {
+            return new StoredItem(id, reviewerAccountId, reviewerId, reviewerName, category, page, pageUrl, title, details, priority,
+                    attachments, status, ownerNote, createdAt, updatedAt, createKey, createHash, lastWriteKey, submitterRole, kind, requestType, reference);
+        }
+        public StoredItem withReviewerName(String reviewerName) {
+            return new StoredItem(id, reviewerAccountId, reviewerId, reviewerName, category, page, pageUrl, title, details, priority,
+                    attachments, status, ownerNote, createdAt, updatedAt, createKey, createHash, lastWriteKey, submitterRole, kind, requestType, reference);
+        }
+        /** Read-time repair of a day file saved by an older version: the renamed page, the missing kind. */
+        public StoredItem repaired() {
+            if (!LEGACY_BLAZE_PAGE.equals(page) && kind != null) return this;
+            return new StoredItem(id, reviewerAccountId, reviewerId, reviewerName, category, currentPage(page), pageUrl, title, details, priority,
+                    attachments, status, ownerNote, createdAt, updatedAt, createKey, createHash, lastWriteKey, submitterRole,
+                    kind == null ? KIND_REVIEW : kind, requestType, reference);
+        }
+    }
     public record DayFile(String schema, String day, List<StoredItem> items) {}
 
     // API
@@ -38,10 +69,12 @@ public final class PlatformReviewModels {
     public record Attachment(String id, String name, String contentType, long size) {}
     public record Item(String id, String reviewerId, String reviewerName, String category, String page, String pageUrl,
                        String title, String details, String priority, List<Attachment> attachments, String status,
-                       String ownerNote, String createdAt, String updatedAt, String submitterRole) {}
+                       String ownerNote, String createdAt, String updatedAt, String submitterRole,
+                       String kind, String requestType, String reference) {}
     public record Summary(String id, String reviewerId, String reviewerName, String category, String page,
                           String title, String priority, String status, int attachmentCount, boolean ownerNote,
-                          String createdAt, String updatedAt, String submitterRole) {}
+                          String createdAt, String updatedAt, String submitterRole,
+                          String kind, String requestType, String reference) {}
     public record Page(List<Summary> items, String nextBefore) {}
 
     // Requests

@@ -342,6 +342,30 @@ Logs (`lookahead.payment`, ids, plan code and cents only): `purchase.approval-re
 (self) and another admin (label only), the picker marker, the reserved Reset, `canReset` per viewer and a declined
 request.
 
+## Team Reviews and support requests (DLV-971, owner 2026-11-06)
+
+A learner's support request (`POST /api/v1/support`: Report a problem, Share feedback, Ask a question) is
+recorded in the platform review store next to the review items before it is emailed, so the owner and admins
+see it under Team Reviews. Every review item answers `kind` (`"review"` or `"request"`), `requestType`
+(`"problem"` | `"feedback"` | `"question"`, `null` on a review) and `reference` (the support receipt
+reference, `null` on a review). The request keeps the learner's account as its writer with `submitterRole`
+`user`; the learner never lists Team Reviews, and a reviewer lists only the reviews they wrote.
+
+| Acting role | Reads | Sets a status (`PUT .../triage`) | Deletes |
+| --- | --- | --- | --- |
+| owner | every item | every item | own reviews while New; any request |
+| admin | every item | requests only; a review answers `403 PLATFORM_REVIEW_ACCESS_DENIED` | own reviews while New |
+| reviewer, co-author, tester | the reviews they wrote | nothing (`403`) | own reviews while New |
+| learner (`user`) | nothing | nothing | nothing |
+
+The receipt row in `support_receipts` is unchanged. Statuses answered to the learner: `accepted` (email sent),
+`recorded` (recorded for Team Reviews, mail is not configured: `EMAIL_NOT_SENT` with the missing setting,
+answered 202) and `unconfirmed` (email not confirmed, 503). A review store that is unconfigured or fails logs
+`support.record` / `REQUEST_NOT_RECORDED` and the email still goes; with neither the store nor mail the
+request key is released and the learner gets `503 SUPPORT_UNAVAILABLE` to try again. Day files written before
+this read every item as a review. Tests: `PlatformReviewServiceTest`, `PlatformReviewControllerTest`,
+`SupportFeedbackServiceTest`, `SupportControllerTest`, `SupportReceiptRepositoryDatabaseTest`.
+
 ## Configuration and validation
 
 Cloud requires `LOOKAHEAD_COGNITO_ISSUER`, `AWS_REGION`,

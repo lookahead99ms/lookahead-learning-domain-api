@@ -83,7 +83,7 @@ public class PlatformReviewService {
             read++;
             var items = new ArrayList<>(load(day).items());
             Collections.reverse(items);
-            for (StoredItem item : items) if (owner || mine(item, actor)) page.add(summary(shown(actor, item)));
+            for (StoredItem item : items) if (owner || readable(item, actor)) page.add(summary(shown(actor, item)));
         }
         return new Page(page, null);
     }
@@ -125,7 +125,8 @@ public class PlatformReviewService {
         String now = clock.instant().toString();
         var item = new StoredItem(id, actor.accountId(), reviewerId(actor.accountId()), displayName(actor), clean.category(),
                 clean.page(), clean.pageUrl(), clean.title(), clean.details(), clean.priority(), attachments, "new", "",
-                now, now, key, hash, key, access == null ? (author.allowed(actor) ? "owner" : "reviewer") : access.permissions(actor).feedbackRole());
+                now, now, key, hash, key, access == null ? (author.allowed(actor) ? "owner" : "reviewer") : access.permissions(actor).feedbackRole(),
+                KIND_REVIEW, null, null);
         try {
             change(today, items -> {
                 var prior = items.stream().filter(i -> key.equals(i.createKey()) && mine(i, actor)).findFirst();
@@ -178,10 +179,7 @@ public class PlatformReviewService {
                 attachments.addAll(added);
                 removed.clear();
                 current.attachments().stream().filter(a -> !kept.contains(a)).forEach(removed::add);
-                var updated = new StoredItem(id, current.reviewerAccountId(), current.reviewerId(), current.reviewerName(),
-                        clean.category(), clean.page(), clean.pageUrl(), clean.title(), clean.details(), clean.priority(),
-                        List.copyOf(attachments), current.status(), current.ownerNote(), current.createdAt(),
-                        clock.instant().toString(), current.createKey(), current.createHash(), key, current.submitterRole());
+                var updated = current.withFields(clean, List.copyOf(attachments), key, clock.instant().toString());
                 next.set(at, updated);
                 return new Change<>(next, updated, true);
             });
@@ -198,13 +196,13 @@ public class PlatformReviewService {
 
     public void delete(AccountPrincipal actor, String id) {
         role(actor);
-        var found = own(actor, id);
-        editable(found.item());
+        boolean owner = isOwner(actor);
+        var found = locate(id);
+        deletable(found.item(), actor, owner);
         var removed = change(found.day(), items -> {
             var next = new ArrayList<>(items);
             StoredItem current = next.remove(indexOf(next, id));
-            if (!mine(current, actor)) throw notFound();
-            editable(current);
+            deletable(current, actor, owner);
             return new Change<>(next, current, true);
         });
         discard(removed.attachments());
@@ -213,34 +211,81 @@ public class PlatformReviewService {
     }
 
     public Item triage(AccountPrincipal actor, String id, String status, String note) {
-        // DLV-971 (owner, 2026-11-06): only the owner sets a status or leaves a note; admins read every item but never triage.
-        if (!role(actor) || (access != null && !access.permissions(actor).manageAccess())) throw denied();
+        // DLV-971 (owner, 2026-11-06): the owner sets the status of any item; an admin only of a learner's support request.
+        if (!role(actor)) throw denied();
+        boolean owner = isOwner(actor);
         if (status == null || !STATUSES.contains(status)) throw invalid("Choose a status.");
         String ownerNote = text(note == null ? "" : note, NOTE_LENGTH, true, "Keep the note within 2000 characters.").strip();
         var found = visible(actor, id);
+        if (!owner && !found.item().request()) throw denied();
         String[] before = {null};
         var triaged = view(shown(actor, change(found.day(), items -> {
             var next = new ArrayList<>(items);
             int at = indexOf(next, id);
             StoredItem c = next.get(at);
+            if (!owner && !c.request()) throw denied();
             before[0] = c.status();
-            var updated = new StoredItem(c.id(), c.reviewerAccountId(), c.reviewerId(), c.reviewerName(), c.category(), c.page(),
-                    c.pageUrl(), c.title(), c.details(), c.priority(), c.attachments(), status, ownerNote, c.createdAt(),
-                    clock.instant().toString(), c.createKey(), c.createHash(), c.lastWriteKey(), c.submitterRole());
+            var updated = c.withStatus(status, ownerNote, clock.instant().toString());
             next.set(at, updated);
             return new Change<>(next, updated, true);
         })));
         Events.success(Events.EVENT, "platform-review.status").addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", id)
+                .addKeyValue("actor.role", owner ? "owner" : "admin").addKeyValue("review.kind", found.item().kind())
                 .addKeyValue("review.status.before", before[0]).addKeyValue("review.status", status)
-                .log("Platform review item {} status changed by the owner: {} -> {}", id, before[0], status);
+                .log("Platform review item {} status changed by {}: {} -> {}", id, owner ? "the owner" : "an admin", before[0], status);
         return triaged;
+    }
+
+    /**
+     * DLV-971 (owner, 2026-11-06): a learner's support request (Report a problem, Share feedback, Ask a question) is
+     * recorded next to the reviews so the owner and admins see it under Team Reviews with its kind. The learner needs
+     * no review role. The item is keyed by the support receipt {@code reference}: the same request is never recorded
+     * twice. The review category is "problem" for a problem and "idea" for feedback or a question; {@code requestType}
+     * carries the form's own type. The reply email is not stored; the receipt row and the email carry it.
+     */
+    public Item recordRequest(AccountPrincipal actor, String type, String subject, String message, List<Upload> uploads, String reference) {
+        if (actor == null || !actor.isEnabled()) throw new AccountFailure(401, "AUTHENTICATION_REQUIRED", "Sign in to continue");
+        if (type == null || !REQUEST_TYPES.contains(type) || reference == null || reference.isBlank()
+                || subject == null || subject.isBlank() || message == null || message.isBlank())
+            throw invalid("The request is incomplete.");
+        var images = images(uploads, List.of());
+        LocalDate today = LocalDate.now(clock.withZone(ZoneOffset.UTC));
+        var replay = findRequest(reference, today);
+        if (replay.isPresent()) return view(replay.get());
+        String id = UUID.randomUUID().toString();
+        var attachments = store(id, images);
+        String now = clock.instant().toString();
+        var item = new StoredItem(id, actor.accountId(), reviewerId(actor.accountId()), displayName(actor),
+                "problem".equals(type) ? "problem" : "idea", "Support", null, subject.strip(), message, "medium", attachments,
+                "new", "", now, now, null, null, null,
+                access == null ? (author.allowed(actor) ? "owner" : "user") : access.permissions(actor).feedbackRole(),
+                KIND_REQUEST, type, reference);
+        StoredItem saved;
+        try {
+            saved = change(today, items -> {
+                var prior = items.stream().filter(i -> reference.equals(i.reference())).findFirst();
+                if (prior.isPresent()) return new Change<>(items, prior.get(), false);
+                var next = new ArrayList<>(items);
+                next.add(item);
+                return new Change<>(next, item, true);
+            });
+        } catch (RuntimeException failure) {
+            discard(attachments);
+            throw failure;
+        }
+        if (saved != item) discard(attachments); // another writer recorded this reference first
+        Events.success(Events.EVENT, "platform-review.request").addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", saved.id())
+                .addKeyValue("support.reference", reference).addKeyValue("request.type", type).addKeyValue("count", saved.attachments().size())
+                .log("Support request {} recorded as Team Reviews item {} for account {}: {} with {} image(s)",
+                        reference, saved.id(), actor.accountId(), type, saved.attachments().size());
+        return view(saved);
     }
 
     public record Receipt(Item item, boolean replayed) {}
 
     // ---- Access
 
-    /** True for the owner, false for a reviewer; anyone else is denied. */
+    /** True for the owner or an admin (they read every item), false for a reviewer; anyone else is denied. */
     private boolean role(AccountPrincipal actor) {
         if (actor == null || !actor.isEnabled()) throw new AccountFailure(401, "AUTHENTICATION_REQUIRED", "Sign in to continue");
         if (access != null) return access.permissions(actor).triageFeedback();
@@ -249,22 +294,39 @@ public class PlatformReviewService {
         throw denied();
     }
 
+    /** The owner alone, never an admin: {@code manageAccess} with staff access, the author capability without it. */
+    private boolean isOwner(AccountPrincipal actor) {
+        return access != null ? access.permissions(actor).manageAccess() : author.allowed(actor);
+    }
+
     private Located visible(AccountPrincipal actor, String id) {
         boolean owner = role(actor);
         var found = locate(id);
-        if (!owner && !mine(found.item(), actor)) throw notFound();
+        if (!owner && !readable(found.item(), actor)) throw notFound();
         return found;
     }
 
-    /** Only the account that wrote an item may edit or delete it, the owner included. */
+    /** Only the account that wrote a review may edit it, the owner included; a request is never edited here. */
     private Located own(AccountPrincipal actor, String id) {
         var found = locate(id);
-        if (!mine(found.item(), actor)) throw notFound();
+        if (!readable(found.item(), actor)) throw notFound();
         return found;
+    }
+
+    /** DLV-971: the owner removes a learner's request; a review is removed by its writer while it is New. */
+    private static void deletable(StoredItem item, AccountPrincipal actor, boolean owner) {
+        if (item.request()) { if (!owner) throw notFound(); return; }
+        if (!mine(item, actor)) throw notFound();
+        editable(item);
     }
 
     private static boolean mine(StoredItem item, AccountPrincipal actor) {
         return item.reviewerAccountId().equals(actor.accountId());
+    }
+
+    /** A reviewer reads the reviews they wrote; requests are shown to the owner and admins only. */
+    private static boolean readable(StoredItem item, AccountPrincipal actor) {
+        return !item.request() && mine(item, actor);
     }
 
     private static void editable(StoredItem item) {
@@ -283,6 +345,13 @@ public class PlatformReviewService {
             for (StoredItem item : load(day).items())
                 if (item.id().equals(id)) return new Located(day, item);
         throw notFound();
+    }
+
+    private Optional<StoredItem> findRequest(String reference, LocalDate today) {
+        for (LocalDate day : List.of(today, today.minusDays(1)))
+            for (StoredItem item : load(day).items())
+                if (reference.equals(item.reference())) return Optional.of(item);
+        return Optional.empty();
     }
 
     private Optional<StoredItem> findCreate(AccountPrincipal actor, UUID key, LocalDate today) {
@@ -349,12 +418,9 @@ public class PlatformReviewService {
                 damaged("DAY_FILE_SCHEMA", file.day(), "it is not a " + DAY_SCHEMA + " file with items", null);
                 throw unavailable();
             }
-            // DLV-931: items saved before the rename read as "Blaze Catalog"; the next write of the day stores it.
-            if (file.items().stream().noneMatch(i -> LEGACY_BLAZE_PAGE.equals(i.page()))) return file;
-            return new DayFile(file.schema(), file.day(), file.items().stream().map(i -> !LEGACY_BLAZE_PAGE.equals(i.page()) ? i
-                    : new StoredItem(i.id(), i.reviewerAccountId(), i.reviewerId(), i.reviewerName(), i.category(),
-                            currentPage(i.page()), i.pageUrl(), i.title(), i.details(), i.priority(), i.attachments(), i.status(),
-                            i.ownerNote(), i.createdAt(), i.updatedAt(), i.createKey(), i.createHash(), i.lastWriteKey(), i.submitterRole())).toList());
+            // DLV-931: items saved before the rename read as "Blaze Catalog"; DLV-971: items saved without a kind read as
+            // reviews. Files are never rewritten for this; the next write of the day stores the repaired values.
+            return new DayFile(file.schema(), file.day(), file.items().stream().map(StoredItem::repaired).toList());
         } catch (JacksonException broken) {
             damaged("DAY_FILE_UNREADABLE", null, "it is not valid JSON for a review day file", broken);
             throw unavailable();
@@ -486,20 +552,22 @@ public class PlatformReviewService {
      */
     private StoredItem shown(AccountPrincipal viewer, StoredItem i) {
         if (aliases == null || mine(i, viewer) || aliases.seesIdentities(viewer)) return i;
-        return new StoredItem(i.id(), i.reviewerAccountId(), i.reviewerId(), aliases.label(i.reviewerAccountId()), i.category(),
-                i.page(), i.pageUrl(), i.title(), i.details(), i.priority(), i.attachments(), i.status(), i.ownerNote(),
-                i.createdAt(), i.updatedAt(), i.createKey(), i.createHash(), i.lastWriteKey(), i.submitterRole());
+        return i.withReviewerName(aliases.label(i.reviewerAccountId()));
     }
 
     private static Item view(StoredItem i) {
         return new Item(i.id(), i.reviewerId(), i.reviewerName(), i.category(), i.page(), i.pageUrl(), i.title(), i.details(),
                 i.priority(), i.attachments().stream().map(a -> new Attachment(a.id(), a.name(), a.contentType(), a.size())).toList(),
-                i.status(), i.ownerNote(), i.createdAt(), i.updatedAt(), submitterRole(i));
+                i.status(), i.ownerNote(), i.createdAt(), i.updatedAt(), submitterRole(i), kind(i), i.requestType(), i.reference());
+    }
+
+    private static String kind(StoredItem item) {
+        return item.kind() == null ? KIND_REVIEW : item.kind();
     }
 
     private static Summary summary(StoredItem i) {
         return new Summary(i.id(), i.reviewerId(), i.reviewerName(), i.category(), i.page(), i.title(), i.priority(), i.status(),
-                i.attachments().size(), !i.ownerNote().isEmpty(), i.createdAt(), i.updatedAt(), submitterRole(i));
+                i.attachments().size(), !i.ownerNote().isEmpty(), i.createdAt(), i.updatedAt(), submitterRole(i), kind(i), i.requestType(), i.reference());
     }
 
     /** Opaque and stable per account; the account UUID is never sent to the browser. */
