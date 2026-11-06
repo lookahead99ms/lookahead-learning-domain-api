@@ -273,21 +273,29 @@ flow. Those require the isolated infrastructure integration gate before cutover.
 
 ## Contracts with other repositories
 
-No repository clones another at build or deploy time (owner decision, 2026-11-05). Every
-expectation another repository has of this one, or this one has of another, is a committed
-contract file: the producer owns it, each side keeps its own copy, and each side tests its copy
-on its own pull request. Contracts are public by nature; anything that would need to stay
-private is not a contract but configuration, and it belongs to Infra.
+No repository clones another at build or deploy time, and every cross-repository contract lives in
+one place only: the Content repository, under `docs/contracts/` (`registry.json`,
+`web-content-paths.json`, `release-layout.json`, `domain-api-v1.json`; owner decisions 2026-11-05
+and 2026-11-06). This repository keeps no copy. `scripts/fetch-contracts.sh` fetches the two files
+this repository tests against from Content main, read-only, into the git-ignored `.contracts/`
+folder, and the tests read them from there (`-Dcontracts.dir=<folder>` points elsewhere). CI runs
+the script in the step "Fetch contracts from Content" on every pull request and push to main, with
+the Actions secret `CONTENT_READ_TOKEN` (a fine-grained token with Contents: read on the Content
+repository alone; a workflow that calls `ci.yml` passes it with `secrets: inherit`); a developer
+runs it locally with their own `gh auth login`. The image build (`Dockerfile`) carries no fetched
+file and runs the test suite with `-DexcludedGroups=fetched-contract`; the same commit has already
+passed those tests in the CI Maven step. Contracts are public by nature; anything that would need
+to stay private is not a contract but configuration, and it belongs to Infra.
 
-| Contract file | Owner | Checked on this repo's PR by | Checked by the other side | Change order | What a failure means |
-| --- | --- | --- | --- | --- | --- |
-| `src/test/resources/contracts/domain-api-v1.json` (`gateway-domain-contract/v1`: every Domain call the Gateway makes, its method, path, success statuses and the response fields the Gateway reads) | Domain, the provider | `DomainProviderContractTest`: every call is a real controller mapping, deferred routes stay unmapped, and the calls whose answer the Gateway interprets are driven through the real controllers on stubbed services | Content's registry check (`docs/contracts/registry.json`) compares every copy with the master on Content pull requests; this repo keeps its copy and tests it locally | Domain first (route, status or field), then Gateway, then Web | A listed route is missing from Domain or answers an unlisted status or field: Domain is behind the contract. The copies differ: a contract change merged on one side has not reached the other; update the copy that is behind |
-| `src/test/resources/contracts/release-layout.json` (`release-layout/v1`: the `live/<tag>/` layout, the keys of `manifest.json` and `publication.json`, and the keys and record fields of `account-catalog.json`) | Content (`docs/contracts/release-layout.json`) | `ReleaseLayoutContractTest`: builds a minimal release from the contract alone and loads it through `PublicationBootstrap` and `SnapshotValidator`; a release or catalog missing a required key is refused the way the readers refuse, an absent optional key is accepted, and an unknown record field is shown to be ignored | Content's registry check (`docs/contracts/registry.json`) compares every copy with the master on Content pull requests; this repo keeps its copy and tests it locally | Content first, then this copy and its test in the same Domain change | The release Content would publish cannot be loaded by Domain, or Domain's copy no longer says what Domain reads |
+| Contract file on Content | Owner | Read by, on this repo's PR | Change order | What a failure means |
+| --- | --- | --- | --- | --- |
+| `docs/contracts/domain-api-v1.json` (`gateway-domain-contract/v1`: every Domain call the Gateway makes, its method, path, success statuses and the response fields the Gateway reads) | Gateway; the Gateway edits the master on Content first | `DomainProviderContractTest`: every call is a real controller mapping, deferred routes stay unmapped, and the calls whose answer the Gateway interprets are driven through the real controllers on stubbed services | Content master first (the Gateway's change), then this repository provides the route, status or field, then the Gateway's own pull request, then Web | A listed route is missing from Domain or answers an unlisted status or field: Domain is behind the master on Content |
+| `docs/contracts/release-layout.json` (`release-layout/v1`: the `live/<tag>/` layout, the keys of `manifest.json` and `publication.json`, and the keys and record fields of `account-catalog.json`) | Content | `ReleaseLayoutContractTest`: builds a minimal release from the contract alone and loads it through `PublicationBootstrap` and `SnapshotValidator`; a release or catalog missing a required key is refused the way the readers refuse, an absent optional key is accepted, and an unknown record field is shown to be ignored | Content first for a new optional key (with a bumped `schemaVersion`), then this repository adopts it. A required key or a removed key needs the Domain change merged before the Content release that carries it | The release Content would publish cannot be loaded by Domain, or the master no longer says what Domain reads |
 
-Today the Domain API contract file's own header and the Gateway test describe it as the
-Gateway's consumer-driven list (consumer Gateway, provider Domain); the owner decision makes
-the producer its owner, and the change order above follows that decision. Content is the single
-registry of all copies; no workflow of this repository reads another repository.
+A test that fails with "Contract file absent" has nothing to do with the contract: the fetch did
+not run (locally: run `scripts/fetch-contracts.sh`; CI: the fetch step failed or the secret was not
+passed, and the step's own message names the fix). Content's `registry.json` lists both files with
+this repository and these two tests as consumers; Content compares nothing with this repository.
 
 ## Author review decisions
 

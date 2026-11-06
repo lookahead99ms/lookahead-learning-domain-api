@@ -147,7 +147,8 @@
         "export-image": true,
         "release-version": "${{ needs.release.outputs.release-version }}",
         "source-sha": "${{ needs.release.outputs.source-sha }}"
-      }
+      },
+      "secrets": "inherit"
     },
     "approve": {
       "name": "Approve ECR publish",

@@ -25,6 +25,12 @@
           "default": "",
           "description": "Tag-resolved application commit to build; empty builds the triggering commit"
         }
+      },
+      "secrets": {
+        "CONTENT_READ_TOKEN": {
+          "required": false,
+          "description": "Read-only token for the Content repository's docs/contracts/ (Contents: read); a calling workflow passes it with secrets: inherit"
+        }
       }
     }
   },
@@ -104,6 +110,13 @@
         {
           "name": "Prepare disposable database fixture password file",
           "run": "umask 077\nprintf '%s' 'synthetic-disposable-domain-ci' > \"$RUNNER_TEMP/domain-test-password\""
+        },
+        {
+          "name": "Fetch contracts from Content",
+          "run": "scripts/fetch-contracts.sh",
+          "env": {
+            "CONTENT_READ_TOKEN": "${{ secrets.CONTENT_READ_TOKEN }}"
+          }
         },
         {
           "name": "Test all production code and require at least 85 percent line coverage",
