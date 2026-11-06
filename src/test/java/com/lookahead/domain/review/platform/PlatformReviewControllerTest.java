@@ -35,7 +35,7 @@ class PlatformReviewControllerTest {
         var author = mock(LocalAuthorAccess.class);
         when(author.allowed(owner)).thenReturn(true);
         var mapper = JsonMapper.builder().build();
-        service = new PlatformReviewService(new FileSystemPlatformReviewObjects(root), author, mapper, "reviewer@example.test");
+        service = PlatformReviewFixtures.service(root, author, mapper, "reviewer@example.test");
         http = MockMvcBuilders.standaloneSetup(new PlatformReviewController(service, mapper))
                 .setControllerAdvice(new AccountErrorHandler(), new PlatformReviewUploadErrors())
                 .setCustomArgumentResolvers(new HandlerMethodArgumentResolver() {
@@ -168,5 +168,41 @@ class PlatformReviewControllerTest {
 
     private static MockMultipartFile image(String name, String type, byte[] bytes) {
         return new MockMultipartFile("image", name, type, bytes);
+    }
+
+    /** DLV-971: promote answers 201 with the ticket id and the work item; the list and item carry ticketId and ticketStatus. */
+    @Test void promoteAnswersTheTicketAndTheItemShowsItsStatus() throws Exception {
+        actor = owner;
+        var access = mock(com.lookahead.domain.access.StaffAccessService.class);
+        when(access.permissions(owner)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(true, java.util.Set.of()));
+        service.configureStaffAccess(access);
+        PlatformReviewFixtures.seedPlan(root);
+        service.configureDelivery(PlatformReviewFixtures.delivery(root, JsonMapper.builder().build(), access, new ReviewStatusHistory.InMemory(), java.time.Clock.systemUTC(), "local"));
+        String key = UUID.randomUUID().toString();
+        String id = JsonMapper.builder().build().readTree(http.perform(multipart(ROOT).file(item(ITEM)).header("Idempotency-Key", key))
+                .andExpect(status().isCreated()).andExpect(jsonPath("data.id").value("REV-000001"))
+                .andExpect(jsonPath("data.ticketId").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("data.ticketStatus").value(org.hamcrest.Matchers.nullValue()))
+                .andReturn().getResponse().getContentAsString()).path("data").path("id").asString();
+        http.perform(post(ROOT + "/" + id + "/promote"))
+                .andExpect(status().isCreated()).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("data.ticketId").value("DLV-2"))
+                .andExpect(jsonPath("data.item.id").value("DLV-2"))
+                .andExpect(jsonPath("data.item.title").value("Search misses Kafka"))
+                .andExpect(jsonPath("data.item.origin.id").value(id))
+                .andExpect(jsonPath("data.item.origin.kind").value("review"))
+                .andExpect(jsonPath("data.item.statusId").value("backlog"));
+        http.perform(post(ROOT + "/" + id + "/promote")).andExpect(status().isConflict()).andExpect(jsonPath("code").value("PLATFORM_REVIEW_ALREADY_PROMOTED"));
+        http.perform(get(ROOT + "/" + id)).andExpect(status().isOk())
+                .andExpect(jsonPath("data.ticketId").value("DLV-2")).andExpect(jsonPath("data.ticketStatus").value("backlog"))
+                .andExpect(jsonPath("data.closedAt").value(org.hamcrest.Matchers.nullValue()));
+        http.perform(get(ROOT)).andExpect(status().isOk())
+                .andExpect(jsonPath("data.items[0].id").value(id)).andExpect(jsonPath("data.items[0].ticketId").value("DLV-2"))
+                .andExpect(jsonPath("data.items[0].ticketStatus").value("backlog")).andExpect(jsonPath("data.items[0].kind").value("review"));
+        http.perform(post(ROOT + "/REV-000404/promote")).andExpect(status().isNotFound());
+        // closed is a triage status; the answer carries the close stamps.
+        http.perform(put(ROOT + "/" + id + "/triage").contentType("application/json").content("{\"status\":\"closed\",\"ownerNote\":\"Done by hand\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("data.status").value("closed")).andExpect(jsonPath("data.closedBy").value("owner"))
+                .andExpect(jsonPath("data.closedAt").isString());
     }
 }

@@ -181,6 +181,9 @@ or RDS TLS behavior.
 | `app.accounts.catalog-path` | `LOOKAHEAD_ACCOUNT_CATALOG` | Trusted account catalog file |
 | `app.content.publication-path` | `LOOKAHEAD_CONTENT_PUBLICATION` | Immutable publication manifest |
 | `app.content.root` | `LOOKAHEAD_CONTENT_ROOT` | Read-only published content directory |
+| `app.publication.live-prefix` | `LOOKAHEAD_PUBLICATION_LIVE_PREFIX` | DLV-971: the prefix holding exactly one publication tar (DEV `release/live/` after the AWS lane's cutover; empty keeps today's `live/<tag>/` discovery) |
+| `app.reviews.prefix`, `app.support-requests.prefix`, `app.delivery.prefix` | `LOOKAHEAD_REVIEWS_PREFIX`, `LOOKAHEAD_SUPPORT_REQUESTS_PREFIX`, `LOOKAHEAD_DELIVERY_PREFIX` | DLV-971 runtime store roots in the assets bucket (`reviews/`, `support-requests/`, `delivery/`) |
+| `app.platform-reviews.legacy-prefix` | `LOOKAHEAD_PLATFORM_REVIEWS_LEGACY_PREFIX` | DLV-971: the retired day-file prefix imported once at start (DEV `platform-reviews/`) |
 
 Configuration-tree files can supply the corresponding dotted property names;
 `LOOKAHEAD_SECRETS_DIRECTORY` selects their directory. Never mount Identity DB
@@ -356,6 +359,24 @@ source for the standalone JVM probe. The RDS trust verifier remains build-only.
 Wrapper distribution setup has a source-independent Docker layer; dependency
 versions and checksum verification are unchanged.
 
+### Publication from the live tar (DLV-971)
+
+The approved bucket layout serves the publication from one tar: at start, with
+`app.publication.live-prefix` set (DEV `release/live/` once the AWS lane has copied the tar there;
+`deployment/dev/deploy-config.json` keeps `PublicationLivePrefix` empty until that cutover), the Domain
+lists the prefix, expects exactly one `v*.tar` (the publication as today, plain or gzip tar, with
+`publication.json` and `account-catalog.json` inside and no manifest beside it), downloads and
+unpacks it into the private publication folder (`LivePublicationLoader`), and reports the version
+(the file name) in the readiness detail `release` and in one `publication.load` line. Zero or more
+than one tar, a stray object under the prefix, or a tar that fails its checks (unsafe member, an
+asset whose digest differs from `publication.json`, an unlisted file) leaves the content unloaded:
+readiness is DOWN with the reason (`LIVE_RELEASE_MISSING`, `LIVE_RELEASE_AMBIGUOUS`,
+`LIVE_RELEASE_UNEXPECTED`, `LIVE_RELEASE_INVALID`, `LIVE_RELEASE_UNAVAILABLE`) and the task stays up
+with an empty trusted catalog until the next start finds one good tar; nothing restarts on its own
+beyond the container health check. With the setting empty, today's `live/<tag>/` discovery
+(`PublicationBootstrap`) is unchanged, so the current DEV keeps running until the cutover.
+Tests: `LivePublicationLoaderTest`.
+
 ### Why a task failed: the log explains it (DLV-969)
 
 The health answer carries no details, so the reason is written to the log instead
@@ -485,42 +506,136 @@ archive; Docker Desktop index IDs are kept separate from that config identity.
 ## Platform reviews (DLV-928)
 
 `/api/v1/platform-reviews` (package `com.lookahead.domain.review.platform`) stores reviewer
-feedback without a database table: one JSON file per UTC day, `reviews/yyyy-MM-dd.json`,
-holds every item written that day, and images are stored under `review-images/{itemId}/`.
-`PlatformReviewObjects` is the storage boundary; implementations are the Local filesystem store and the S3 cloud candidate. A change reads the day file, applies the change and writes it back only if
-it is unchanged (serialized in-process as well), so concurrent saves keep every item. The S3
-store (DLV-929) maps the same operations to GetObject, conditional PutObject, ListObjectsV2
-and DeleteObject.
+feedback without a database table. DLV-971 (owner, 2026-11-06): one JSON record per item in two
+runtime stores of the assets bucket, `reviews/records/YYYY/MM/DD/REV-000001.json` and
+`support-requests/records/YYYY/MM/DD/SUP-000001.json` (the day is the record's creation day, UTC),
+with the images beside each record under `<store>/attachments/<ID>/NN-name.ext`. Ids come from two
+Postgres sequences (`review_record_seq`, `support_request_seq`, V22). Sequence selection uses a bound PostgreSQL `regclass` parameter; the sequence name is never concatenated into SQL. `PlatformReviewObjects` is the
+storage boundary, one instance per store root; implementations are the Local filesystem store (the
+roots are sub-folders of `LOOKAHEAD_PLATFORM_REVIEW_DIRECTORY`) and the S3 store (GetObject,
+conditional PutObject, ListObjectsV2 with and without a delimiter, DeleteObject, SSE-KMS with the
+publication key). `RecordStore` reads a record, applies the change and writes it back only if it is
+unchanged (If-Match on the ETag), so concurrent saves keep every item; a create uses a fresh id and
+never conflicts. The list merges both stores newest first, paged by day (30 days a page) as before.
+
+Record shape (the approved layout's): `id`, `kind` (`review` | `request`), `requestType` (`problem` |
+`feedback` | `question` | null), `status`, `submitter {accountId, role, displayName}`, `category`,
+`title`, `details`, `page`, `pageUrl`, `priority`, `attachments[]`, `reference` (requests), `ticketId`
+(null until promoted), `ownerNote`, `createdAt`, `updatedAt`, `closedAt`, `closedBy`, plus the
+write-control fields `createKey`, `createHash`, `lastWriteKey`. The API keeps the Web's `Item` and
+`Summary` fields (`reviewerId` is derived from the account id, never stored) and adds `ticketId`
+and `ticketStatus` (the ticket's `statusId` read from the delivery plan when `ticketId` is set;
+`Item` also answers `closedAt` and `closedBy`).
 
 | Setting | Meaning |
 | --- | --- |
-| `LOOKAHEAD_PLATFORM_REVIEW_DIRECTORY` | Local private directory for day files and images. Unconfigured storage answers 503; cloud uses separate S3 settings |
-| `LOOKAHEAD_PLATFORM_REVIEWERS` | Legacy compatibility setting; ignored by the wired runtime. No automatic reviewer migration. Current authorization uses Domain staff assignments. The owner is the author capability |
+| `LOOKAHEAD_PLATFORM_REVIEW_DIRECTORY` | Local private directory; the stores are its `reviews/`, `support-requests/` and `delivery/` sub-folders and the directory itself is the legacy day-file store. Unconfigured storage answers 503; cloud uses the S3 settings |
+| `LOOKAHEAD_PLATFORM_REVIEWS_BUCKET`, `LOOKAHEAD_PLATFORM_REVIEWS_KMS_KEY` | The assets bucket and the publication KMS key, shared by every store (`app.platform-reviews.bucket`, `.kms-key`) |
+| `LOOKAHEAD_REVIEWS_PREFIX` | `app.reviews.prefix`, the review store root (DEV `reviews/`) |
+| `LOOKAHEAD_SUPPORT_REQUESTS_PREFIX` | `app.support-requests.prefix`, the support request store root (DEV `support-requests/`) |
+| `LOOKAHEAD_DELIVERY_PREFIX` | `app.delivery.prefix`, the delivery plan root (DEV `delivery/`) |
+| `LOOKAHEAD_PLATFORM_REVIEWS_LEGACY_PREFIX` | `app.platform-reviews.legacy-prefix`, the retired day-file prefix read once by the import (DEV `platform-reviews/`); empty skips it. `LOOKAHEAD_PLATFORM_REVIEWS_PREFIX` is no longer read for records |
+| `LOOKAHEAD_PLATFORM_REVIEWERS` | Legacy compatibility setting; ignored by the wired runtime. Current authorization uses Domain staff assignments. The owner is the author capability |
 
 Limits: 6 images per item, 5 MB each, 20 MB per item, PNG/JPEG/WebP checked by file signature,
 EXIF/XMP/IPTC/PNG-text metadata removed without re-encoding; multipart request at most 21 MB;
 100 items per reviewer per day. The container image creates
 `/var/lib/lookahead/platform-reviews` owned by the app user so a new named volume mounted
-there is writable. Tests: `PlatformReviewServiceTest`, `PlatformReviewControllerTest`.
+there is writable. Tests: `PlatformReviewServiceTest`, `PlatformReviewControllerTest`,
+`FileSystemPlatformReviewObjectsTest`, `S3PlatformReviewObjectsTest`, `ReviewRecordsDatabaseTest`.
 
 Kinds and support requests (DLV-971, owner 2026-11-06). Every item carries `kind`: `"review"` for an
 item written on Write Review, `"request"` for a learner's support request (Report a problem, Share
-feedback, Ask a question). A request also carries `requestType` (`"problem"`, `"feedback"` or
-`"question"`) and `reference` (the `support_receipts` reference, so the owner can match it to the
-email thread); on a review both are `null`. `SupportFeedbackService.submit` records the request
-through `PlatformReviewService.recordRequest` before it emails the support inbox: category
-`problem` for a problem and `idea` for feedback or a question, page `Support`, no page URL,
-priority `medium`, status `new`, the learner's feedback role (`user`) as `submitterRole`, the
-screenshots stored through the review image pipeline; the reply address stays in the email and
-the receipt row only. The receipt reference is the dedupe key: the same request is never
-recorded twice. Day files written before this read as reviews (`kind` absent is `review`, the
-other two `null`); nothing is rewritten for it, the next write of the day stores the fields.
+feedback, Ask a question). A request also carries `requestType` and `reference` (the
+`support_receipts` reference, so the owner can match it to the email thread); on a review both are
+`null`. `SupportFeedbackService.submit` records the request through
+`PlatformReviewService.recordRequest` into the support-requests store before it emails the support
+inbox: category `problem` for a problem and `idea` for feedback or a question, page `Support`, no page
+URL, priority `medium`, status `new`, the learner's feedback role (`user`) as the submitter role, the
+screenshots stored through the review image pipeline; the reply address stays in the email and the
+receipt row only. The receipt reference is the dedupe key: the same request is never recorded twice.
 Who sees and does what: the owner and admins list every item; a reviewer lists the reviews they
 wrote, never a request; a learner has no Team Reviews access. The owner sets the status of any
 item, an admin only of a request (`403 PLATFORM_REVIEW_ACCESS_DENIED` on a review); a review is
 edited or deleted by its writer while New (the owner's status locks it); a request is never
 edited through the review API and only the owner deletes it.
 
+Statuses are `new`, `accepted`, `planned`, `done`, `declined` and `closed`. `closed` is set by hand
+(`PUT .../triage`, `closedBy` the actor's role) or by the sweep; `closed` to any status is a reopen
+under the same rights and clears `closedAt`/`closedBy`. Every status change of a record or a ticket
+is one row of the append-only `review_status_events` table (V22: `id, record_id, kind
+(review|request|ticket), actor_id (null for the sweep), from_status, to_status, note_set,
+recorded_at`; the runtime role may INSERT and SELECT only, the trigger refuses UPDATE and DELETE for
+every role). A history failure is logged (`platform-review.history` / `HISTORY_NOT_WRITTEN`) and
+never undoes the change.
+
+Promote (`POST /api/v1/platform-reviews/{id}/promote`, 201): a work item is added to the delivery
+plan (title and summary from the record's title and details, type `bug` for a problem, `task` for a
+content review or a question, else `story`; priority high/medium/low to P1/P2/P3; the workflow's
+first status; the plan's current stage; `origin {id, kind}`; the environment stamps) and
+`ticketId` is set on the record; the answer is `{data: {ticketId, item}}`. The owner promotes any
+record, an admin a learner's request only; a record already promoted answers
+`409 PLATFORM_REVIEW_ALREADY_PROMOTED`; 404 for an unknown record; 503 when the plan storage is
+unavailable (the record stays unlinked).
+
+Legacy import (`LegacyReviewImport`): at start, when both stores are empty and the legacy prefix
+has `reviews/<day>.json` files, every item is rewritten as a record in the right store (reviews to
+`reviews/`, kind request to `support-requests/`, oldest first so the ids follow the original order),
+images are copied from `review-images/<itemId>/` to `attachments/<ID>/NN-name.ext`, the counts are
+logged (`platform-review.import`) and a marker `reviews/.imported.json` with the counts keeps it from
+running twice. Legacy objects are never deleted here; the AWS lane removes the prefix after the
+counts match. A damaged legacy file stops the import without a marker so the next start tries
+again. Tests: `LegacyReviewImportTest`.
+
+## Delivery plan (DLV-971)
+
+`/api/v1/delivery/plan` (package `com.lookahead.domain.delivery`) serves and edits
+`delivery/plan.json` in the assets bucket (`DeliveryPlanStore`). The file keeps the Content shape
+(`schemaVersion`, `version`, workflow, priorities, stages, `workItems` with `createdIn`, `updatedIn`,
+`updatedAt`, and the new `origin {id, kind} | null` and `pendingLocal` object | null). Every write
+reads the current file, checks the caller's `expectedVersion` (`409 VERSION_CONFLICT` with
+`currentRevision` when stale), raises `version`, copies the previous file to
+`delivery/archive/plan-v<N>.json` and writes with If-Match on the ETag, so two edits cannot lose
+each other. The stamps are `dev` when the cloud policy is on, else `local`; a ticket without a stamp
+reads as `local`, never an error. Nothing is seeded from the publication: the owner uploads the first
+`plan.json` by hand; until then `GET` answers `404 DELIVERY_PLAN_MISSING` with that message.
+
+| Call | Right | Answer |
+| --- | --- | --- |
+| `GET /api/v1/delivery/plan` | delivery read (owner, co-author, admin, reviewer) | 200 `{data: plan}`; 404 `DELIVERY_PLAN_MISSING` |
+| `POST /api/v1/delivery/plan/work-items` `{expectedVersion, item}` | delivery create and `permitsDeliveryWrite(true, null, statusId)` | 201 `{data: {version, item}}`; 409 `VERSION_CONFLICT` / `DELIVERY_ITEM_EXISTS`; 422 `DELIVERY_ITEM_INVALID` |
+| `PUT /api/v1/delivery/plan/work-items/{id}` `{expectedVersion, item}` | `StaffPermissions.permitsDeliveryWrite(false, previous, next)` for a status change; delivery create or review for a text-only edit | 200 `{data: {version, item}}`; 404 `DELIVERY_ITEM_NOT_FOUND`; 409 `VERSION_CONFLICT` |
+| `POST /api/v1/delivery/plan/work-items/{id}/resolve-conflict` `{expectedVersion, keep: "dev" \| "local"}` | owner or admin | 200 `{data: {version, item}}`; 409 `DELIVERY_NO_CONFLICT`; 404; 409 `VERSION_CONFLICT` |
+
+`createdIn`, `updatedIn`, `updatedAt`, `origin` and `pendingLocal` are server-set: a body's values
+are ignored. The Gateway forwards these routes with the same session, CSRF check and bearer
+(`SCOPE_account`) as platform reviews. Tests: `DeliveryPlanServiceTest`, `DeliveryPlanControllerTest`,
+`DeliveryPlanStoreTest`.
+
+Inbox sync (`DeliveryPlanMerge`): the owner downloads `delivery/plan.json`, edits it locally and
+uploads it to `delivery/inbox/plan.json`. The sync (at start, then every 4 hours) resolves the inbox's
+`baseVersion` (its `version` when absent) against the archive (or the current plan when equal) and
+merges ticket by ticket: changed locally and unchanged on DEV since the base, take local (stamped
+`updatedIn: local`); changed on DEV and unchanged locally, keep DEV; changed in both (or new on both
+sides with different content), keep DEV and attach the local version as `pendingLocal` for the owner
+to resolve on the page; new locally, add; new on DEV, keep; missing from the inbox is not a deletion,
+and a ticket deleted on DEV stays deleted. Stamps never count as a change. Plan-level fields follow
+the same rule field by field. The DEV plan is written as a new version, the previous one archived,
+the inbox file deleted, and one `delivery.inbox-sync` line carries the counts. A base the archive
+lacks, or a missing plan, keeps the inbox for the owner (one WARN per run). The same code runs for a
+local Domain against a local inbox. Tests: `DeliveryPlanMergeTest` (the rule table).
+
+## Sweeps (DLV-971)
+
+`RuntimeSweeps` is the one scheduled component: at `ApplicationReadyEvent` (before the task takes
+traffic) the legacy review import runs once, then the three sweeps, and the sweeps repeat every 4
+hours (`PT4H`, cloud mode, where scheduling is enabled; a local Domain sweeps at each start): support
+requests still `new` or `accepted` with `updatedAt` older than 7 days are closed with the note "No
+update in 7 days; closed automatically. Reply or reopen to continue.", `closedBy` `system` and a
+history row (reviews are never swept; any status change, note or reply resets the clock); the plan
+inbox sync; and the 48-hour admission cleanup (`CloudAdmissionCleanup`, moved from hourly to this
+cadence). Each sweep is isolated: a failure is logged (`sweep` / `UNEXPECTED`) and the next still
+runs. Tests: `RuntimeSweepsTest`, the sweep clock in `PlatformReviewServiceTest`.
 
 ## Staff access and cloud profile candidates (DLV-930/933)
 

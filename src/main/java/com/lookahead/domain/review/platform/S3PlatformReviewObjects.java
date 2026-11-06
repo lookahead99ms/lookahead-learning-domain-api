@@ -24,7 +24,7 @@ public final class S3PlatformReviewObjects implements PlatformReviewObjects {
         this.s3=s3;this.bucket=bucket;this.prefix=prefix;this.owner=owner;this.kmsKey=kmsKey;
     }
     private String key(String key) {
-        if (key == null || !key.matches("[a-z0-9][a-z0-9-]*(?:/[a-z0-9][a-z0-9.-]*)*"))
+        if (key == null || !key.matches(PlatformReviewObjects.KEY))
             throw new IllegalArgumentException("Invalid review object key");
         return prefix + key;
     }
@@ -68,6 +68,27 @@ public final class S3PlatformReviewObjects implements PlatformReviewObjects {
                 for(var object:page.contents()) {
                     String name=object.key();
                     if(!name.startsWith(directory)||name.substring(directory.length()).contains("/"))throw unavailable();
+                    keys.add(name.substring(prefix.length()));
+                }
+                String next=page.isTruncated()?page.nextContinuationToken():null;
+                if(page.isTruncated()&&(next==null||next.equals(token)))throw unavailable();
+                token=next;
+            } while(token!=null);
+            return List.copyOf(keys);
+        } catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("ListObjectsV2",started,failure); }
+    }
+    /** DLV-971: records sit in day folders (records/YYYY/MM/DD/), so the store lists without a delimiter. */
+    @Override public List<String> listAll(String requestedPrefix) {
+        String directory=key(requestedPrefix.endsWith("/")?requestedPrefix.substring(0,requestedPrefix.length()-1):requestedPrefix)+"/";
+        List<String> keys=new ArrayList<>();String token=null;
+        long started=Events.started();
+        try {
+            do {
+                var page=s3.listObjectsV2(ListObjectsV2Request.builder().bucket(bucket).prefix(directory)
+                    .expectedBucketOwner(owner).continuationToken(token).build());
+                for(var object:page.contents()) {
+                    String name=object.key();
+                    if(!name.startsWith(directory))throw unavailable();
                     keys.add(name.substring(prefix.length()));
                 }
                 String next=page.isTruncated()?page.nextContinuationToken():null;

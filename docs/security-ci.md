@@ -120,3 +120,18 @@ A new exact rule/file/source-bound DLV-918 exception expires October 19, alongsi
 the existing reviews. Browser/form rejection with valid operator credentials and
 positive script-style requests are tested. This is not a blanket exception for
 other maintenance code or permission to enable DEV/PROD.
+
+### Review-record SQL construction — 2026-11-06
+
+PR159's four `java/concatenated-sql-query` findings are addressed with prepared
+query parameters. Review record numbering uses `SELECT nextval(?::regclass)`
+with the existing fixed review/support sequence selection. Database privilege
+tests bind the sequence name and privilege argument too. No SAST exception,
+severity change or scanner suppression is added.
+
+`ReviewRecordNumbersTest` checks both sequences, hostile-looking/unrecognized
+kinds, and the existing null-result fallback. `ReviewRecordsDatabaseTest` runs
+these queries against the disposable PostgreSQL fixture and checks sequence
+numbering, runtime privileges and append-only status history. The production
+schema, API and sequence naming remain unchanged. Local tests establish query
+behavior; fresh hosted CodeQL is still required to verify its finding inventory.

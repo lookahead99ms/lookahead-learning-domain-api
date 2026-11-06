@@ -124,6 +124,16 @@ class DomainSecurityIntegrationTest {
         http.perform(get(route).header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
         http.perform(put(route+"/"+SUBJECT+"/triage").header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
     }
+    /** DLV-971: the delivery plan routes need the same bearer and account scope as platform reviews. */
+    @Test void deliveryPlanRequiresBearerAndAccountScope() throws Exception {
+        String route="/api/v1/delivery/plan";
+        http.perform(get(route)).andExpect(status().isUnauthorized());
+        http.perform(get(route).cookie(new jakarta.servlet.http.Cookie("JSESSIONID","forged"))).andExpect(status().isUnauthorized());
+        when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
+        http.perform(get(route).header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
+        http.perform(post(route+"/work-items").header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
+        http.perform(put(route+"/work-items/DLV-1").header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
+    }
     @Test void staffAccessRequiresBearerAndAccountScopeWithoutBrowserSession() throws Exception {
         for (String route : List.of("/api/v1/admin/access", "/api/v1/admin/access/lookup", "/api/v1/account/permissions", "/api/v1/auth/invitations/activate", "/api/v1/account/access-summary", "/api/v1/admin/test-accounts", "/api/v1/admin/test-accounts/"+SUBJECT+"/reset", "/api/v1/admin/accounts", "/api/v1/admin/accounts/"+SUBJECT+"/downgrade", "/api/v1/admin/accounts/"+SUBJECT+"/delete")) {
             http.perform(get(route).cookie(new jakarta.servlet.http.Cookie("JSESSIONID", "forged")))

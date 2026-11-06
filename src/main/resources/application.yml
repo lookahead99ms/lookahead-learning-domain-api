@@ -38,8 +38,21 @@ app:
     bucket: ${LOOKAHEAD_PLATFORM_REVIEWS_BUCKET:${LOOKAHEAD_PLATFORM_REVIEW_BUCKET:}}
     prefix: ${LOOKAHEAD_PLATFORM_REVIEWS_PREFIX:${LOOKAHEAD_PLATFORM_REVIEW_PREFIX:}}
     kms-key: ${LOOKAHEAD_PLATFORM_REVIEWS_KMS_KEY:${LOOKAHEAD_PLATFORM_REVIEW_KMS_KEY:}}
+    # DLV-971: the retired day-file prefix (DEV platform-reviews/), read once at start to import its items into the
+    # record stores below; empty skips the import. Never written or deleted by the Domain. "prefix" above is no longer
+    # read for records; the DEV task definition still passes it.
+    legacy-prefix: ${LOOKAHEAD_PLATFORM_REVIEWS_LEGACY_PREFIX:}
     # Interim reviewer list (account usernames, comma separated) until roles are managed in the admin pages.
     reviewers: ${LOOKAHEAD_PLATFORM_REVIEWERS:}
+  # DLV-971 (owner, 2026-11-06): runtime stores in the assets bucket, one root each (records/YYYY/MM/DD/<ID>.json and
+  # attachments/<ID>/ under reviews/ and support-requests/; plan.json, inbox/plan.json and archive/ under delivery/).
+  # Local keeps the same roots as sub-folders of app.platform-reviews.directory.
+  reviews:
+    prefix: ${LOOKAHEAD_REVIEWS_PREFIX:reviews/}
+  support-requests:
+    prefix: ${LOOKAHEAD_SUPPORT_REQUESTS_PREFIX:support-requests/}
+  delivery:
+    prefix: ${LOOKAHEAD_DELIVERY_PREFIX:delivery/}
   author-reviews:
     manifest: ${LOOKAHEAD_AUTHOR_REVIEW_MANIFEST:}
   version: "@project.version@"
@@ -76,6 +89,9 @@ app:
     manifest-sha256: ${LOOKAHEAD_PUBLICATION_MANIFEST_SHA256:}
     archive-sha256: ${LOOKAHEAD_PUBLICATION_ARCHIVE_SHA256:}
     directory: ${LOOKAHEAD_PUBLICATION_DIRECTORY:/tmp/lookahead-publications}
+    # DLV-971: the approved layout serves one publication tar from release/live/ (exactly one v*.tar). Empty keeps
+    # today's live/<tag>/ discovery until the AWS lane cuts over; DEV then sets release/live/.
+    live-prefix: ${LOOKAHEAD_PUBLICATION_LIVE_PREFIX:}
     cache-bytes: ${LOOKAHEAD_CONTENT_CACHE_BYTES:33554432}
     cache-entries: ${LOOKAHEAD_CONTENT_CACHE_ENTRIES:256}
   cors:

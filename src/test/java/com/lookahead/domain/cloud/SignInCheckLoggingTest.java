@@ -122,7 +122,7 @@ class SignInCheckLoggingTest {
             var manager = mock(PlatformTransactionManager.class);
             new CloudAdmissionCleanup(jdbc, manager).run();
             assertThat(log.only("admission.cleanup").getFormattedMessage())
-                    .isEqualTo("Admission cleanup skipped this hour: DataAccessResourceFailureException < SQLException (SQL state 57P01); the next run tries again");
+                    .isEqualTo("Admission cleanup skipped this run: DataAccessResourceFailureException < SQLException (SQL state 57P01); the next run tries again");
             log.containsNone("hunter2");
         }
     }

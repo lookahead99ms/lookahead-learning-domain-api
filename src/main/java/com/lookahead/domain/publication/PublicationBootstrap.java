@@ -233,7 +233,7 @@ public final class PublicationBootstrap {
             for (Path path : all.reversed()) Files.deleteIfExists(path);
         } catch (IOException ignored) { /* Remains private and unready; task teardown owns temporary disk. */ }
     }
-    private static final class LimitedStream extends FilterInputStream {
+    static final class LimitedStream extends FilterInputStream {
         private long remaining;
         LimitedStream(InputStream input, long maximum) { super(input); remaining = maximum; }
         @Override public int read() throws IOException { byte[] one = new byte[1]; return read(one, 0, 1) == -1 ? -1 : one[0] & 255; }

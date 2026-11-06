@@ -15,7 +15,6 @@ import java.util.stream.Stream;
  * every write replaces the file atomically so a crash never leaves a half-written day file.
  */
 public class FileSystemPlatformReviewObjects implements PlatformReviewObjects {
-    private static final String KEY = "[a-z0-9][a-z0-9-]*(?:/[a-z0-9][a-z0-9.-]*)*";
     private final Path root;
     private final ReentrantLock lock = new ReentrantLock();
 
@@ -61,6 +60,29 @@ public class FileSystemPlatformReviewObjects implements PlatformReviewObjects {
         }
     }
 
+    /** Recursive; a file that vanishes while listing (another writer's temporary file being moved into place) is skipped. */
+    @Override public List<String> listAll(String prefix) {
+        Path directory = resolve(prefix.endsWith("/") ? prefix.substring(0, prefix.length() - 1) : prefix);
+        if (!Files.isDirectory(directory)) return List.of();
+        var keys = new ArrayList<String>();
+        walk(directory, keys);
+        return List.copyOf(keys);
+    }
+
+    private void walk(Path directory, List<String> keys) {
+        try (Stream<Path> entries = Files.list(directory)) {
+            for (Path entry : entries.toList()) {
+                if (entry.getFileName().toString().startsWith(".")) continue;
+                if (Files.isDirectory(entry)) walk(entry, keys);
+                else if (Files.isRegularFile(entry)) keys.add(root.relativize(entry).toString().replace('\\', '/'));
+            }
+        } catch (NoSuchFileException vanished) {
+            // A folder removed between list and read; nothing to add.
+        } catch (IOException failure) {
+            throw new UncheckedIOException(failure);
+        }
+    }
+
     @Override public void delete(String key) {
         Path file = resolve(key);
         try {
@@ -80,7 +102,7 @@ public class FileSystemPlatformReviewObjects implements PlatformReviewObjects {
     }
 
     private Path resolve(String key) {
-        if (key == null || !key.matches(KEY)) throw new IllegalArgumentException("Invalid storage key");
+        if (key == null || !key.matches(PlatformReviewObjects.KEY)) throw new IllegalArgumentException("Invalid storage key");
         Path file = root.resolve(key).normalize();
         if (!file.startsWith(root)) throw new IllegalArgumentException("Invalid storage key");
         return file;

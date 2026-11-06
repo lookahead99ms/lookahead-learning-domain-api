@@ -1,5 +1,4 @@
 package com.lookahead.learning.content.service;
-import com.lookahead.domain.review.platform.FileSystemPlatformReviewObjects;
 import com.lookahead.domain.review.platform.PlatformReviewModels;
 import com.lookahead.domain.review.platform.PlatformReviewService;
 import com.lookahead.learning.content.exception.AccountFailure;
@@ -41,7 +40,7 @@ class SupportFeedbackServiceTest {
   @SuppressWarnings("unchecked")
   @BeforeEach void setup() {
     var author=mock(LocalAuthorAccess.class); when(author.allowed(owner)).thenReturn(true);
-    reviews=new PlatformReviewService(new FileSystemPlatformReviewObjects(root),author,tools.jackson.databind.json.JsonMapper.builder().build(),"");
+    reviews=com.lookahead.domain.review.platform.PlatformReviewFixtures.service(root,author,tools.jackson.databind.json.JsonMapper.builder().build(),"");
     sender=mock(JavaMailSender.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
     provider=mock(ObjectProvider.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
     when(provider.getIfAvailable()).thenReturn(sender);
@@ -79,7 +78,13 @@ class SupportFeedbackServiceTest {
     assertThat(item.reviewerName()).isEqualTo("A Learner");
     assertThat(item.attachments()).isEmpty();
     // The reply address is in the email and the receipt row only.
-    assertThat(java.nio.file.Files.readString(root.resolve("reviews").resolve(java.nio.file.Files.list(root.resolve("reviews")).findFirst().orElseThrow().getFileName()))).doesNotContain("reply@example.test");
+    // DLV-971: the request is one record under support-requests/records/YYYY/MM/DD/SUP-000001.json, never in the review store.
+    try (var files = java.nio.file.Files.walk(root.resolve("support-requests/records"))) {
+      var record = files.filter(java.nio.file.Files::isRegularFile).findFirst().orElseThrow();
+      assertThat(record.getFileName().toString()).isEqualTo("SUP-000001.json");
+      assertThat(java.nio.file.Files.readString(record)).doesNotContain("reply@example.test").contains("\"kind\" : \"request\"");
+    }
+    assertThat(java.nio.file.Files.exists(root.resolve("reviews/records"))).isFalse();
   }
   @Test void unconfirmedSendCannotBeDuplicatedByRetry() {
     doThrow(new org.springframework.mail.MailSendException("synthetic failure")).when(sender).send(any(MimeMessage.class));
