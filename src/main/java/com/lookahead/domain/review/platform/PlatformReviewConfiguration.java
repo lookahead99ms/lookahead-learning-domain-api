@@ -82,8 +82,10 @@ public class PlatformReviewConfiguration {
     }
 
     @Bean LegacyReviewImport legacyReviewImport(StoreSettings settings, PublicationSettings publication, ObjectProvider<S3Client> clients,
-            PlatformReviewService.Stores stores, ObjectMapper mapper) {
-        return new LegacyReviewImport(objects(settings, publication, clients, null), stores, mapper);
+            PlatformReviewService.Stores stores, ObjectMapper mapper, ObjectProvider<org.springframework.boot.info.BuildProperties> build) {
+        var properties = build.getIfAvailable();
+        return new LegacyReviewImport(objects(settings, publication, clients, null), stores, mapper,
+                properties == null ? null : properties.get("sourceRevision"));
     }
 
     @Bean DeliveryPlanStore deliveryPlanStore(StoreSettings settings, PublicationSettings publication, ObjectProvider<S3Client> clients, ObjectMapper mapper) {

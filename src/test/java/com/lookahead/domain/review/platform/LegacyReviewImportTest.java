@@ -46,8 +46,8 @@ class LegacyReviewImportTest {
         try (var log = LogCapture.start()) {
             counts = importer.run().orElseThrow();
             var line = log.only("platform-review.import");
-            assertThat(line.getFormattedMessage()).isEqualTo("Legacy reviews imported: 2 review(s) and 1 request(s) from 2 day file(s) with 1 image(s); marker written, legacy objects kept");
-            assertThat(LogCapture.keys(line)).containsEntry("count", 3).containsEntry("reviews", 2).containsEntry("requests", 1).containsEntry("images", 1);
+            assertThat(line.getFormattedMessage()).isEqualTo("Legacy reviews imported: 2 review(s) and 1 request(s) from 2 day file(s) with 1 image(s); 0 record(s) were already in place from an earlier attempt, 1 legacy image(s) do not exist; marker written, legacy objects kept");
+            assertThat(LogCapture.keys(line)).containsEntry("count", 3).containsEntry("reviews", 2).containsEntry("requests", 1).containsEntry("images", 1).containsEntry("resumed", 0).containsEntry("missing", 1);
             log.containsNone("Old tab", "First Reviewer");
         }
         assertThat(counts).isEqualTo(new LegacyReviewImport.Counts(2, 1, 1, 2));
@@ -76,6 +76,13 @@ class LegacyReviewImportTest {
         // The marker carries the counts; the legacy objects are untouched; a second run does nothing.
         String marker = Files.readString(root.resolve("reviews/.imported.json"));
         assertThat(marker).contains("\"reviews\" : 2", "\"requests\" : 1", "\"images\" : 1", "\"days\" : 2");
+        // DLV-971: the marker is also the migration report the AWS lane reads for transition B.
+        assertThat(marker).contains("\"legacyRecords\" : 3", "\"migratedRecords\" : 3", "\"legacyAttachments\" : 2", "\"migratedAttachments\" : 1",
+                "\"domainSourceSha\" : \"unknown\"", "\"verifiedAt\" : \"", "\"missingAttachments\" : 1", "\"review-images/item-c/missing.png\"", "\"resumedRecords\" : 0");
+        // DLV-971/F9: every legacy item has its destination fixed in a progress object before its record was written.
+        assertThat(Files.readString(root.resolve("reviews/.import-progress/2026-10-12/item-a.json"))).contains("\"recordId\" : \"REV-000001\"", "\"createdAt\" : \"2026-10-12T09:00:00Z\"", "\"kind\" : \"review\"");
+        assertThat(Files.readString(root.resolve("reviews/.import-progress/2026-10-13/item-b.json"))).contains("\"recordId\" : \"SUP-000001\"", "\"kind\" : \"request\"");
+        assertThat(Files.readString(root.resolve("reviews/.import-progress/2026-10-13/item-c.json"))).contains("\"recordId\" : \"REV-000002\"");
         assertThat(legacy.list("reviews/")).containsExactlyInAnyOrder("reviews/2026-10-12.json", "reviews/2026-10-13.json", "reviews/notes.txt");
         assertThat(legacy.list("review-images/item-a/")).hasSize(1);
         try (var log = LogCapture.start()) {
@@ -91,14 +98,19 @@ class LegacyReviewImportTest {
         var empty = new FileSystemPlatformReviewObjects(root.resolve("empty"));
         assertThat(new LegacyReviewImport(empty, stores, mapper).run()).isEmpty();
         assertThat(Files.exists(root.resolve("reviews/.imported.json"))).isFalse();
-        // A record already in the store: the import is skipped and says so, no marker is written.
+        // Records in the store without any import progress: their origin is unknown, the import is blocked, nothing is written.
         var service = new PlatformReviewService(stores, org.mockito.Mockito.mock(com.lookahead.learning.content.security.LocalAuthorAccess.class), mapper, "", java.time.Clock.systemUTC(), new ReviewStatusHistory.InMemory());
         service.recordRequest(new com.lookahead.learning.content.security.AccountPrincipal(learner, "l@example.test", "L", true), "problem", "x", "y", List.of(), "ref-9");
         try (var log = LogCapture.start()) {
             assertThat(new LegacyReviewImport(legacy, stores, mapper).run()).isEmpty();
-            assertThat(log.only("platform-review.import").getFormattedMessage()).isEqualTo("Legacy review import skipped: the record stores already hold records; no marker written");
+            var line = log.only("platform-review.import");
+            assertThat(LogCapture.keys(line)).containsEntry("reason", "IMPORT_BLOCKED");
+            assertThat(line.getFormattedMessage()).startsWith("Legacy review import blocked: the record stores already hold records and no import progress exists");
         }
         assertThat(Files.exists(root.resolve("reviews/.imported.json"))).isFalse();
+        assertThat(Files.exists(root.resolve("reviews/.import-progress"))).isFalse();
+        assertThat(stores.reviews().all()).isEmpty();
+        assertThat(stores.requests().all()).hasSize(1);
     }
 
     /** A day file written before DLV-971 has no kind, requestType or reference keys: its items import as reviews with every field kept. */
