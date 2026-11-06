@@ -114,6 +114,16 @@ public final class RecordStore {
     }
 
     /**
+     * DLV-971/F9: writes a new record only when nothing exists under its key; false when an object is already there (the
+     * import's other task wrote the same record first). A storage failure answers 503 like every other write.
+     */
+    public boolean createIfAbsent(StoredRecord record) {
+        String key = key(record.id(), record.createdAt());
+        byte[] bytes = serialize(record);
+        return storage(() -> objects.write(key, bytes, null));
+    }
+
+    /**
      * Reads the record, applies {@code edit} and writes the result only when nobody else wrote the record in between;
      * {@code edit} returning null leaves the record unchanged. Null from the whole call: the record is gone.
      */

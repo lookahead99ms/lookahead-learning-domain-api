@@ -578,14 +578,36 @@ record, an admin a learner's request only; a record already promoted answers
 `409 PLATFORM_REVIEW_ALREADY_PROMOTED`; 404 for an unknown record; 503 when the plan storage is
 unavailable (the record stays unlinked).
 
-Legacy import (`LegacyReviewImport`): at start, when both stores are empty and the legacy prefix
-has `reviews/<day>.json` files, every item is rewritten as a record in the right store (reviews to
+Legacy import (`LegacyReviewImport`): at start, while no marker exists and the legacy prefix has
+`reviews/<day>.json` files, every item is rewritten as a record in the right store (reviews to
 `reviews/`, kind request to `support-requests/`, oldest first so the ids follow the original order),
 images are copied from `review-images/<itemId>/` to `attachments/<ID>/NN-name.ext`, the counts are
-logged (`platform-review.import`) and a marker `reviews/.imported.json` with the counts keeps it from
-running twice. Legacy objects are never deleted here; the AWS lane removes the prefix after the
-counts match. A damaged legacy file stops the import without a marker so the next start tries
-again. Tests: `LegacyReviewImportTest`.
+logged (`platform-review.import`) and a marker `reviews/.imported.json` keeps it from running twice.
+Legacy objects are never deleted here; the AWS lane removes the prefix after the counts match.
+
+The import resumes after a partial failure (DLV-971/F9). Before anything is written for an item, its
+destination is fixed in `reviews/.import-progress/<day>/<itemId>.json` (legacy day and item id, kind,
+the record id drawn from the sequence, the legacy `createdAt` that decides the record key), created
+if-none-match so the first writer wins. A restarted task, or a second task starting at the same
+moment, reads the progress back and uses the same id and attachment keys: an attachment put is
+idempotent, a record create is if-none-match (`RecordStore.createIfAbsent`), and a record already in
+place is verified (id and kind), its images checked and re-copied from the legacy object if lost,
+and counted instead of written. A number drawn before a failed progress write is a gap in the
+sequence, never a second record. The marker is written only after every legacy item has a verified
+record; its counts come from what is in the stores, not from the attempt: `reviews`, `requests`,
+`images`, `days`, `legacyRecords`, `migratedRecords`, `legacyAttachments`, `migratedAttachments`,
+`missingAttachments` (legacy image objects that do not exist, listed under `missing`, never
+invented), `resumedRecords`, `domainSourceSha` (the deployed source revision from build info,
+"unknown" without it), `importedAt`/`verifiedAt`. Transition B requires `legacyAttachments ==
+migratedAttachments`, so a missing legacy image blocks B until the owner has read the list.
+A storage failure stops the run (`IMPORT_FAILED`), keeps the progress and is retried at the next
+start. Records in the stores without any progress object block the import (`IMPORT_BLOCKED`,
+nothing written) because their origin is unknown; the owner reads them and either removes them or
+writes the marker by hand. A progress object that does not describe its item, or a record under
+the fixed id of another kind, stops the run (`IMPORT_PROGRESS_MISMATCH`). Tests:
+`LegacyReviewImportTest`, `LegacyReviewImportRetryTest` (failure injection at each step, two tasks
+at once), `LegacyReviewImportStrandingTest` (the regression, which fails against the import before
+the fix).
 
 ## Delivery plan (DLV-971)
 

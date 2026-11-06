@@ -37,7 +37,8 @@ class PlatformReviewConfigurationTest {
         var legacy = PlatformReviewConfiguration.objects(settings, local, clients, null);
         legacy.put("reviews/2026-10-12.json", "{}".getBytes());
         assertThat(Files.exists(directory.resolve("reviews/2026-10-12.json"))).isTrue();
-        var importer = configuration.legacyReviewImport(settings, local, clients, stores, mapper);
+        @SuppressWarnings("unchecked") ObjectProvider<org.springframework.boot.info.BuildProperties> build = mock(ObjectProvider.class, withSettings().mockMaker(MockMakers.SUBCLASS));
+        var importer = configuration.legacyReviewImport(settings, local, clients, stores, mapper, build);
         assertThat(importer).isNotNull();
         var access = mock(com.lookahead.domain.access.StaffAccessService.class);
         var plans = configuration.deliveryPlanService(configuration.deliveryPlanStore(settings, local, clients, mapper), access, new ReviewStatusHistory.InMemory(), local);
