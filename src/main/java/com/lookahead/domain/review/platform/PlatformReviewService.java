@@ -105,6 +105,8 @@ public class PlatformReviewService {
 
     public Receipt create(AccountPrincipal actor, UUID key, Fields fields, List<Upload> uploads) {
         role(actor);
+        // DLV-971 (owner, 2026-11-06): no review role today (a learner, a test account): nothing new, whatever was written before.
+        if (access != null && "user".equals(access.permissions(actor).feedbackRole())) throw denied();
         if (key == null) throw invalid("Retry the request from the page.");
         Fields clean = fields(fields);
         var images = images(uploads, List.of());
