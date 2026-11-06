@@ -17,7 +17,7 @@ final class TestAccountDeletionPolicy {
     }
 
     /**
-     * DLV-969 (owner, 2026-11-04), DEV: the 35 roster accounts are never deleted, only reset to their scenario. A created
+     * DLV-969 (owner, 2026-11-04), DEV: the 27 roster accounts are never deleted, only reset to their scenario. A created
      * test account is deleted by the owner or by the person who created it, whatever their role.
      */
     static boolean allowsInDev(boolean owner, UUID actorId, UUID targetId, UUID creatorId) {

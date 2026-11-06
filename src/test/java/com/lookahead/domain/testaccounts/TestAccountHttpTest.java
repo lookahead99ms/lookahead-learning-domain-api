@@ -28,7 +28,7 @@ class TestAccountHttpTest {
     static class App {
         @Bean TestAccountsService service() {
             var service=mock(TestAccountsService.class);
-            when(service.seed()).thenReturn(35);
+            when(service.seed()).thenReturn(27);
             return service;
         }
         @Bean CreatedTestAccounts created() { return mock(CreatedTestAccounts.class); }
@@ -70,7 +70,7 @@ class TestAccountHttpTest {
             assertThat(success.headers().allValues("set-cookie")).allMatch(value -> value.startsWith("XSRF-TOKEN="));
             assertThat(success.body()).doesNotContain("synthetic-learner", "synthetic-staff");
         }
-        assertThat(send("POST","seed",OPERATOR).body()).contains("\"created\":35");
+        assertThat(send("POST","seed",OPERATOR).body()).contains("\"created\":27");
     }
     @org.springframework.beans.factory.annotation.Autowired TestAccountsService service;
     @Test void browserAndSimpleRequestsCannotSeedEvenWithOperatorCredentials() throws Exception {

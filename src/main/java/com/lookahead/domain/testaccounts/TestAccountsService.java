@@ -83,7 +83,11 @@ public class TestAccountsService {
                     entry.accountId(),entry.username(),created?"scenario":"preserved");
             if(created&&registered==1)fresh.add(entry);
         }
-        UUID operator=TestAccountRoster.entries().stream().filter(e->e.username().equals("admin01")).findFirst().orElseThrow().accountId();
+        // DLV-971 (owner, 2026-11-06): the roster has no staff accounts, so the Local author/owner account is the operator
+        // of the scenario purchases (learner19's staff upgrade and the purchase actor rows). It gets its subject row here
+        // and is never registered as a test account.
+        UUID operator=com.lookahead.learning.content.security.LocalAuthorAccess.ACCOUNT_ID;
+        jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT DO NOTHING",operator);
         Instant now=Instant.now();for(var entry:fresh)defaults(entry,operator,"scenario",now);
         int created=fresh.size();
         Events.afterCommit(()->Events.success(Events.EVENT,"test-account.seed").addKeyValue("count",created)
@@ -236,7 +240,7 @@ public class TestAccountsService {
     void requireOwner(AccountPrincipal actor){staff.requireOwner(actor);}
     /**
      * DLV-969 (owner, 2026-11-04): one deleted DEV roster account back to active, rebuilt from its scenario exactly like
-     * Reset (membership, purchases and study plan for a learner; the role for staff), inside the caller's transaction.
+     * Reset (membership, purchases and study plan), inside the caller's transaction.
      * Only a roster id whose owner-created registry row is deleted; a created test account is never restored.
      * @return true when it was restored now, false when there was nothing to restore.
      */
@@ -303,13 +307,11 @@ public class TestAccountsService {
         this.actor(actor.toString());
         applyTemplate(id,template,actor,"scenario",Instant.now());
     }
-    /** {@code learnerNN} gets its Local scenario (or the legacy preset), {@code co-author} and {@code admin} their role. */
+    /**
+     * {@code learnerNN} gets its Local scenario (or the legacy preset). DLV-971 (owner, 2026-11-06): there is no staff
+     * scenario any more; a test account never gets a staff role here.
+     */
     private void applyTemplate(UUID id,String template,UUID actor,String preset,Instant now){
-        if(template.equals("co-author")||template.equals("admin")){
-            String role=template;
-            jdbc.update("INSERT INTO staff_access(id,account_id,roles,topic_grants,full_curriculum,revision) VALUES (?,?,?::jsonb,'[]',true,1) ON CONFLICT(account_id) DO UPDATE SET roles=excluded.roles,topic_grants='[]',full_curriculum=true,revision=staff_access.revision+1,updated_at=clock_timestamp()",UUID.randomUUID(),id,json.writeValueAsString(List.of(role)));
-            return;
-        }
         int number=Integer.parseInt(template.substring(7));
         if(preset.equals("legacy")){
             var topics=number==9?Set.of("learn:hands-on-dsa","learn:algorithmic-patterns"):catalog.allTopicIds();

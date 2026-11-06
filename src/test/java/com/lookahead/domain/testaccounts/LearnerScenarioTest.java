@@ -7,11 +7,17 @@ import static org.assertj.core.api.Assertions.*;
 
 class LearnerScenarioTest {
     @Test void rosterMatchesEveryApprovedMatrixRowAndExcludesTheOwner() {
-        assertThat(TestAccountRoster.entries()).hasSize(35);
+        // DLV-971 (owner, 2026-11-06): learner test accounts only; no co-author or admin test account anywhere.
+        assertThat(TestAccountRoster.entries()).hasSize(27);
         assertThat(TestAccountRoster.entries().stream().map(TestAccountRoster.Entry::username))
                 .doesNotHaveDuplicates().doesNotContain("author01","author@lookahead.test");
-        assertThat(TestAccountRoster.entries().stream().filter(e->!e.staff()).map(TestAccountRoster.Entry::username))
-                .containsExactlyElementsOf(LearnerScenario.all().stream().map(LearnerScenario::username).toList());
+        assertThat(TestAccountRoster.entries().stream().map(TestAccountRoster.Entry::username))
+                .containsExactlyElementsOf(LearnerScenario.all().stream().map(LearnerScenario::username).toList())
+                .noneMatch(name->name.startsWith("coauthor")||name.startsWith("admin"));
+        assertThat(TestAccountRoster.entries()).allSatisfy(entry->assertThat(entry.template()).isEqualTo(entry.username()));
+        assertThat(TestAccountRoster.isRoster(new TestAccountRoster.Entry("learner27").accountId())).isTrue();
+        for(String retired:List.of("coauthor01","coauthor02","admin01","admin06"))
+            assertThat(TestAccountRoster.isRoster(new TestAccountRoster.Entry(retired).accountId())).as(retired).isFalse();
         String[] purchases={"-","-","-","-","learn","learn","learn","grow","grow","grow","advance","advance","advance",
                 "complete","complete","complete","advance","complete","complete","interview-sprint","interview-sprint",
                 "interview-sprint","monthly-promo","annual-promo","interview-pass-promo","monthly-promo","advance"};

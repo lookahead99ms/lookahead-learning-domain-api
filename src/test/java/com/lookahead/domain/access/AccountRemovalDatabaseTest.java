@@ -52,6 +52,7 @@ class AccountRemovalDatabaseTest {
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V18__access_removal_and_staff_aliases.sql")));
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V19__cloud_identities.sql")));
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V20__cloud_merge_tokens.sql")));
+        jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V21__learner_test_accounts_only.sql")));
         repository=new StaffAccessRepository(jdbc,json);
         staff=new StaffAccessService(repository,new LocalAuthorAccess(new MockEnvironment().withProperty("app.deployment-environment","dev")),mock(SnapshotValidator.class));
         ownerId=account("owner-subject","owner@example.invalid",true,true);

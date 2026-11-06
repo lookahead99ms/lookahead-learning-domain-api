@@ -12,8 +12,9 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * DLV-969 S35 (owner, 2026-11-03): Local's 35-account roster in DEV, for the admin and staff videos: 27 learner
- * scenarios, 2 co-authors and 6 admins as {@code <name>@lookahead.dev}, database-only and admitted by the owner.
+ * DLV-969 S35 (owner, 2026-11-03): Local's roster in DEV, for the admin and staff videos: the 27 learner scenarios as
+ * {@code <name>@lookahead.dev}, database-only and admitted by the owner. DLV-971 (owner, 2026-11-06): learner test
+ * accounts only; the co-author and admin test accounts the roster used to carry are retired by V21 and never created.
  *
  * <p>One call creates at most {@link #BATCH} accounts so it ends well inside the Gateway's read timeout; the page
  * repeats the call until every account exists. An account that exists, or was deleted, is never created again.
@@ -152,7 +153,7 @@ public class DevTestRoster {
 
     /** A roster learner whose scenario includes a study plan. */
     private static boolean needsPlan(UUID id) {
-        return TestAccountRoster.entries().stream().filter(entry -> entry.accountId().equals(id) && !entry.staff())
+        return TestAccountRoster.entries().stream().filter(entry -> entry.accountId().equals(id))
                 .anyMatch(entry -> LearnerScenario.of(Integer.parseInt(entry.username().substring(7))).planKind() != LearnerScenario.PlanKind.NONE);
     }
 }

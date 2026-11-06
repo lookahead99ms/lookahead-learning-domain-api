@@ -7,7 +7,9 @@ import java.util.Set;
 
 /**
  * DLV-969 S35: the scenarios a test account starts from, shared by the roster, single creation and the test-session
- * picker: {@code learner01}–{@code learner27} (Local's learner scenarios), {@code co-author} and {@code admin}.
+ * picker: {@code learner01}–{@code learner27} (Local's learner scenarios). DLV-971 (owner, 2026-11-06): the
+ * {@code co-author} and {@code admin} scenarios are gone; a test account never carries a staff role. The hierarchy
+ * ({@link #allows}, {@link #role}) stays, because it also governs the People list and who may act on which account.
  */
 public final class TestAccountTemplates {
     private TestAccountTemplates() {}
@@ -17,22 +19,16 @@ public final class TestAccountTemplates {
     public static List<Template> all() {
         var result = new ArrayList<Template>();
         for (var scenario : LearnerScenario.all()) result.add(new Template(scenario.username(), label(scenario), List.of()));
-        result.add(new Template("co-author", "Co-author with the full curriculum", List.of("co-author")));
-        result.add(new Template("admin", "Admin with the full curriculum", List.of("admin")));
         return List.copyOf(result);
     }
 
     public static boolean known(String id) { return all().stream().anyMatch(template -> template.id().equals(id)); }
 
-    public static Set<String> roles(String id) {
-        return all().stream().filter(template -> template.id().equals(id)).findFirst().map(t -> Set.copyOf(t.roles())).orElse(Set.of());
-    }
-
     /**
      * DLV-969 (owner, 2026-11-04): "Create test account" makes learner test accounts only, for every role, the owner
-     * included. Staff test accounts (co-author, admin) exist only in the fixed roster.
+     * included. DLV-971 (owner, 2026-11-06): every scenario is a learner scenario, so this is the whole list.
      */
-    public static List<Template> creatable() { return all().stream().filter(template -> template.roles().isEmpty()).toList(); }
+    public static List<Template> creatable() { return all(); }
 
     public static boolean creatable(String id) { return creatable().stream().anyMatch(template -> template.id().equals(id)); }
 

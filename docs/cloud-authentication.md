@@ -205,8 +205,14 @@ The acting person's role is the lower of their roles (`TestAccountTemplates.role
 
 Who may open each page is unchanged (`requireAccessReader`, the staff reader of the test-account list, owner/admin
 Reset). A test session acts as the test account, so its course access is the test account's own. "Create test
-account" makes learner test accounts only, for every role (`TEST_ACCOUNT_LEARNER_ONLY`, 403); the allowance's
-`scenarios` lists learner scenarios only; staff test accounts exist only in the roster.
+account" makes learner test accounts only, for every role; the allowance's `scenarios` lists the 27 learner scenarios,
+and any other scenario id answers `422 UNKNOWN_SCENARIO`. DLV-971 (owner, 2026-11-06): the roster has learner test
+accounts only. The co-author and admin test accounts it used to carry (`coauthor01`, `coauthor02`,
+`admin01`–`admin06`, in DEV with the `@lookahead.dev` suffix) are gone from the roster and retired by migration V21
+where a database already holds them: their `staff_access` row is cleared, their registry row is marked deleted by
+`V21` (a creation-ledger row too), and their `platform_subjects` and admitted `cloud_accounts` rows stay (V17). They
+are never created or restored again. A test account never carries a staff role; the hierarchy above still decides who
+sees or acts on an account, because it also governs the People list.
 
 Restore of deleted roster accounts (owner, DEV only), on the route the Gateway already forwards:
 `POST /api/v1/admin/test-accounts` with `{"restoreRoster": true, "confirm": "RESTORE"}` answers
@@ -223,7 +229,7 @@ object. It is computed by one SQL query (`DevTestRoster.STATUS`) on every read:
 
 | Field | Meaning |
 | --- | --- |
-| `total` | roster entries (35) |
+| `total` | roster entries (27) |
 | `ready` | active owner-created roster accounts |
 | `deleted` | roster accounts deleted before they became permanent; what Restore brings back |
 | `withoutPlan` | ready learners whose scenario has a study plan they do not have (S37) |
@@ -251,7 +257,7 @@ exact bodies through the controller with Spring Boot's JSON mapper.
 ### Owner-approved purchases for DEV test accounts (DLV-969, owner 2026-11-04)
 
 In DEV (`app.deployment-environment=dev`) payments stay simulated, and only a test account staff created can
-purchase: an active `test_account_registry` row with a `creator_id` and a `@lookahead.dev` username (the 35 roster
+purchase: an active `test_account_registry` row with a `creator_id` and a `@lookahead.dev` username (the 27 roster
 accounts and "Create test account" learners), used through a test session. `PaymentConfiguration` wraps the mock
 provider in `OwnerApprovalPaymentGateway`, so a checkout is a request: no payment, no access, no migration. Local
 pays the mock at once as before; PROD has no payment provider.
@@ -292,7 +298,7 @@ approves them." (real learners, testers, staff's own accounts, deleted test acco
 `409 PURCHASE_REQUEST_PENDING` "A request is already waiting for the owner or an admin." (other pending purchases keep
 `409 PURCHASE_PENDING`). Decisions: `401 AUTHENTICATION_REQUIRED`; `403 PURCHASE_APPROVAL_DISABLED` outside DEV;
 `403 PURCHASE_APPROVAL_FORBIDDEN` "Only the owner or an admin can approve purchase requests." (co-author, reviewer,
-tester, learner, or an admin for a co-author test account); `422 PURCHASE_DECISION_INVALID`; `404 PURCHASE_NOT_FOUND`;
+tester, learner, or an admin for an account above an admin in the hierarchy); `422 PURCHASE_DECISION_INVALID`; `404 PURCHASE_NOT_FOUND`;
 `409 PURCHASE_NOT_A_REQUEST` (not waiting for a decision); `409 PURCHASE_REQUEST_DECIDED` (the other decision was
 already made); `409 PURCHASE_REQUEST_STALE` on approve after a Reset or once the replaced purchase is no longer
 active (decline it and send a new request); `503 PAYMENT_UNAVAILABLE` when the mock provider did not settle (approve

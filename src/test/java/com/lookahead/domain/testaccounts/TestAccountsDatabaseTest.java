@@ -33,6 +33,7 @@ class TestAccountsDatabaseTest {
   for(String file:List.of("V1__platform.sql","V2__author_review_events.sql","V3__plan_names.sql","V4__cloud_identity_and_sign_ins.sql","V6__staff_access.sql","V8__memberships.sql","V9__plan_lifecycle.sql","V10__test_account_registry.sql","V11__free_plan_allowances.sql","V12__created_test_accounts.sql","V13__real_account_maintenance.sql","V14__managed_test_purchase_purge_grants.sql"))
    jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain",file)));
   jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V15__retain_runtime_audit.sql")));
+  jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V21__learner_test_accounts_only.sql")));
   // Explicit Local fixture provisioning preserves the existing purge contract.
   jdbc.execute("GRANT DELETE ON membership_audit TO lookahead_platform_app");
   jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",admin.accountId());
@@ -67,12 +68,17 @@ class TestAccountsDatabaseTest {
   String before=jdbc.queryForObject("SELECT jsonb_agg(to_jsonb(t) ORDER BY username)::text FROM test_account_registry t",String.class);
   int created=tx.execute(t->service.seed());assertThat(created).isZero();
   assertThat(jdbc.queryForObject("SELECT jsonb_agg(to_jsonb(t) ORDER BY username)::text FROM test_account_registry t",String.class)).isEqualTo(before);
-  assertThat(jdbc.queryForObject("SELECT count(*) FROM test_account_registry",Integer.class)).isEqualTo(35);
+  // DLV-971 (owner, 2026-11-06): the 27 learners only; no roster account carries a staff role.
+  assertThat(jdbc.queryForObject("SELECT count(*) FROM test_account_registry",Integer.class)).isEqualTo(27);
+  assertThat(jdbc.queryForObject("SELECT count(*) FROM staff_access s JOIN test_account_registry r USING(account_id) WHERE s.roles<>'[]'::jsonb",Integer.class)).isZero();
   assertThat(jdbc.queryForObject("SELECT count(*) FROM account_grants WHERE topic_id IN ('owner-private','learner-private')",Integer.class)).isEqualTo(2);
   assertThat(jdbc.queryForObject("SELECT count(*) FROM test_account_registry WHERE account_id=?",Integer.class,LocalAuthorAccess.ACCOUNT_ID)).isZero();
   assertThat(jdbc.queryForObject("SELECT count(*) FROM reportable_platform_subjects WHERE id=?",Integer.class,learner(1))).isZero();
-  // DLV-969 (owner, 2026-11-04): an admin sees admins and learners, never the two co-authors.
-  assertThat(service.list(admin)).hasSize(33);
+  // DLV-971: the Local author account is the operator of learner19's staff upgrade and stays outside the registry.
+  assertThat(jdbc.queryForObject("SELECT actor_id FROM membership_purchases WHERE account_id=? AND source='staff-upgrade'",UUID.class,learner(19))).isEqualTo(LocalAuthorAccess.ACCOUNT_ID);
+  assertThat(jdbc.queryForObject("SELECT count(*) FROM membership_audit WHERE action='staff-upgrade' AND actor_id=?",Integer.class,LocalAuthorAccess.ACCOUNT_ID)).isPositive();
+  // DLV-969 (owner, 2026-11-04): an admin sees admins and learners; every roster account is a learner now.
+  assertThat(service.list(admin)).hasSize(27);
  }
  @Test void resetIsConfirmedRevisionCheckedRetrySafeAndRetainsPurchaseHistory(){
   seed();UUID id=learner(17);long before=revision(id);
@@ -94,7 +100,7 @@ class TestAccountsDatabaseTest {
   assertThat(revision(id)).isEqualTo(before);
   when(staff.permissions(admin)).thenReturn(StaffPermissions.forRoles(false,Set.of("co-author")));
   // A co-author sees every test account (none is the owner).
-  assertThat(service.list(admin)).hasSize(35);
+  assertThat(service.list(admin)).hasSize(27);
   assertThatThrownBy(()->service.reset(admin,id,new TestAccountsService.Reset(UUID.randomUUID(),before,"learner06","scenario"))).hasMessageContaining("Only owner or admin");
   when(staff.permissions(admin)).thenReturn(StaffPermissions.forRoles(false,Set.of()));
   assertThatThrownBy(()->service.list(admin)).hasMessageContaining("Owner, admin or co-author");
@@ -195,22 +201,28 @@ class TestAccountsDatabaseTest {
   assertThat(created.allowance(coauthor).remaining()).isZero();
   assertThatThrownBy(()->created.create(coauthor,new CreatedTestAccounts.Create(UUID.randomUUID(),"synthetic-learner-fixture-only"))).hasMessageContaining("limit");
   seed();
-  var staffId=TestAccountRoster.entries().stream().filter(TestAccountRoster.Entry::staff).findFirst().orElseThrow().accountId();
+  // DLV-971: the roster has no staff accounts; the hierarchy still holds for a test account given a co-author role by hand.
+  var staffId=learner(27);
   when(repository.forAccount(staffId)).thenReturn(new StaffAccessRepository.Assignment(
       UUID.randomUUID(),staffId,null,Set.of("co-author"),Set.of(),false,1));
   assertThatThrownBy(()->created.delete(coauthor,staffId)).hasMessageContaining("role cannot delete");
  }
+ /**
+  * DLV-971 (owner, 2026-11-06): the roster has no staff accounts, so the hierarchy is proved on roster learners given a
+  * role by hand in SQL (a co-author target, a co-author actor and an admin target), inside a rolled-back transaction.
+  */
  @Test void ownerAndCoauthorCanDeleteLowerRankedStaffAndRevokeAssignments() {
   seed();
   var roster=TestAccountRoster.entries();
-  var coauthorTarget=roster.stream().filter(e->e.username().equals("coauthor01")).findFirst().orElseThrow();
-  var coauthorActor=roster.stream().filter(e->e.username().equals("coauthor02")).findFirst().orElseThrow();
-  var adminTarget=roster.stream().filter(e->e.username().equals("admin01")).findFirst().orElseThrow();
+  var coauthorTarget=roster.get(24);var coauthorActor=roster.get(25);var adminTarget=roster.get(23);
   var owner=mock(LocalAuthorAccess.class);when(owner.allowed(admin)).thenReturn(true);
   var identity=mock(TestIdentityOperator.class);
   var managed=new CreatedTestAccounts(jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),
       new TestAccountPolicy(TestAccountPolicyTest.local()),new StaffAccessRepository(jdbc,json),owner,identity);
   tx.executeWithoutResult(status->{
+   for(var given:Map.of(coauthorTarget,"co-author",coauthorActor,"co-author",adminTarget,"admin").entrySet())
+    jdbc.update("INSERT INTO staff_access(id,account_id,roles,topic_grants,full_curriculum) VALUES (?,?,?::jsonb,'[]'::jsonb,true)",
+        UUID.randomUUID(),given.getKey().accountId(),"[\""+given.getValue()+"\"]");
    managed.delete(admin,coauthorTarget.accountId());
    assertThat(jdbc.queryForObject("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,coauthorTarget.accountId())).isEqualTo("[]");
    assertThat(jdbc.queryForObject("SELECT creation_state FROM test_account_registry WHERE account_id=?",String.class,coauthorTarget.accountId())).isEqualTo("deleted");
@@ -288,6 +300,58 @@ class TestAccountsDatabaseTest {
   assertThat(created.allowance(admin).used()).isEqualTo(1);
   verify(operator,times(1)).provision(any(),any(),any());
   verify(operator,times(2)).activate(any(),any());
+ }
+ /**
+  * DLV-971 (owner, 2026-11-06): V21 retires the co-author and admin roster rows a Local database already holds: the
+  * role is cleared, the registry row is deleted by 'V21', a creation-ledger row is deleted too, the subject row stays;
+  * seed() then ignores them and registers the 27 learners only. Rolled back, so the shared schema stays as it was.
+  */
+ @Test void v21RetiresPreExistingStaffRosterRowsAndSeedIgnoresThem() throws Exception {
+  String migration=Files.readString(Path.of("src/main/resources/db/domain/V21__learner_test_accounts_only.sql"));
+  var retired=List.of(new TestAccountRoster.Entry("coauthor01"),new TestAccountRoster.Entry("coauthor02"),
+      new TestAccountRoster.Entry("admin01"),new TestAccountRoster.Entry("admin06"));
+  tx.executeWithoutResult(status->{
+   for(var entry:retired){
+    jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT DO NOTHING",entry.accountId());
+    jdbc.update("INSERT INTO test_account_registry(account_id,username,initialization,last_changed_by) VALUES (?,?,'scenario','seed')",entry.accountId(),entry.username());
+    jdbc.update("INSERT INTO staff_access(id,account_id,roles,topic_grants,full_curriculum,revision) VALUES (?,?,?::jsonb,'[\"learn:core-java\"]'::jsonb,true,3)",
+        UUID.randomUUID(),entry.accountId(),entry.username().startsWith("coauthor")?"[\"co-author\"]":"[\"admin\"]");
+   }
+   // One of them also has a creation-ledger row, as a created account would.
+   jdbc.update("INSERT INTO test_account_creations(creator_id,mutation_key,account_id,username,state) VALUES (?,?,?,'admin06','active')",
+       admin.accountId(),UUID.randomUUID(),retired.get(3).accountId());
+   // A learner with the same shape stays untouched: only the retired usernames match.
+   UUID learner02=learner(2);
+   jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT DO NOTHING",learner02);
+   jdbc.update("INSERT INTO test_account_registry(account_id,username,initialization,last_changed_by) VALUES (?,?,'scenario','seed') ON CONFLICT DO NOTHING",learner02,"learner02");
+   long learnerRevision=revision(learner02);
+   jdbc.execute(migration);
+   for(var entry:retired){
+    assertThat(jdbc.queryForMap("SELECT roles::text AS roles,topic_grants::text AS grants,full_curriculum,revision FROM staff_access WHERE account_id=?",entry.accountId()))
+        .as(entry.username()).containsEntry("roles","[]").containsEntry("grants","[]").containsEntry("full_curriculum",false).containsEntry("revision",4L);
+    assertThat(jdbc.queryForMap("SELECT creation_state,last_changed_by,revision FROM test_account_registry WHERE account_id=?",entry.accountId()))
+        .as(entry.username()).containsEntry("creation_state","deleted").containsEntry("last_changed_by","V21");
+    assertThat(revision(entry.accountId())).isGreaterThan(1);
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM platform_subjects WHERE id=?",Integer.class,entry.accountId())).isEqualTo(1);
+   }
+   assertThat(jdbc.queryForObject("SELECT state FROM test_account_creations WHERE account_id=?",String.class,retired.get(3).accountId())).isEqualTo("deleted");
+   assertThat(jdbc.queryForObject("SELECT creation_state FROM test_account_registry WHERE account_id=?",String.class,learner02)).isEqualTo("active");
+   assertThat(revision(learner02)).isEqualTo(learnerRevision);
+   // Running it again changes nothing.
+   String before=jdbc.queryForObject("SELECT jsonb_agg(to_jsonb(t) ORDER BY username)::text FROM test_account_registry t",String.class);
+   jdbc.execute(migration);
+   assertThat(jdbc.queryForObject("SELECT jsonb_agg(to_jsonb(t) ORDER BY username)::text FROM test_account_registry t",String.class)).isEqualTo(before);
+   // seed() registers the 27 learners and leaves the retired rows deleted; the list never shows them. (Another test of
+   // this shared schema may have deleted a roster learner for good; that one is not seeded again either.)
+   int deletedLearners=jdbc.queryForObject("SELECT count(*) FROM test_account_registry WHERE creation_state='deleted' AND username LIKE 'learner%'",Integer.class);
+   service.seed();
+   assertThat(jdbc.queryForObject("SELECT count(*) FROM test_account_registry WHERE creation_state='active'",Integer.class)).isEqualTo(27-deletedLearners);
+   assertThat(jdbc.queryForObject("SELECT count(*) FROM test_account_registry WHERE creation_state='deleted' AND last_changed_by='V21'",Integer.class)).isEqualTo(4);
+   assertThat(service.list(admin)).hasSize(27-deletedLearners).noneMatch(row->row.get("username").asString().matches("coauthor0[12]|admin0[1-6]"));
+   assertThatThrownBy(()->service.reset(admin,retired.get(0).accountId(),new TestAccountsService.Reset(UUID.randomUUID(),1L,"coauthor01","scenario")))
+       .hasMessageContaining("Managed test account not found");
+   status.setRollbackOnly();
+  });
  }
  @Test @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named="TEST_ACCOUNT_FIXTURES",matches=".+")
  void realPublishedPlansPersistForAll27Scenarios() throws Exception {
