@@ -18,6 +18,7 @@ REPOSITORY = {'web': 'lookahead99ms/lookahead-learning-web', 'domain': 'lookahea
 SHA = 'a' * 40
 DIGEST = 'sha256:' + 'b' * 64
 TASK = 'arn:aws:ecs:us-east-2:509614632283:task/lookahead-dev-cluster/0123456789abcdef0123456789abcdef'
+RESTARTED_TASK = 'arn:aws:ecs:us-east-2:509614632283:task/lookahead-dev-cluster/fedcba9876543210fedcba9876543210'
 # A synthetic Web-shaped configuration (service discovery); the target-group shape (Gateway) is exercised by rewriting it. The
 # repository's real deploy-config.json is checked by test_workflow, and the repository's real template is used here for its
 # Task/Service shape.
@@ -58,6 +59,10 @@ class FakeAws:
         self.busyPolls, self.settleStatus, self.restoreDesired, self.scaleDenied = None, 'UPDATE_COMPLETE', 0, False
         # Observation (DLV-968): `onRound` runs at each list-tasks read, so a test can crash, replace or degrade the task mid-watch.
         self.taskArns, self.onRound, self.rounds = None, None, 0
+        # A restart during the watch: `restart(polls, revision)` makes the service roll out again (running 2, IN_PROGRESS) for that
+        # many describe-services reads, then settle on a new task; `revision` None keeps the verified task definition.
+        self.restartPolls, self.restartRevision = 0, None
+        self.forcePolls, self.rolloutAt = 2, None  # `--force-new-deployment` rolls for this many reads; the PRIMARY deployment's updatedAt once settled
 
     def __call__(self, *args):
         self.calls.append(args)
@@ -81,7 +86,8 @@ class FakeAws:
                     self.stack['status'] = self.settleStatus
                 self.busyPolls -= 1
             return {'Stacks': [{'StackStatus': self.stack['status'], 'StackId': 'id-' + opts['--stack-name'],
-                                'Parameters': [{'ParameterKey': k, 'ParameterValue': v} for k, v in self.stack['parameters'].items()]}]}
+                                'Parameters': [{'ParameterKey': k, 'ParameterValue': v} for k, v in self.stack['parameters'].items()],
+                                'Tags': [{'Key': k, 'Value': v} for k, v in self.stack.get('tags', {}).items()]}]}
         if key == 'servicediscovery list-instances':
             assert opts['--service-id'] == self.config['discovery']['serviceId'], opts
             return {'Instances': [{'Id': 'i'}] * self.discovered}
@@ -91,8 +97,22 @@ class FakeAws:
                 return {'services': [], 'failures': [{'reason': 'MISSING'}]}
             if self.restoreDesired and self.stack and self.stack['status'] in m.BUSY_PARKABLE:
                 self.service['desired'] = 1; self.restoreDesired -= 1
-            return {'services': [{'status': 'ACTIVE', 'desiredCount': self.service['desired'], 'runningCount': self.service['running'],
-                                  'deployments': [{'status': 'PRIMARY', 'rolloutState': self.service['rolloutState'], 'taskDefinition': 'td'}]}]}
+            rolling = self.restartPolls > 0
+            if self.restartPolls:
+                self.restartPolls -= 1
+                if self.restartPolls == 0:
+                    self.service.update({'running': 1, 'rolloutState': 'COMPLETED'}); self.taskArns = [RESTARTED_TASK]; self.rolloutAt = '2026-11-05T21:00:00+00:00'
+            revision = self.restartRevision or 'arn:aws:ecs:us-east-2:509614632283:task-definition/' + self.config['stack'] + ':3'
+            primary = {'id': 'ecs-svc/2' if self.taskArns == [RESTARTED_TASK] or rolling else 'ecs-svc/1', 'status': 'PRIMARY', 'rolloutState': self.service['rolloutState'],
+                       'taskDefinition': revision, **({'updatedAt': self.rolloutAt} if self.rolloutAt else {})}
+            deployments = [primary] + ([{'id': 'ecs-svc/1', 'status': 'ACTIVE', 'rolloutState': 'COMPLETED', 'taskDefinition': revision}] if rolling else [])
+            return {'services': [{'status': 'ACTIVE', 'desiredCount': self.service['desired'], 'runningCount': self.service['running'], 'deployments': deployments}]}
+        if key == 'ecs update-service' and '--force-new-deployment' in args:
+            assert (opts['--cluster'], opts['--service']) == (self.config['cluster'], self.config['stack']), opts
+            if self.scaleDenied:
+                raise RuntimeError('aws ecs update-service failed: AccessDeniedException: not authorized to perform: ecs:UpdateService')
+            self.restart(polls=self.forcePolls)
+            return {'service': {'desiredCount': self.service['desired']}}
         if key == 'ecs update-service':
             assert (opts['--cluster'], opts['--service'], opts['--desired-count']) == (self.config['cluster'], self.config['stack'], '0'), opts
             if self.scaleDenied:
@@ -153,6 +173,9 @@ class FakeAws:
             self.service = {'desired': int(merged['DesiredCount']), 'running': int(merged['DesiredCount']), 'rolloutState': self.rollout}
             return None
         raise AssertionError('unexpected aws call ' + key)
+
+    def restart(self, polls=2, revision=None):
+        self.service.update({'running': 2, 'rolloutState': 'IN_PROGRESS'}); self.restartPolls, self.restartRevision = polls, revision
 
     def serving(self, image='old', count='1'):
         """The stack as a previous deploy left it."""
@@ -443,12 +466,19 @@ class ExecuteTests(DeployFixture):
         self.assertEqual(['identity', 'change-set', 'executed', 'verified', 'observed'], [s['step'] for s in outcome['steps']])
         create = self.aws.ops('cloudformation', 'create-change-set')[0]
         self.assertEqual(('CREATE', 'app-12'), (create[create.index('--change-set-type') + 1], create[create.index('--change-set-name') + 1]))
-        # The stack says what it serves (user 2026-11-05): release tag, deploy run and source commit, next to the environment tag.
-        self.assertEqual({'LookAheadEnvironment': 'dev', 'ReleaseVersion': planned['releaseVersion'], 'DeployRun': self.run, 'SourceSha': planned['sourceSha']}, self.aws.tags)
+        # A new stack gets the environment tag only; an existing stack keeps its tags exactly (a tag change needs ecs:UntagResource on
+        # the provisioning role, which Domain run 42110285052 showed it lacks).
+        self.assertEqual({'LookAheadEnvironment': 'dev'}, self.aws.tags)
         self.assertEqual(self.aws.stack['parameters']['ApplicationImage'], planned['image'])
         self.assertEqual(1, len(self.aws.ops('servicediscovery', 'list-instances')))
         self.assertEqual([], self.aws.ops('elbv2', 'describe-target-health'))
         self.assertEqual(15, outcome['steps'][-1]['minutes'])
+        self.aws.stack['tags'] = {'LookAheadEnvironment': 'dev', 'ReleaseVersion': 'v2026.11.05.19.00', 'DeployRun': '42106678466', 'SourceSha': 'd' * 40}
+        self.aws.image = 'sha256:' + 'c' * 64
+        kept = self.planned()
+        self.assertEqual(self.aws.stack['tags'], kept['stackTags'])
+        self.deployer(kept).run()
+        self.assertEqual({'LookAheadEnvironment': 'dev', 'ReleaseVersion': 'v2026.11.05.19.00', 'DeployRun': '42106678466', 'SourceSha': 'd' * 40}, self.aws.tags)
 
     def test_rolling_update_replaces_the_task_definition_and_keeps_the_service(self):
         self.aws.serving('old')
@@ -733,6 +763,34 @@ class BlackoutTests(DeployFixture):
         self.assertEqual('success', self.deployer(self.planned(count='0'), now=lambda: NY_2350).run()['outcome'])
         self.aws.serving('b'); self.aws.image = 'sha256:' + 'b' * 64
         self.assertEqual('success', self.deployer(self.planned(answer='verify'), now=lambda: NY_2350, mode='verify').run()['outcome'])
+
+    def test_a_restart_of_the_verified_revision_during_observation_is_waited_for_and_re_verified(self):
+        # The content release's "restart Domain" step, or a manual refresh, rolls the same revision out again mid-watch (Domain run
+        # 42106678466 failed on this on 2026-11-05 as "stopped serving"); the deploy waits, verifies the new task and carries on.
+        self.aws.onRound = lambda count: self.aws.restart() if count == 3 else None
+        outcome = self.deployer(self.planned()).run()
+        steps = [s['step'] for s in outcome['steps']]
+        self.assertEqual(('success', ['identity', 'change-set', 'executed', 'verified', 'restarted-during-observation', 'observed']), (outcome['outcome'], steps))
+        restarted = outcome['steps'][4]
+        self.assertEqual((3, TASK, RESTARTED_TASK), (restarted['minute'], restarted['previousTask'], restarted['task']))
+        self.assertIn('content release', restarted['by'])
+        self.assertEqual(15, outcome['steps'][-1]['minutes'])  # the watch keeps its full length
+        self.assertTrue(any('restart of the verified revision is rolling out' in line for line in self.logged))
+        # the remaining rounds hold the service to the new task: a later replacement of it still fails
+        self.aws = FakeAws(self.config)
+        self.aws.onRound = lambda count: self.aws.restart() if count == 3 else setattr(self.aws, 'taskArns', []) if count == 9 else None
+        with self.assertRaisesRegex(ValueError, 'was replaced or stopped during observation'):
+            self.deployer(self.planned()).run()
+
+    def test_another_revision_or_a_restart_that_never_settles_still_fails(self):
+        other = 'arn:aws:ecs:us-east-2:509614632283:task-definition/' + self.config['stack'] + ':9'
+        self.aws.onRound = lambda count: self.aws.restart(revision=other) if count == 3 else None
+        with self.assertRaisesRegex(ValueError, 'Another deployment replaced the verified revision during observation'):
+            self.deployer(self.planned()).run()
+        self.aws = FakeAws(self.config)
+        self.aws.onRound = lambda count: self.aws.restart(polls=10 ** 6) if count == 3 else None
+        with self.assertRaisesRegex(ValueError, 'restart of lookahead-dev-web did not complete within 300 seconds'):
+            self.deployer(self.planned()).run()
 
     def test_a_scheduled_stop_during_observation_ends_the_run_cleanly(self):
         self.aws.onRound = lambda count: self.aws.service.update({'desired': 0}) if count == 4 else None

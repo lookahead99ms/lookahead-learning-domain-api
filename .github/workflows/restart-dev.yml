@@ -1,0 +1,316 @@
+{
+  "name": "06 · Restart DEV",
+  "run-name": "06 · Restart DEV | domain | #${{ github.run_number }}",
+  "on": {
+    "workflow_dispatch": {}
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "concurrency": {
+    "group": "deploy-dev",
+    "cancel-in-progress": false
+  },
+  "env": {
+    "DEPLOY_ROLE": "${{ vars.DEV_DEPLOY_ROLE_ARN || 'arn:aws:iam::509614632283:role/lookahead-dev-deploy' }}"
+  },
+  "jobs": {
+    "validate": {
+      "name": "Security gate",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 15,
+      "permissions": {
+        "contents": "read"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Refuse any run that is not on main",
+          "run": "test \"$GITHUB_REF\" = refs/heads/main"
+        },
+        {
+          "name": "Set up Python for release and Infra tooling",
+          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+          "with": {
+            "python-version": "3.14"
+          }
+        },
+        {
+          "name": "Install hash-locked release coverage tooling",
+          "run": "python -m pip install --only-binary=:all: --require-hashes -r tools/release/requirements-coverage.txt"
+        },
+        {
+          "name": "Test the deploy tooling this run executes and require 85 percent coverage",
+          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py,*/restart.py' --fail-under=85",
+          "env": {
+            "COVERAGE_FILE": "${{ runner.temp }}/release-tooling.coverage"
+          }
+        }
+      ]
+    },
+    "plan-restart": {
+      "name": "Plan DEV restart",
+      "needs": "validate",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "environment": "dev",
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "id-token": "write"
+      },
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "AWS_MAX_ATTEMPTS": "1",
+        "AWS_RETRY_MODE": "standard",
+        "AWS_EC2_METADATA_DISABLED": "true"
+      },
+      "outputs": {
+        "plan-digest": "${{ steps.plan.outputs.plan_digest }}"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Use short-lived DEV OIDC credentials (domain-deploy-restart-plan)",
+          "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
+          "with": {
+            "aws-region": "us-east-2",
+            "role-to-assume": "${{ env.DEPLOY_ROLE }}",
+            "allowed-account-ids": "509614632283",
+            "role-duration-seconds": 900,
+            "role-session-name": "domain-deploy-restart-plan-${{ github.run_id }}-1",
+            "unset-current-credentials": true,
+            "output-credentials": false,
+            "disable-retry": true
+          }
+        },
+        {
+          "name": "Plan the restart: the running revision, task and image; refuse a busy service or the overnight blackout",
+          "id": "plan",
+          "run": "python3 tools/release/restart.py plan --output \"$RUNNER_TEMP/restart-plan/plan.json\""
+        },
+        {
+          "name": "Retain the restart plan",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "restart-plan",
+            "path": "${{ runner.temp }}/restart-plan/",
+            "if-no-files-found": "error",
+            "retention-days": 30
+          }
+        }
+      ]
+    },
+    "approve-restart": {
+      "name": "Approve DEV restart",
+      "needs": [
+        "plan-restart"
+      ],
+      "if": "always() && needs.plan-restart.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 20,
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "issues": "write",
+        "pull-requests": "read"
+      },
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "APPROVAL_WAIT_MINUTES": "${{ vars.APPROVAL_WAIT_MINUTES }}",
+        "APPROVAL_VALID_MINUTES": "${{ vars.APPROVAL_VALID_MINUTES }}"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Set up Python for release and Infra tooling",
+          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+          "with": {
+            "python-version": "3.14"
+          }
+        },
+        {
+          "name": "Restore the restart plan of this run",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "restart-plan",
+            "path": "${{ runner.temp }}/restart-plan"
+          }
+        },
+        {
+          "name": "Open the approval issue and wait for the owner comment (10 minutes)",
+          "id": "approve",
+          "run": "python3 tools/release/restart.py approve --plan \"$RUNNER_TEMP/restart-plan/plan.json\" --receipt \"$RUNNER_TEMP/restart-approval/approval.json\""
+        },
+        {
+          "name": "Retain the approval receipt",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "restart-approval",
+            "path": "${{ runner.temp }}/restart-approval/",
+            "if-no-files-found": "error",
+            "retention-days": 30
+          }
+        },
+        {
+          "name": "Close the approval issue when approval failed or expired",
+          "if": "failure()",
+          "continue-on-error": true,
+          "run": "python3 tools/release/issue_close.py --stage \"Approve DEV restart\" --outcome failure --detail \"Rejected, expired or failed; nothing was restarted.\" --match \"Restart\""
+        }
+      ]
+    },
+    "restart-dev": {
+      "name": "Restart DEV",
+      "needs": [
+        "plan-restart",
+        "approve-restart"
+      ],
+      "if": "always() && needs.approve-restart.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 30,
+      "environment": "dev",
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "issues": "write",
+        "id-token": "write"
+      },
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "APPROVAL_WAIT_MINUTES": "${{ vars.APPROVAL_WAIT_MINUTES }}",
+        "APPROVAL_VALID_MINUTES": "${{ vars.APPROVAL_VALID_MINUTES }}",
+        "AWS_MAX_ATTEMPTS": "1",
+        "AWS_RETRY_MODE": "standard",
+        "AWS_EC2_METADATA_DISABLED": "true"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Restore the restart plan of this run",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "restart-plan",
+            "path": "${{ runner.temp }}/restart-plan"
+          }
+        },
+        {
+          "name": "Restore the approval receipt",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "restart-approval",
+            "path": "${{ runner.temp }}/restart-approval"
+          }
+        },
+        {
+          "name": "Recheck the restart approval before AWS credentials",
+          "run": "python3 tools/release/restart.py verify --plan \"$RUNNER_TEMP/restart-plan/plan.json\" --receipt \"$RUNNER_TEMP/restart-approval/approval.json\""
+        },
+        {
+          "name": "Use short-lived DEV OIDC credentials (domain-deploy-restart)",
+          "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
+          "with": {
+            "aws-region": "us-east-2",
+            "role-to-assume": "${{ env.DEPLOY_ROLE }}",
+            "allowed-account-ids": "509614632283",
+            "role-duration-seconds": 1800,
+            "role-session-name": "domain-deploy-restart-${{ github.run_id }}-1",
+            "unset-current-credentials": true,
+            "output-credentials": false,
+            "disable-retry": true
+          }
+        },
+        {
+          "name": "Execute the approved restart: force a new deployment, verify the new task, short watch",
+          "id": "execute",
+          "run": "python3 tools/release/restart.py execute --plan \"$RUNNER_TEMP/restart-plan/plan.json\" --receipt \"$RUNNER_TEMP/restart-approval/approval.json\" --output \"$RUNNER_TEMP/restart-result/result.json\""
+        },
+        {
+          "name": "Retain the restart result whatever the outcome",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "restart-result",
+            "path": "${{ runner.temp }}/restart-result/",
+            "if-no-files-found": "warn",
+            "retention-days": 90
+          },
+          "if": "always()"
+        },
+        {
+          "name": "Close the approval issue with the restart outcome",
+          "if": "always()",
+          "continue-on-error": true,
+          "env": {
+            "OUTCOME": "${{ steps.execute.outcome }}"
+          },
+          "run": "detail=\"Restart of domain ended with outcome $OUTCOME; the result artifact of this run holds every step.\"\npython3 tools/release/issue_close.py --stage \"Restart DEV\" --outcome \"$OUTCOME\" --detail \"$detail\" --receipt \"$RUNNER_TEMP/restart-approval/approval.json\""
+        }
+      ]
+    },
+    "record": {
+      "name": "Record restart",
+      "needs": [
+        "plan-restart",
+        "approve-restart",
+        "restart-dev"
+      ],
+      "if": "always() && needs.plan-restart.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "permissions": {
+        "contents": "read",
+        "actions": "read"
+      },
+      "steps": [
+        {
+          "name": "Restore every receipt this run produced (absent stages stay absent)",
+          "continue-on-error": true,
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "pattern": "{restart-plan,restart-approval,restart-result}",
+            "path": "${{ runner.temp }}/restart-record",
+            "merge-multiple": false
+          }
+        },
+        {
+          "name": "Retain one record per deploy run",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "restart-record-${{ github.run_id }}",
+            "path": "${{ runner.temp }}/restart-record/",
+            "if-no-files-found": "error",
+            "retention-days": 90
+          }
+        }
+      ]
+    }
+  }
+}
