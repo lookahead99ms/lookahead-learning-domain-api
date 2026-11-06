@@ -44,7 +44,8 @@ public class AccountAdmissionService {
         access.requireOwner(actor);
         // DLV-969 S36: a waiting row whose Gmail two or more accounts share was not linked; the owner sees how many.
         var rows=jdbc.query("SELECT w.account_id,w.username,w.display_name,w.verified_email,w.requested_at,"+CloudIdentities.sameEmailAccounts("w.verified_email","w.account_id")
-            +" AS same_email_accounts FROM cloud_accounts w WHERE NOT admitted ORDER BY requested_at,account_id",(r,i)->{
+            // DLV-971: a waiting row the owner disabled (Reject) stays out of the list until it is enabled again.
+            +" AS same_email_accounts FROM cloud_accounts w WHERE NOT admitted AND NOT EXISTS (SELECT 1 FROM cloud_account_states s WHERE s.account_id=w.account_id) ORDER BY requested_at,account_id",(r,i)->{
             Instant requested=r.getTimestamp("requested_at").toInstant();
             return new Waiting(r.getObject("account_id",UUID.class),r.getString("username"),r.getString("display_name"),r.getString("verified_email"),requested,requested.plus(CloudAdmissionCleanup.WAITING_EXPIRY),
                 r.getInt("same_email_accounts"));

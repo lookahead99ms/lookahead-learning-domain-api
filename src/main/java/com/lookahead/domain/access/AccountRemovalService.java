@@ -105,6 +105,14 @@ public class AccountRemovalService {
         confirm(request, "DELETE");
         var target = change(actor, id, "remove", t -> {
             if ("removed".equals(t.state())) return false;
+            if (!t.admitted()) {
+                // DLV-971: a waiting row has no learning data and no permanent record to keep; it goes the way an expired
+                // request goes, so the same person signing in again appears as a new request.
+                jdbc.update("DELETE FROM cloud_account_states WHERE account_id=?", id);
+                revokeSignIns(id);
+                com.lookahead.domain.cloud.CloudAdmissionCleanup.deleteWaiting(jdbc, id);
+                return true;
+            }
             jdbc.update("""
                 INSERT INTO cloud_account_states(account_id,state,changed_by) VALUES (?,'removed',?)
                 ON CONFLICT (account_id) DO UPDATE SET state='removed',changed_at=clock_timestamp(),changed_by=EXCLUDED.changed_by
@@ -158,7 +166,8 @@ public class AccountRemovalService {
                 SELECT a.issuer,a.subject,a.username,a.admitted,a.author_access,s.state
                 FROM cloud_accounts a LEFT JOIN cloud_account_states s USING(account_id) WHERE a.account_id=? FOR UPDATE OF a
                 """, (r, i) -> new Target(r.getString(1), r.getString(2), r.getString(3), r.getBoolean(4), r.getBoolean(5), r.getString(6), List.of()), id);
-            if (rows.isEmpty() || !rows.getFirst().admitted()) throw notSignIn();
+            // DLV-971 (owner, 2026-11-06): a waiting row (not admitted) can be disabled or deleted too: Reject on Waiting for access.
+            if (rows.isEmpty()) throw notSignIn();
             var row = rows.getFirst();
             // DLV-969 S36: the state again, in a statement of its own under the lock: the locking statement's join keeps
             // its starting snapshot, so a Disable, Delete or merge committed while it waited would go unseen (and its
@@ -203,7 +212,7 @@ public class AccountRemovalService {
             throw new AccountFailure(422, "ACCOUNT_CONFIRMATION_REQUIRED", "Type the required confirmation word.");
     }
     private static AccountFailure notSignIn() {
-        return new AccountFailure(404, "SIGN_IN_ACCOUNT_NOT_FOUND", "Only admitted DEV sign-in accounts can be disabled or deleted.");
+        return new AccountFailure(404, "SIGN_IN_ACCOUNT_NOT_FOUND", "No DEV sign-in account with that id can be disabled or deleted.");
     }
     private static AccountFailure removed() {
         return new AccountFailure(409, "ACCOUNT_REMOVED", "This account was deleted.");

@@ -139,6 +139,34 @@ class AccountRemovalDatabaseTest {
         service.enable(owner,id);assertThat(events(id,"enable")).isEqualTo(1);verify(pool,times(2)).enable("learner@gmail.invalid");
     }
 
+    @Test void rejectingAWaitingRowDisablesOrDeletesItAndHidesItFromTheWaitingList(){
+        // DLV-971 (owner, 2026-11-06): Reject on Waiting for access offers the same Disable and Delete as People.
+        var service=service(pool);
+        var admission=new AccountAdmissionService(jdbc,staff,repository,json);
+        UUID disabled=account("reject-disable","reject1@example.invalid",false,false);
+        UUID deleted=account("reject-delete","reject2@example.invalid",false,false);
+        assertThat(admission.waiting(owner).waiting()).extracting(AccountAdmissionService.Waiting::accountId).contains(disabled,deleted);
+        // Disable: the row keeps its state, leaves the list, cannot be admitted, and the pool blocks the sign-in.
+        assertThat(service.disable(owner,disabled,new AccountRemovalService.Confirmation("DISABLE")).state()).isEqualTo("disabled");
+        assertThat(state(disabled)).isEqualTo("disabled");verify(pool).disable("reject1@example.invalid");
+        assertThat(admission.waiting(owner).waiting()).extracting(AccountAdmissionService.Waiting::accountId).doesNotContain(disabled).contains(deleted);
+        failsWith(()->admission.admit(owner,new AccountAdmissionService.Request(disabled.toString(),List.of())),409,"ACCOUNT_REMOVED");
+        // The 48-hour cleanup leaves a disabled request alone; Enable puts it back in the list.
+        jdbc.update("UPDATE cloud_accounts SET requested_at=requested_at - interval '3 days' WHERE account_id=?",disabled);
+        new com.lookahead.domain.cloud.CloudAdmissionCleanup(jdbc,new org.springframework.jdbc.datasource.DataSourceTransactionManager(source)).expire();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE account_id=?",Integer.class,disabled)).isEqualTo(1);
+        service.enable(owner,disabled);
+        assertThat(admission.waiting(owner).waiting()).extracting(AccountAdmissionService.Waiting::accountId).contains(disabled);
+        // Delete: the request goes the way an expired one goes; the same person signing in again is a new request.
+        assertThat(service.remove(owner,deleted,new AccountRemovalService.Confirmation("DELETE")).state()).isEqualTo("removed");
+        for(String table:List.of("cloud_accounts","cloud_identities","platform_subjects","cloud_account_states"))
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM "+table+" WHERE "+(table.equals("platform_subjects")?"id":"account_id")+"=?",Integer.class,deleted)).as(table).isZero();
+        verify(pool).remove("reject2@example.invalid");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cloud_admission_events WHERE account_id=? AND action='remove'",Integer.class,deleted)).isEqualTo(1);
+        assertThat(admission.waiting(owner).waiting()).extracting(AccountAdmissionService.Waiting::accountId).doesNotContain(deleted);
+        failsWith(()->service.remove(owner,deleted,new AccountRemovalService.Confirmation("DELETE")),404,"SIGN_IN_ACCOUNT_NOT_FOUND");
+    }
+
     @Test void deleteErasesLearningDataKeepsPurchaseHistoryAndIsFinal(){
         UUID id=account("to-delete","gone@gmail.invalid",true,false);
         jdbc.update("INSERT INTO staff_access(id,account_id,roles,full_curriculum) VALUES (?,?,'[\"tester\"]',true)",UUID.randomUUID(),id);
@@ -178,8 +206,8 @@ class AccountRemovalDatabaseTest {
         jdbc.update("INSERT INTO test_account_registry(account_id,username,initialization,last_changed_by) VALUES (?,?,'created','seed')",test,"test-learner-01");
         failsWith(()->service.remove(owner,test,new AccountRemovalService.Confirmation("DELETE")),403,"TEST_ACCOUNT_ROUTE_REQUIRED");
         UUID waiting=account("waiting-subject","waiting@example.invalid",false,false);
-        failsWith(()->service.disable(owner,waiting,new AccountRemovalService.Confirmation("DISABLE")),404,"SIGN_IN_ACCOUNT_NOT_FOUND");
         failsWith(()->service.disable(owner,UUID.randomUUID(),new AccountRemovalService.Confirmation("DISABLE")),404,"SIGN_IN_ACCOUNT_NOT_FOUND");
+        // A waiting row has no People options (it is not a person there yet); Reject on Waiting for access acts on it instead.
         for(UUID id:List.of(author,test,waiting,ownerId))
             assertThat(service.options(ownerId,id,id.equals(test))).isEqualTo(AccountRemovalService.Options.NONE);
         // Local delivery has no sign-in pool: no options and a clear refusal.
