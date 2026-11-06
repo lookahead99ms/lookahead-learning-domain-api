@@ -64,7 +64,7 @@
         },
         {
           "name": "Test the release tooling this run executes and require 85 percent coverage",
-          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py' --fail-under=85",
+          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py,*/restart.py' --fail-under=85",
           "env": {
             "COVERAGE_FILE": "${{ runner.temp }}/release-tooling.coverage"
           }

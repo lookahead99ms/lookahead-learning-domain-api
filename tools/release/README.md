@@ -100,8 +100,9 @@ scheduled scale-down from 2026-11-05). `01 · Full` always passes `1`.
    (valid for 15 minutes from the approval comment, not from the issue, so an answer late in the wait
    still leaves this job its whole window), the plan digest, the template and the configuration before OIDC; the deploy session
    `<app>-deploy-<run>-1` (60 minutes) runs `deploy.py execute`: one change set `app-<run>`
-   (CREATE for the first stack, UPDATE afterwards, tagged `ReleaseVersion`, `DeployRun` and `SourceSha` so the stack
-   itself says what it serves; its preview must show only the task definition
+   (CREATE for the first stack, UPDATE afterwards, with the stack's tags kept exactly as they are: CloudFormation copies
+   them onto the ECS service and changing one needs `ecs:TagResource`/`ecs:UntagResource` on the provisioning role, which
+   an IAM transition has yet to grant, Domain run 42110285052; its preview must show only the task definition
    and the service), execution, then for `desired_count` 1 the ECS rollout `COMPLETED` with exactly
    one `HEALTHY` task whose container reports the approved image digest (`describe-tasks`; the deploy
    session is denied `DescribeTaskDefinition` by the Infra bundle and does not need it), a clean log window, service discovery listing
@@ -126,7 +127,11 @@ scheduled scale-down from 2026-11-05). `01 · Full` always passes `1`.
    decision 2026-11-05), and a merge-driven `01 · Full` that reaches its deploy in the window simply ends there with
    the image published. If the start/stop switch or the scheduled stop sets the desired count
    to 0 during the observation, the run records `stopped-during-observation` with the clean minutes and ends
-   successfully: a crash never changes the desired count, so 0 is always an intentional stop. Each recorded step and each observation round prints one line to
+   successfully: a crash never changes the desired count, so 0 is always an intentional stop. A new rollout of the
+   verified revision during the watch (the content release's "restart Domain" step, or a manual refresh; user
+   2026-11-05, Domain run 42106678466) is waited for (at most 300 s), its new task is verified like the first one and
+   recorded as `restarted-during-observation`, and the watch carries on with that task; a rollout of another revision
+   is another deploy and still fails the run. Each recorded step and each observation round prints one line to
    the job log, so the long waits are visible. For `desired_count` 0 it waits until the service runs zero
    tasks. A stack that ends in a rollback state fails the run; the previous revision keeps serving.
    The result is retained whatever happened (`deploy-result`) and the approval issue is closed with
