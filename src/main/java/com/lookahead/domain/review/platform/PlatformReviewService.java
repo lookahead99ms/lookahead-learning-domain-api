@@ -213,7 +213,8 @@ public class PlatformReviewService {
     }
 
     public Item triage(AccountPrincipal actor, String id, String status, String note) {
-        if (!role(actor)) throw denied();
+        // DLV-971 (owner, 2026-11-06): only the owner sets a status or leaves a note; admins read every item but never triage.
+        if (!role(actor) || (access != null && !access.permissions(actor).manageAccess())) throw denied();
         if (status == null || !STATUSES.contains(status)) throw invalid("Choose a status.");
         String ownerNote = text(note == null ? "" : note, NOTE_LENGTH, true, "Keep the note within 2000 characters.").strip();
         var found = visible(actor, id);

@@ -68,7 +68,10 @@ class PlatformReviewServiceTest {
         assertFailure(() -> reviews.triage(first, item.id(), "accepted", ""), 403);
         when(access.permissions(second)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(false, Set.of("admin")));
         assertThat(reviews.list(second, null).items()).extracting(Summary::id).containsExactly(item.id());
-        assertThat(reviews.triage(second, item.id(), "accepted", "Investigating").submitterRole()).isEqualTo("tester");
+        // DLV-971 (owner, 2026-11-06): an admin reads every item but only the owner sets a status.
+        assertFailure(() -> reviews.triage(second, item.id(), "accepted", "Investigating"), 403);
+        when(access.permissions(owner)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(true, Set.of()));
+        assertThat(reviews.triage(owner, item.id(), "accepted", "Investigating").submitterRole()).isEqualTo("tester");
     }
 
     /** DLV-969 (owner decision 2026-11-03): an admin sees who wrote an item as a role label; the owner sees the name. */
@@ -86,7 +89,8 @@ class PlatformReviewServiceTest {
         var mine = create(second, "Admin note");
         assertThat(reviews.list(second, null).items()).extracting(Summary::reviewerName).containsExactly("Second Reviewer", "Tester 3");
         assertThat(reviews.item(second, item.id()).reviewerName()).isEqualTo("Tester 3");
-        assertThat(reviews.triage(second, item.id(), "accepted", "").reviewerName()).isEqualTo("Tester 3");
+        assertFailure(() -> reviews.triage(second, item.id(), "accepted", ""), 403);
+        assertThat(reviews.triage(owner, item.id(), "accepted", "").reviewerName()).isEqualTo("Learner");
         assertThat(reviews.item(second, mine.id()).reviewerName()).isEqualTo("Second Reviewer");
         assertThat(reviews.item(owner, item.id()).reviewerName()).isEqualTo("Learner");
         assertThat(reviews.item(learner, item.id()).reviewerName()).isEqualTo("Learner");

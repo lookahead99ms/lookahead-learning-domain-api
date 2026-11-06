@@ -504,7 +504,7 @@ assignment APIs are `/api/v1/admin/access`, `/catalog`, `/lookup`, `/waiting` an
 permissions are `/api/v1/account/permissions` and additive `auth/me.permissions`.
 Roles are admin/reviewer/tester, independent of selected/full curriculum grants.
 Only the existing owner capability manages access. Testers receive full courses
-and own feedback; no admin/board access. Owner/admin triage all feedback.
+and own feedback; no admin/board access. The owner triages all feedback; admins read every item (DLV-971, 2026-11-06).
 
 Pending email assignments claim only from provider-verified email on an admitted
 Cognito identity, within 14 days after save. Local signup does not verify email.
