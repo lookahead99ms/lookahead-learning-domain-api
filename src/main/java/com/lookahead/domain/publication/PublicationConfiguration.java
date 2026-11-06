@@ -73,15 +73,23 @@ public class PublicationConfiguration {
         }
     }
 
-    @Bean PublicationLocation publicationLocation(PublicationSettings settings, Environment environment,
+    /**
+     * DLV-971: with {@code app.publication.live-prefix} set (DEV release/live/ after the AWS lane's cutover) the single
+     * tar under it is served; empty keeps today's live/<tag>/ discovery or the pinned release.
+     */
+    @Bean LivePublicationLoader.Loaded publicationLoaded(PublicationSettings settings, Environment environment,
             org.springframework.beans.factory.ObjectProvider<PublicationObjectSource> source, ObjectMapper mapper) {
-        if (settings.cloud()) return new PublicationBootstrap(mapper).load(settings, source.getObject());
-        return new PublicationLocation(environment.getProperty("app.content.publication-path", ""),
-                environment.getProperty("app.content.root", ""), environment.getProperty("app.accounts.catalog-path", ""), false, 0, 1);
+        String livePrefix = environment.getProperty("app.publication.live-prefix", "").strip();
+        if (settings.cloud() && !livePrefix.isEmpty()) return new LivePublicationLoader(mapper).load(settings, livePrefix, source.getObject());
+        if (settings.cloud()) return new LivePublicationLoader.Loaded(new PublicationBootstrap(mapper).load(settings, source.getObject()), LiveRelease.notConfigured());
+        return new LivePublicationLoader.Loaded(new PublicationLocation(environment.getProperty("app.content.publication-path", ""),
+                environment.getProperty("app.content.root", ""), environment.getProperty("app.accounts.catalog-path", ""), false, 0, 1), LiveRelease.notConfigured());
     }
+    @Bean PublicationLocation publicationLocation(LivePublicationLoader.Loaded loaded) { return loaded.location(); }
+    @Bean LiveRelease liveRelease(LivePublicationLoader.Loaded loaded) { return loaded.release(); }
     @Bean("contentPublication") HealthIndicator contentPublication(PublicationLocation location,
             com.lookahead.learning.content.service.ProtectedContentPolicy policy,
-            com.lookahead.learning.content.validator.SnapshotValidator catalog) {
-        return new ContentPublicationHealth(location, policy, java.time.Clock.systemUTC());
+            com.lookahead.learning.content.validator.SnapshotValidator catalog, LiveRelease release) {
+        return new ContentPublicationHealth(location, policy, release, java.time.Clock.systemUTC());
     }
 }

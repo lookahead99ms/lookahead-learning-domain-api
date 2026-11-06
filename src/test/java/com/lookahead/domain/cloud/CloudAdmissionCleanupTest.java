@@ -89,7 +89,7 @@ class CloudAdmissionCleanupTest {
             cleanup.run();
             var failed=log.only("admission.cleanup");
             assertThat(failed.getLevel()).isEqualTo(ch.qos.logback.classic.Level.WARN);
-            assertThat(failed.getFormattedMessage()).isEqualTo("Admission cleanup skipped this hour: IllegalStateException; the next run tries again");
+            assertThat(failed.getFormattedMessage()).isEqualTo("Admission cleanup skipped this run: IllegalStateException; the next run tries again");
             log.containsNone("synthetic-secret");
         }
     }

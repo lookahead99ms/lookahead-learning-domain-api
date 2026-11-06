@@ -95,10 +95,12 @@ class PublicationConfigurationTest {
                 .run(context->{
                     assertThat(context).hasNotFailed().hasSingleBean(S3Client.class).hasSingleBean(ContainerCredentialsProvider.class);
                     var configuration = new PublicationConfiguration();
-                    var location = configuration.publicationLocation(selected,context.getEnvironment(),context.getBeanProvider(PublicationObjectSource.class),new JsonMapper());
+                    var loaded = configuration.publicationLoaded(selected,context.getEnvironment(),context.getBeanProvider(PublicationObjectSource.class),new JsonMapper());
+                    var location = configuration.publicationLocation(loaded);
+                    assertThat(configuration.liveRelease(loaded).configured()).isFalse();
                     var policy = new ProtectedContentPolicy(new JsonMapper(),location);
                     var catalog = new SnapshotValidator(new JsonMapper(),location);
-                    assertThat(configuration.contentPublication(location,policy,catalog).health().getStatus().getCode()).isEqualTo("UP");
+                    assertThat(configuration.contentPublication(location,policy,catalog,loaded.release()).health().getStatus().getCode()).isEqualTo("UP");
                 });
         helper.writableForFixtureCleanup();
     }

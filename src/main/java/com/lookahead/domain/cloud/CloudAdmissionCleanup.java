@@ -4,13 +4,14 @@ import com.lookahead.domain.Events;
 import java.time.Duration;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * DLV-969: removes waiting rows nobody admitted within {@link #WAITING_EXPIRY}. Cloud mode only, hourly, under a
+ * DLV-969: removes waiting rows nobody admitted within {@link #WAITING_EXPIRY}. Cloud mode only, under a
  * transaction-scoped advisory lock so two tasks never both run it. Admitted rows are never touched (V17 trigger too).
+ * DLV-971 (owner, 2026-11-06): run by {@link com.lookahead.domain.sweeps.RuntimeSweeps} at start and every 4 hours
+ * (it was hourly on its own schedule).
  */
 public final class CloudAdmissionCleanup {
     public static final Duration WAITING_EXPIRY=Duration.ofHours(48);
@@ -20,14 +21,13 @@ public final class CloudAdmissionCleanup {
     private final TransactionTemplate transaction;
     public CloudAdmissionCleanup(JdbcTemplate jdbc,PlatformTransactionManager manager){this.jdbc=jdbc;this.transaction=new TransactionTemplate(manager);}
 
-    @Scheduled(fixedDelayString="PT1H",initialDelayString="PT5M")
     public void run() {
         try {expire();}
         catch(RuntimeException failure){
             String state=Events.sqlState(failure);
             var line=Events.failed(Events.EVENT,"admission.cleanup","UNEXPECTED").addKeyValue("error.type",Events.types(failure));
             if(state!=null)line=line.addKeyValue("db.sqlState",state);
-            line.log("Admission cleanup skipped this hour: {}{}; the next run tries again",Events.types(failure),state==null?"":" (SQL state "+state+")");
+            line.log("Admission cleanup skipped this run: {}{}; the next run tries again",Events.types(failure),state==null?"":" (SQL state "+state+")");
         }
     }
     /**

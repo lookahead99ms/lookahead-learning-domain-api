@@ -74,6 +74,8 @@ public class DomainSecurityConfiguration {
                         // DLV-969 S36: the person's own merge of accounts sharing their verified email (cloud mode only).
                         .requestMatchers("/api/v1/account/merge/**").hasAuthority("SCOPE_account")
                         .requestMatchers("/api/v1/platform-reviews", "/api/v1/platform-reviews/**").hasAuthority("SCOPE_account")
+                        // DLV-971: the delivery plan the Domain serves and edits; the same session and bearer as platform reviews.
+                        .requestMatchers("/api/v1/delivery/plan", "/api/v1/delivery/plan/**").hasAuthority("SCOPE_account")
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/invitations/activate").hasAuthority("SCOPE_account")
                         .requestMatchers("/api/v1/auth/me", "/api/v1/account-catalog", "/api/v1/author/previews/access", "/api/v1/plans", "/api/v1/plans/**").hasAuthority("SCOPE_account")
                         .anyRequest().denyAll())

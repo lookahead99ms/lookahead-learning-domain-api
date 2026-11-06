@@ -34,6 +34,7 @@ class TestAccountsDatabaseTest {
    jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain",file)));
   jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V15__retain_runtime_audit.sql")));
   jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V21__learner_test_accounts_only.sql")));
+  jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V22__review_records_and_status_events.sql")));
   // Explicit Local fixture provisioning preserves the existing purge contract.
   jdbc.execute("GRANT DELETE ON membership_audit TO lookahead_platform_app");
   jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",admin.accountId());

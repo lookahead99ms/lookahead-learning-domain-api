@@ -71,4 +71,34 @@ class S3PlatformReviewObjectsTest {
         when(client.putObject(any(PutObjectRequest.class),any(RequestBody.class))).thenThrow(S3Exception.builder().statusCode(409).build());
         assertThat(store().write("reviews/day.json",new byte[0],"opaque")).isFalse();
     }
+
+    /** DLV-971: records sit in day folders, so listAll lists without a delimiter across pages; keys allow the REV-/SUP- ids and the dot marker. */
+    @Test void listAllWalksEveryPageWithoutADelimiterAndKeysFollowTheRecordLayout() {
+        var store=store();
+        when(client.listObjectsV2(any(ListObjectsV2Request.class))).thenAnswer(call->{
+            ListObjectsV2Request request=call.getArgument(0);
+            assertThat(request.prefix()).isEqualTo("platform-reviews/records/");
+            assertThat(request.delimiter()).isNull();
+            if(request.continuationToken()==null)return ListObjectsV2Response.builder().isTruncated(true).nextContinuationToken("page-2")
+                .contents(S3Object.builder().key("platform-reviews/records/2026/11/06/REV-000001.json").build()).build();
+            return ListObjectsV2Response.builder().isTruncated(false)
+                .contents(S3Object.builder().key("platform-reviews/records/2026/11/07/REV-000002.json").build()).build();
+        });
+        assertThat(store.listAll("records/")).containsExactly("records/2026/11/06/REV-000001.json","records/2026/11/07/REV-000002.json");
+        when(client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(ListObjectsV2Response.builder().isTruncated(true).nextContinuationToken(null)
+            .contents(S3Object.builder().key("platform-reviews/records/x.json").build()).build());
+        assertThatThrownBy(()->store.listAll("records")).isInstanceOf(UncheckedIOException.class);
+        when(client.listObjectsV2(any(ListObjectsV2Request.class))).thenReturn(ListObjectsV2Response.builder().isTruncated(false)
+            .contents(S3Object.builder().key("elsewhere/records/x.json").build()).build());
+        assertThatThrownBy(()->store.listAll("records/")).isInstanceOf(UncheckedIOException.class);
+        when(client.listObjectsV2(any(ListObjectsV2Request.class))).thenThrow(software.amazon.awssdk.core.exception.SdkClientException.builder().message("synthetic").build());
+        assertThatThrownBy(()->store.listAll("records/")).isInstanceOf(UncheckedIOException.class);
+        for(String key:List.of("records/2026/11/06/REV-000001.json","attachments/SUP-000001/01-screen.png",".imported.json","inbox/plan.json","archive/plan-v7.json"))
+            assertThat(key).matches(PlatformReviewObjects.KEY);
+        for(String key:List.of("../plan.json","records/../x.json","records/..","/records/x.json","records//x.json","records/x y.json",""))
+            assertThat(key).doesNotMatch(PlatformReviewObjects.KEY);
+        assertThatThrownBy(()->store.read("../plan.json")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(()->new S3PlatformReviewObjects(client,"synthetic-review-bucket","Reviews/","123456789012",keyArn)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(new S3PlatformReviewObjects(client,"synthetic-review-bucket","release/live/","123456789012",keyArn)).isNotNull();
+    }
 }

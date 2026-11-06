@@ -52,7 +52,7 @@ class CloudMergeDatabaseTest {
                 "V7__cloud_account_preferences.sql","V8__memberships.sql","V9__plan_lifecycle.sql","V10__test_account_registry.sql","V11__free_plan_allowances.sql",
                 "V12__created_test_accounts.sql","V13__real_account_maintenance.sql","V14__managed_test_purchase_purge_grants.sql","V15__retain_runtime_audit.sql",
                 "V17__dev_access_admission.sql","V18__access_removal_and_staff_aliases.sql","V19__cloud_identities.sql","V20__cloud_merge_tokens.sql",
-                "V21__learner_test_accounts_only.sql"))
+                "V21__learner_test_accounts_only.sql","V22__review_records_and_status_events.sql"))
             jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain",file)));
         ownerId=admitted(identity("owner-subject","owner@example.invalid","owner@example.invalid"));
         jdbc.update("UPDATE cloud_accounts SET author_access=true WHERE account_id=?",ownerId);

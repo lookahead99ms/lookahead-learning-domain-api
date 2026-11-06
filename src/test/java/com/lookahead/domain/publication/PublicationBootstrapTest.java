@@ -312,7 +312,7 @@ class PublicationBootstrapTest {
                 var policy = new com.lookahead.learning.content.service.ProtectedContentPolicy(mapper, location);
                 var catalog = new com.lookahead.learning.content.validator.SnapshotValidator(mapper, location);
                 assertThat(catalog.allTopicIds()).isNotEmpty();
-                assertThat(new PublicationConfiguration().contentPublication(location, policy, catalog).health().getStatus().getCode()).isEqualTo("UP");
+                assertThat(new PublicationConfiguration().contentPublication(location, policy, catalog, LiveRelease.notConfigured()).health().getStatus().getCode()).isEqualTo("UP");
                 var service = new com.lookahead.learning.content.service.ProtectedContentService(policy, null);
                 var publication = mapper.readTree(Files.readAllBytes(Path.of(location.manifest())));
                 String publicPath = null, protectedPath = null;

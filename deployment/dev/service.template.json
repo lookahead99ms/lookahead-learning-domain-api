@@ -9,7 +9,7 @@
       "AWS::ECS::Service lookahead-dev-domain"
     ],
     "Deploy": "tools/release/deploy.py renders one change set app-<run> against this template; a deploy is an ECS rolling update (surge to two tasks, circuit-breaker rollback); DesiredCount 1 serves, 0 parks the service (user decision V, 2026-11-01)",
-    "PublicationMode": "live: the newest complete release under live/ in the publication bucket (DLV-968 T9)",
+    "PublicationMode": "live: the newest complete release under live/ in the publication bucket (DLV-968 T9); with PublicationLivePrefix set, the single v*.tar under release/live/ (DLV-971, after the AWS lane's cutover)",
     "HealthCheck": "Spring Boot starts in 75-90 s on 512 CPU units; a 60 s start period with 3 retries killed healthy tasks (Domain run 41327104117, 2026-11-01), so the grace is 180 s plus 5 retries."
   },
   "Parameters": {
@@ -86,6 +86,12 @@
     "PublicationBucket": {
       "Type": "String"
     },
+    "PublicationLivePrefix": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^(|[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*/)$",
+      "Description": "DLV-971: release/live/ once the AWS lane has cut over (app.publication.live-prefix: exactly one v*.tar served); empty keeps live/<tag>/ discovery"
+    },
     "PlatformReviewsBucket": {
       "Type": "String",
       "Default": "",
@@ -103,6 +109,30 @@
       "Default": "",
       "AllowedPattern": "^(|arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]{36})$",
       "Description": "DLV-968: KMS key ARN for SSE-KMS on review objects (app.platform-reviews.kms-key)"
+    },
+    "PlatformReviewsLegacyPrefix": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "^(|[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*/)$",
+      "Description": "DLV-971: the retired day-file prefix imported once at start (app.platform-reviews.legacy-prefix); empty skips the import"
+    },
+    "ReviewsPrefix": {
+      "Type": "String",
+      "Default": "reviews/",
+      "AllowedPattern": "^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*/$",
+      "Description": "DLV-971: the review record store root (app.reviews.prefix)"
+    },
+    "SupportRequestsPrefix": {
+      "Type": "String",
+      "Default": "support-requests/",
+      "AllowedPattern": "^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*/$",
+      "Description": "DLV-971: the support request record store root (app.support-requests.prefix)"
+    },
+    "DeliveryPrefix": {
+      "Type": "String",
+      "Default": "delivery/",
+      "AllowedPattern": "^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*/$",
+      "Description": "DLV-971: the delivery plan store root (app.delivery.prefix)"
     },
     "TestAccountIdentity": {
       "Type": "String",
@@ -324,6 +354,12 @@
                 "Value": "/tmp/lookahead-publications"
               },
               {
+                "Name": "LOOKAHEAD_PUBLICATION_LIVE_PREFIX",
+                "Value": {
+                  "Ref": "PublicationLivePrefix"
+                }
+              },
+              {
                 "Name": "LOOKAHEAD_PLATFORM_REVIEWS_BUCKET",
                 "Value": {
                   "Ref": "PlatformReviewsBucket"
@@ -339,6 +375,30 @@
                 "Name": "LOOKAHEAD_PLATFORM_REVIEWS_KMS_KEY",
                 "Value": {
                   "Ref": "PlatformReviewsKmsKeyArn"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_PLATFORM_REVIEWS_LEGACY_PREFIX",
+                "Value": {
+                  "Ref": "PlatformReviewsLegacyPrefix"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_REVIEWS_PREFIX",
+                "Value": {
+                  "Ref": "ReviewsPrefix"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_SUPPORT_REQUESTS_PREFIX",
+                "Value": {
+                  "Ref": "SupportRequestsPrefix"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_DELIVERY_PREFIX",
+                "Value": {
+                  "Ref": "DeliveryPrefix"
                 }
               },
               {

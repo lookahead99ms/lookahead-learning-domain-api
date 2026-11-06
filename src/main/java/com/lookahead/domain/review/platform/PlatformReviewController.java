@@ -19,7 +19,7 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 import static com.lookahead.domain.review.platform.PlatformReviewModels.*;
 
-/** DLV-928: /api/v1/platform-reviews. The Gateway adds the session, CSRF check and bearer token. */
+/** DLV-928: /api/v1/platform-reviews. The Gateway adds the session, CSRF check and bearer token. DLV-971: ids are REV-/SUP- numbers, plus promote. */
 @RestController
 @Profile("accounts")
 @RequestMapping("/api/v1/platform-reviews")
@@ -96,6 +96,12 @@ public class PlatformReviewController {
             throw PlatformReviewService.invalid("Choose a status.");
         noStore(response);
         return ApiResponse.success(reviews.triage(actor, id, status, note));
+    }
+
+    /** DLV-971: a ticket on the delivery plan from this item; 409 PLATFORM_REVIEW_ALREADY_PROMOTED when it has one. */
+    @PostMapping("/{id}/promote")
+    public ResponseEntity<ApiResponse<Promoted>> promote(@AuthenticationPrincipal AccountPrincipal actor, @PathVariable String id) {
+        return ResponseEntity.status(201).header(HttpHeaders.CACHE_CONTROL, "no-store").body(ApiResponse.success(reviews.promote(actor, id)));
     }
 
     private Map<String, Object> item(MultipartHttpServletRequest request, Set<String> allowed) {

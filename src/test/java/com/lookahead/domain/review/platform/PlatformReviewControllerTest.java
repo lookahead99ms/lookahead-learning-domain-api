@@ -28,13 +28,14 @@ class PlatformReviewControllerTest {
     final AccountPrincipal reviewer = new AccountPrincipal(UUID.randomUUID(), "reviewer@example.test", "Reviewer", true);
     AccountPrincipal actor;
     MockMvc http;
+    PlatformReviewService service;
 
     @BeforeEach void setup() {
         actor = reviewer;
         var author = mock(LocalAuthorAccess.class);
         when(author.allowed(owner)).thenReturn(true);
         var mapper = JsonMapper.builder().build();
-        var service = new PlatformReviewService(new FileSystemPlatformReviewObjects(root), author, mapper, "reviewer@example.test");
+        service = PlatformReviewFixtures.service(root, author, mapper, "reviewer@example.test");
         http = MockMvcBuilders.standaloneSetup(new PlatformReviewController(service, mapper))
                 .setControllerAdvice(new AccountErrorHandler(), new PlatformReviewUploadErrors())
                 .setCustomArgumentResolvers(new HandlerMethodArgumentResolver() {
@@ -50,6 +51,9 @@ class PlatformReviewControllerTest {
                 .andExpect(status().isCreated()).andExpect(header().string("Cache-Control", "no-store"))
                 .andExpect(jsonPath("data.title").value("Search misses Kafka"))
                 .andExpect(jsonPath("data.status").value("new"))
+                .andExpect(jsonPath("data.kind").value("review"))
+                .andExpect(jsonPath("data.requestType").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("data.reference").value(org.hamcrest.Matchers.nullValue()))
                 .andExpect(jsonPath("data.attachments[0].name").value("shot.png"))
                 .andExpect(jsonPath("data.attachments[0].path").doesNotExist())
                 .andExpect(jsonPath("data.reviewerAccountId").doesNotExist())
@@ -62,6 +66,8 @@ class PlatformReviewControllerTest {
         http.perform(get(ROOT)).andExpect(status().isOk())
                 .andExpect(jsonPath("data.items.length()").value(1))
                 .andExpect(jsonPath("data.items[0].attachmentCount").value(1))
+                .andExpect(jsonPath("data.items[0].kind").value("review"))
+                .andExpect(jsonPath("data.items[0].requestType").value(org.hamcrest.Matchers.nullValue()))
                 .andExpect(jsonPath("data.items[0].details").doesNotExist())
                 .andExpect(jsonPath("data.nextBefore").isEmpty());
         http.perform(get(ROOT + "/" + id)).andExpect(status().isOk()).andExpect(jsonPath("data.details").value("Typed kafka, got nothing"));
@@ -87,6 +93,52 @@ class PlatformReviewControllerTest {
         String other = create();
         http.perform(delete(ROOT + "/" + other)).andExpect(status().isNoContent());
         http.perform(get(ROOT + "/" + other)).andExpect(status().isNotFound());
+    }
+
+    /** DLV-971: a learner's support request is listed with its kind; an admin sets its status, never a review's. */
+    @Test void aSupportRequestIsListedWithItsKindAndAnAdminTriagesOnlyRequests() throws Exception {
+        var learner = new AccountPrincipal(UUID.randomUUID(), "learner@example.test", "Learner", true);
+        var admin = new AccountPrincipal(UUID.randomUUID(), "admin@example.test", "Admin", true);
+        var access = mock(com.lookahead.domain.access.StaffAccessService.class);
+        when(access.permissions(learner)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(false, java.util.Set.of()));
+        when(access.permissions(admin)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(false, java.util.Set.of("admin")));
+        when(access.permissions(reviewer)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(false, java.util.Set.of("reviewer")));
+        when(access.permissions(owner)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(true, java.util.Set.of()));
+        service.configureStaffAccess(access);
+        String review = create();
+        String reference = UUID.randomUUID().toString();
+        String request = service.recordRequest(learner, "question", "How do I renew?", "Asked from the Support page",
+                java.util.List.of(new PlatformReviewModels.Upload("screenshot-1.png", "image/png", PlatformReviewTestImages.png())), reference).id();
+        actor = admin;
+        http.perform(get(ROOT)).andExpect(status().isOk())
+                .andExpect(jsonPath("data.items.length()").value(2))
+                .andExpect(jsonPath("data.items[0].id").value(request))
+                .andExpect(jsonPath("data.items[0].kind").value("request"))
+                .andExpect(jsonPath("data.items[0].requestType").value("question"))
+                .andExpect(jsonPath("data.items[0].reference").value(reference))
+                .andExpect(jsonPath("data.items[0].category").value("idea"))
+                .andExpect(jsonPath("data.items[0].page").value("Support"))
+                .andExpect(jsonPath("data.items[0].submitterRole").value("user"))
+                .andExpect(jsonPath("data.items[1].kind").value("review"));
+        http.perform(get(ROOT + "/" + request)).andExpect(status().isOk())
+                .andExpect(jsonPath("data.kind").value("request")).andExpect(jsonPath("data.requestType").value("question"))
+                .andExpect(jsonPath("data.reference").value(reference)).andExpect(jsonPath("data.pageUrl").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("data.attachments.length()").value(1));
+        http.perform(put(ROOT + "/" + review + "/triage").contentType("application/json").content("{\"status\":\"accepted\",\"ownerNote\":\"\"}"))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("code").value("PLATFORM_REVIEW_ACCESS_DENIED"));
+        http.perform(put(ROOT + "/" + request + "/triage").contentType("application/json").content("{\"status\":\"done\",\"ownerNote\":\"Answered\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("data.status").value("done")).andExpect(jsonPath("data.kind").value("request"));
+        http.perform(delete(ROOT + "/" + request)).andExpect(status().isNotFound());
+        actor = reviewer;
+        http.perform(get(ROOT)).andExpect(jsonPath("data.items.length()").value(1)).andExpect(jsonPath("data.items[0].id").value(review));
+        http.perform(get(ROOT + "/" + request)).andExpect(status().isNotFound());
+        actor = owner;
+        http.perform(put(ROOT + "/" + review + "/triage").contentType("application/json").content("{\"status\":\"accepted\",\"ownerNote\":\"\"}"))
+                .andExpect(status().isOk());
+        http.perform(put(ROOT + "/" + request + "/triage").contentType("application/json").content("{\"status\":\"declined\",\"ownerNote\":\"\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("data.status").value("declined"));
+        http.perform(delete(ROOT + "/" + request)).andExpect(status().isNoContent());
+        http.perform(get(ROOT + "/" + request)).andExpect(status().isNotFound());
     }
 
     @Test void malformedRequestsAreRejectedBeforeSaving() throws Exception {
@@ -116,5 +168,41 @@ class PlatformReviewControllerTest {
 
     private static MockMultipartFile image(String name, String type, byte[] bytes) {
         return new MockMultipartFile("image", name, type, bytes);
+    }
+
+    /** DLV-971: promote answers 201 with the ticket id and the work item; the list and item carry ticketId and ticketStatus. */
+    @Test void promoteAnswersTheTicketAndTheItemShowsItsStatus() throws Exception {
+        actor = owner;
+        var access = mock(com.lookahead.domain.access.StaffAccessService.class);
+        when(access.permissions(owner)).thenReturn(com.lookahead.domain.access.StaffPermissions.forRoles(true, java.util.Set.of()));
+        service.configureStaffAccess(access);
+        PlatformReviewFixtures.seedPlan(root);
+        service.configureDelivery(PlatformReviewFixtures.delivery(root, JsonMapper.builder().build(), access, new ReviewStatusHistory.InMemory(), java.time.Clock.systemUTC(), "local"));
+        String key = UUID.randomUUID().toString();
+        String id = JsonMapper.builder().build().readTree(http.perform(multipart(ROOT).file(item(ITEM)).header("Idempotency-Key", key))
+                .andExpect(status().isCreated()).andExpect(jsonPath("data.id").value("REV-000001"))
+                .andExpect(jsonPath("data.ticketId").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("data.ticketStatus").value(org.hamcrest.Matchers.nullValue()))
+                .andReturn().getResponse().getContentAsString()).path("data").path("id").asString();
+        http.perform(post(ROOT + "/" + id + "/promote"))
+                .andExpect(status().isCreated()).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("data.ticketId").value("DLV-2"))
+                .andExpect(jsonPath("data.item.id").value("DLV-2"))
+                .andExpect(jsonPath("data.item.title").value("Search misses Kafka"))
+                .andExpect(jsonPath("data.item.origin.id").value(id))
+                .andExpect(jsonPath("data.item.origin.kind").value("review"))
+                .andExpect(jsonPath("data.item.statusId").value("backlog"));
+        http.perform(post(ROOT + "/" + id + "/promote")).andExpect(status().isConflict()).andExpect(jsonPath("code").value("PLATFORM_REVIEW_ALREADY_PROMOTED"));
+        http.perform(get(ROOT + "/" + id)).andExpect(status().isOk())
+                .andExpect(jsonPath("data.ticketId").value("DLV-2")).andExpect(jsonPath("data.ticketStatus").value("backlog"))
+                .andExpect(jsonPath("data.closedAt").value(org.hamcrest.Matchers.nullValue()));
+        http.perform(get(ROOT)).andExpect(status().isOk())
+                .andExpect(jsonPath("data.items[0].id").value(id)).andExpect(jsonPath("data.items[0].ticketId").value("DLV-2"))
+                .andExpect(jsonPath("data.items[0].ticketStatus").value("backlog")).andExpect(jsonPath("data.items[0].kind").value("review"));
+        http.perform(post(ROOT + "/REV-000404/promote")).andExpect(status().isNotFound());
+        // closed is a triage status; the answer carries the close stamps.
+        http.perform(put(ROOT + "/" + id + "/triage").contentType("application/json").content("{\"status\":\"closed\",\"ownerNote\":\"Done by hand\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("data.status").value("closed")).andExpect(jsonPath("data.closedBy").value("owner"))
+                .andExpect(jsonPath("data.closedAt").isString());
     }
 }

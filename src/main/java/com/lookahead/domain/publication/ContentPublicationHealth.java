@@ -17,10 +17,16 @@ import org.springframework.boot.health.contributor.HealthIndicator;
 final class ContentPublicationHealth implements HealthIndicator {
     private final PublicationLocation location;
     private final ProtectedContentPolicy policy;
+    private final LiveRelease release;
     private final HealthReport report;
 
     ContentPublicationHealth(PublicationLocation location, ProtectedContentPolicy policy, Clock clock) {
-        this.location = location; this.policy = policy;
+        this(location, policy, LiveRelease.notConfigured(), clock);
+    }
+
+    /** DLV-971: with the live tar configured, the answer carries the served version and DOWN says which tar problem. */
+    ContentPublicationHealth(PublicationLocation location, ProtectedContentPolicy policy, LiveRelease release, Clock clock) {
+        this.location = location; this.policy = policy; this.release = release;
         this.report = new HealthReport("content publication", "the content release is loaded and its files are on disk", clock);
     }
 
@@ -28,10 +34,13 @@ final class ContentPublicationHealth implements HealthIndicator {
         if (!location.cloud()) return Health.up().build();
         Diagnosis down = diagnose();
         report.report(down);
-        return down == null ? Health.up().build() : Health.down().build();
+        var health = down == null ? Health.up() : Health.down();
+        if (release.loaded()) health = health.withDetail("release", release.version());
+        return health.build();
     }
 
     Diagnosis diagnose() {
+        if (release.configured() && release.problem() != null) return release.problem();
         if (policy.version().equals("disabled"))
             return new Diagnosis("CONTENT_DISABLED", "no content release is loaded: the content policy started without a publication manifest or content folder");
         if (!Files.isRegularFile(Path.of(location.manifest())))
