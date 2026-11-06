@@ -42,4 +42,7 @@ public class SupportReceiptRepository implements SupportReceiptStore {
     @Override public void accepted(String owner, String key) {
         transaction.executeWithoutResult(status -> jdbc.update("UPDATE support_receipts SET status='accepted',updated_at=now() WHERE account_id=? AND request_key=?",UUID.fromString(owner),key));
     }
+    @Override public void release(String owner, String key) {
+        transaction.executeWithoutResult(status -> jdbc.update("DELETE FROM support_receipts WHERE account_id=? AND request_key=? AND status='unconfirmed'",UUID.fromString(owner),key));
+    }
 }

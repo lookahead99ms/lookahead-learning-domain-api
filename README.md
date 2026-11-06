@@ -252,6 +252,14 @@ an already admitted Domain API transaction across databases. Plan/version/activi
 mutation-receipt writes remain one Domain API transaction. Support receipt
 reservation and per-account limits lock the Domain API subject row; uncertain
 SMTP delivery is never automatically resent by replaying a request key.
+DLV-971: a support request is recorded for Team Reviews first (see Platform reviews),
+then emailed. Receipt statuses: `accepted` (email sent, 202), `recorded` (recorded for
+Team Reviews, mail not configured, 202; `EMAIL_NOT_SENT` names the missing setting),
+`unconfirmed` (reserved, email not confirmed, 503). A failing or unconfigured review store
+is logged as `support.record` / `REQUEST_NOT_RECORDED` and the email still goes; when
+neither the store nor mail is available the request key is released and the answer is
+`503 SUPPORT_UNAVAILABLE`, so a retry starts over. A replay of a `recorded` request returns
+the stored receipt (`unconfirmed`; the table's statuses are unchanged).
 
 Local fixtures require `local-test`, explicit local mode and
 `LOOKAHEAD_DOMAIN_SEED_ENABLED=true`. They create only deterministic subject
@@ -495,6 +503,24 @@ EXIF/XMP/IPTC/PNG-text metadata removed without re-encoding; multipart request a
 `/var/lib/lookahead/platform-reviews` owned by the app user so a new named volume mounted
 there is writable. Tests: `PlatformReviewServiceTest`, `PlatformReviewControllerTest`.
 
+Kinds and support requests (DLV-971, owner 2026-11-06). Every item carries `kind`: `"review"` for an
+item written on Write Review, `"request"` for a learner's support request (Report a problem, Share
+feedback, Ask a question). A request also carries `requestType` (`"problem"`, `"feedback"` or
+`"question"`) and `reference` (the `support_receipts` reference, so the owner can match it to the
+email thread); on a review both are `null`. `SupportFeedbackService.submit` records the request
+through `PlatformReviewService.recordRequest` before it emails the support inbox: category
+`problem` for a problem and `idea` for feedback or a question, page `Support`, no page URL,
+priority `medium`, status `new`, the learner's feedback role (`user`) as `submitterRole`, the
+screenshots stored through the review image pipeline; the reply address stays in the email and
+the receipt row only. The receipt reference is the dedupe key: the same request is never
+recorded twice. Day files written before this read as reviews (`kind` absent is `review`, the
+other two `null`); nothing is rewritten for it, the next write of the day stores the fields.
+Who sees and does what: the owner and admins list every item; a reviewer lists the reviews they
+wrote, never a request; a learner has no Team Reviews access. The owner sets the status of any
+item, an admin only of a request (`403 PLATFORM_REVIEW_ACCESS_DENIED` on a review); a review is
+edited or deleted by its writer while New (the owner's status locks it); a request is never
+edited through the review API and only the owner deletes it.
+
 
 ## Staff access and cloud profile candidates (DLV-930/933)
 
@@ -504,7 +530,7 @@ assignment APIs are `/api/v1/admin/access`, `/catalog`, `/lookup`, `/waiting` an
 permissions are `/api/v1/account/permissions` and additive `auth/me.permissions`.
 Roles are admin/reviewer/tester, independent of selected/full curriculum grants.
 Only the existing owner capability manages access. Testers receive full courses
-and own feedback; no admin/board access. Owner/admin triage all feedback.
+and own feedback; no admin/board access. The owner triages all feedback; admins read every item (DLV-971, 2026-11-06).
 
 Pending email assignments claim only from provider-verified email on an admitted
 Cognito identity, within 14 days after save. Local signup does not verify email.
