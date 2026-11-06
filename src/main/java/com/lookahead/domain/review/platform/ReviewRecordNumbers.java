@@ -13,7 +13,7 @@ public interface ReviewRecordNumbers {
         public Jdbc(JdbcTemplate jdbc) { this.jdbc = jdbc; }
         @Override public long next(String kind) {
             String sequence = PlatformReviewModels.KIND_REQUEST.equals(kind) ? "support_request_seq" : "review_record_seq";
-            Long value = jdbc.queryForObject("SELECT nextval('" + sequence + "')", Long.class);
+            Long value = jdbc.queryForObject("SELECT nextval(?::regclass)", Long.class, sequence);
             return value == null ? 0 : value;
         }
     }

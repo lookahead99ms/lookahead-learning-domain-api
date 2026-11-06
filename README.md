@@ -510,7 +510,7 @@ feedback without a database table. DLV-971 (owner, 2026-11-06): one JSON record 
 runtime stores of the assets bucket, `reviews/records/YYYY/MM/DD/REV-000001.json` and
 `support-requests/records/YYYY/MM/DD/SUP-000001.json` (the day is the record's creation day, UTC),
 with the images beside each record under `<store>/attachments/<ID>/NN-name.ext`. Ids come from two
-Postgres sequences (`review_record_seq`, `support_request_seq`, V22). `PlatformReviewObjects` is the
+Postgres sequences (`review_record_seq`, `support_request_seq`, V22). Sequence selection uses a bound PostgreSQL `regclass` parameter; the sequence name is never concatenated into SQL. `PlatformReviewObjects` is the
 storage boundary, one instance per store root; implementations are the Local filesystem store (the
 roots are sub-folders of `LOOKAHEAD_PLATFORM_REVIEW_DIRECTORY`) and the S3 store (GetObject,
 conditional PutObject, ListObjectsV2 with and without a delimiter, DeleteObject, SSE-KMS with the

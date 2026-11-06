@@ -47,7 +47,7 @@ class ReviewRecordsDatabaseTest {
         var store=new RecordStore(new FileSystemPlatformReviewObjects(Path.of(System.getProperty("java.io.tmpdir")).resolve(schema)),"request",new tools.jackson.databind.json.JsonMapper(),numbers);
         assertThat(store.nextId()).isEqualTo("SUP-000002");
         for(String sequence:List.of("review_record_seq","support_request_seq"))
-            assertThat(jdbc.queryForObject("SELECT has_sequence_privilege('lookahead_platform_app','"+sequence+"','USAGE')",Boolean.class)).as(sequence).isTrue();
+            assertThat(jdbc.queryForObject("SELECT has_sequence_privilege('lookahead_platform_app', ?, 'USAGE')",Boolean.class,sequence)).as(sequence).isTrue();
     }
 
     @Test void statusEventsAreAppendOnlyForTheRuntimeRoleAndImmutableForEveryone() {
@@ -61,9 +61,9 @@ class ReviewRecordsDatabaseTest {
         assertThat(jdbc.queryForObject("SELECT actor_id FROM review_status_events WHERE record_id='SUP-000001'",UUID.class)).isNull();
         // The membership-audit grant pattern: the runtime role appends and reads, never changes or removes.
         for(String privilege:List.of("INSERT","SELECT"))
-            assertThat(jdbc.queryForObject("SELECT has_table_privilege('lookahead_platform_app','review_status_events','"+privilege+"')",Boolean.class)).as(privilege).isTrue();
+            assertThat(jdbc.queryForObject("SELECT has_table_privilege('lookahead_platform_app','review_status_events', ?)",Boolean.class,privilege)).as(privilege).isTrue();
         for(String privilege:List.of("UPDATE","DELETE","TRUNCATE"))
-            assertThat(jdbc.queryForObject("SELECT has_table_privilege('lookahead_platform_app','review_status_events','"+privilege+"')",Boolean.class)).as(privilege).isFalse();
+            assertThat(jdbc.queryForObject("SELECT has_table_privilege('lookahead_platform_app','review_status_events', ?)",Boolean.class,privilege)).as(privilege).isFalse();
         assertThat(jdbc.queryForObject("SELECT has_any_column_privilege('lookahead_platform_app','review_status_events','UPDATE')",Boolean.class)).isFalse();
         assertThatThrownBy(()->jdbc.update("INSERT INTO review_status_events(id,record_id,kind,to_status) VALUES (?,?,?,?)",UUID.randomUUID(),"X","nowhere","x")).hasMessageContaining("check constraint");
         // The owner of the table cannot change history either: the immutability trigger refuses it.
