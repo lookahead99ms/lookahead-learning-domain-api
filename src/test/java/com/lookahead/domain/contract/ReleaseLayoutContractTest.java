@@ -22,6 +22,7 @@ import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import tools.jackson.databind.JsonNode;
@@ -33,18 +34,22 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * DLV-968 (owner decision 2026-11-05): Domain's copy of the Content-owned release-layout contract,
- * {@code src/test/resources/contracts/release-layout.json}. A minimal release is built from the contract alone
+ * DLV-968 (owner decisions 2026-11-05 and 2026-11-06): the Content-owned release-layout contract,
+ * {@code docs/contracts/release-layout.json} on Content main, the only home of the file. {@code scripts/fetch-contracts.sh}
+ * fetches it into {@code .contracts/} (CI step "Fetch contracts from Content" with {@code CONTENT_READ_TOKEN}; a
+ * developer's own {@code gh} login locally); this repository keeps no copy and a missing file fails with that
+ * instruction. A minimal release is built from the contract alone
  * (every required key, the optional keys with one value each) and loaded through Domain's real readers:
  * {@link PublicationBootstrap} for the layout, manifest and publication, {@link SnapshotValidator} for the account
  * catalog. The refusals are the readers' own: a missing required key is refused, and what Domain ignores today (an
- * unknown record field, the packager's approvalStatus) is shown to be ignored, so the contract copy never claims a
- * check Domain does not make. The file is byte-identical to Content's copy; its producer-only entries (archivePrefix,
+ * unknown record field, the packager's approvalStatus) is shown to be ignored, so the contract never claims a
+ * check Domain does not make. The file is Content's master itself; its producer-only entries (archivePrefix,
  * pinPattern, pinNote, notes) are informational here.
  * No database, no network, no S3: the release lives in memory and is extracted into a temporary folder.
  */
+@Tag(ContractFiles.TAG)
 class ReleaseLayoutContractTest {
-    static final Path CONTRACT = Path.of(System.getProperty("user.dir"), "src/test/resources/contracts/release-layout.json");
+    static final Path CONTRACT = ContractFiles.of("release-layout.json");
     static final String REFUSED = "Selected cloud publication failed startup verification";
     /** Manifest keys the producer's contract lists as optional because its packager writes them; Domain never reads them. */
     static final Set<String> IGNORED_MANIFEST_KEYS = Set.of("approvalStatus");
@@ -53,7 +58,7 @@ class ReleaseLayoutContractTest {
     @TempDir Path directory;
 
     @BeforeAll static void readContract() throws Exception {
-        contract = mapper.readTree(Files.readString(CONTRACT));
+        contract = ContractFiles.read(CONTRACT);
         assertThat(contract.path("schema").asString()).isEqualTo("release-layout/v1");
         assertThat(contract.path("owner").asString()).isEqualTo("lookahead99ms/lookahead-learning-content");
         assertThat(contract.path("consumer").asString()).isEqualTo("lookahead99ms/lookahead-learning-domain-api");
@@ -74,7 +79,7 @@ class ReleaseLayoutContractTest {
     static String sha(byte[] value) throws Exception { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value)); }
 
     /** The contract's required keys and optional keys are exactly the ones the readers name; nothing invented on either side. */
-    @Test void contractCopyNamesExactlyWhatDomainReads() {
+    @Test void contractNamesExactlyWhatDomainReads() {
         JsonNode catalog = contract.path("accountCatalog");
         assertThat(catalog.path("schemaVersion").asString()).isEqualTo("account-catalog/v1");
         assertThat(strings(catalog.path("required"))).containsExactly("schemaVersion", "catalogVersion", "algorithmVersions", "rankingVersions", "records");

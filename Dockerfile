@@ -21,7 +21,9 @@ RUN sha256sum --check rds-global-bundle.sha256
 WORKDIR /workspace
 RUN java tools/container/VerifyRdsTrust.java tools/container/trust/rds-global-bundle.pem
 # DLV-914: the jar is lookahead-domain-api-<version>.jar and /actuator/info reports version, release tag and commit.
-RUN ./mvnw --batch-mode --no-transfer-progress "-Drevision=$BUILD_VERSION" "-Drelease.tag=$RELEASE_VERSION" "-Dsource.revision=$SOURCE_REVISION" verify \
+# DLV-968: the fetched-contract tests read files that scripts/fetch-contracts.sh takes from Content on the pull
+# request; the build context carries no fetched file and the CI Maven step has already run them, so they are excluded here.
+RUN ./mvnw --batch-mode --no-transfer-progress "-Drevision=$BUILD_VERSION" "-Drelease.tag=$RELEASE_VERSION" "-Dsource.revision=$SOURCE_REVISION" -DexcludedGroups=fetched-contract verify \
     && test -f "/workspace/target/lookahead-domain-api-$BUILD_VERSION.jar" \
     && mkdir /workspace/health \
     && javac --release 21 -d /workspace/health src/main/java/com/lookahead/domain/health/ContainerHealthcheck.java

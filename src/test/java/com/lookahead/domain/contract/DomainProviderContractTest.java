@@ -14,7 +14,6 @@ import com.lookahead.learning.content.service.ProtectedContentPolicy;
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -23,8 +22,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 import org.springframework.core.MethodParameter;
@@ -54,26 +53,25 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * DLV-968 T13: provider side of the Gateway's consumer contract. The file is the Gateway's
- * {@code src/test/resources/contracts/domain-api-v1.json}; CI fetches it from the Gateway's newest calendar tag and
- * the committed copy serves local runs. Every (method, path) must be a real controller mapping, and the calls whose
- * response the Gateway interprets (sign-in admission, the cloud sign-in actions, the account check, the author preview
- * check) are driven through the real controllers with stubbed services so their status and the fields the Gateway
- * reads are proven on an actual response.
+ * DLV-968 T13: provider side of the Gateway-owned Domain API contract. The file is Content's
+ * {@code docs/contracts/domain-api-v1.json} (the only home of every cross-repository contract; the Gateway edits it
+ * there first), fetched from Content main into {@code .contracts/} by {@code scripts/fetch-contracts.sh}: in CI the
+ * step "Fetch contracts from Content" runs it with {@code CONTENT_READ_TOKEN} before the Maven tests, locally a developer
+ * runs it with their own {@code gh} login. This repository keeps no copy; a missing file fails with that instruction.
+ * Every (method, path) must be a real controller mapping, and the calls whose response the Gateway interprets (sign-in
+ * admission, the cloud sign-in actions, the account check, the author preview check) are driven through the real
+ * controllers with stubbed services so their status and the fields the Gateway reads are proven on an actual response.
  */
+@Tag(ContractFiles.TAG)
 class DomainProviderContractTest {
-    static final Path CONTRACT = Path.of(System.getProperty("user.dir"), "src/test/resources/contracts/domain-api-v1.json");
-    static final String SKIP = "Consumer contract absent: " + CONTRACT + " is fetched from the Gateway's newest v* tag in CI "
-            + "(CROSS_REPO_READ_TOKEN); copy the Gateway's src/test/resources/contracts/domain-api-v1.json there to run this test locally.";
+    static final Path CONTRACT = ContractFiles.of("domain-api-v1.json");
     static final String CLOUD = "/internal/v1/cloud-sign-ins/";
     static final Set<String> DRIVEN = Set.of("auth-me", "author-preview-access");
     static final UUID ACCOUNT = UUID.fromString("0f6d1c0e-6c3a-4a4e-9d6a-2f8c1b7e5a10"), SIGN_IN = UUID.fromString("5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d");
     static JsonNode contract;
 
     @BeforeAll static void requireContract() throws IOException {
-        if (!Files.isRegularFile(CONTRACT)) System.out.println("SKIPPED DomainProviderContractTest: " + SKIP);
-        Assumptions.assumeTrue(Files.isRegularFile(CONTRACT), SKIP);
-        contract = JsonMapper.builder().build().readTree(Files.readString(CONTRACT));
+        contract = ContractFiles.read(CONTRACT);
         assertThat(contract.path("schema").asString()).isEqualTo("gateway-domain-contract/v1");
         assertThat(contract.path("provider").asString()).isEqualTo("lookahead99ms/lookahead-learning-domain-api");
     }
