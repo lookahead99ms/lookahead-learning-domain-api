@@ -223,6 +223,46 @@ public class DeliveryPlanService {
         return new Sync(true, c, version, null);
     }
 
+    /**
+     * DLV-971 (owner, 2026-11-07): the plan file uploaded from the Delivery Plan page. The owner or a co-author sends the
+     * local {@code delivery-plan.json} as the request body; it is checked ({@link DeliveryPlanStore#inboxCandidate}), its
+     * base ({@code baseVersion}, else {@code version}) must be the DEV plan or an archived version, it becomes the inbox
+     * and {@link #syncInbox()} merges it at once. 403 {@code DELIVERY_ACCESS_DENIED} for anyone else, admins included;
+     * 422 {@code DELIVERY_INBOX_BASE_UNKNOWN} when the base is not on DEV; 404 {@code DELIVERY_PLAN_MISSING} before the
+     * first hand upload. One {@code delivery.inbox-upload} line, then the sync's own line.
+     */
+    public Sync uploadInbox(AccountPrincipal actor, byte[] bytes) {
+        requirePlanSync(actor);
+        ObjectNode local = store.inboxCandidate(bytes);
+        long baseVersion = local.path("baseVersion").isIntegralNumber() ? local.path("baseVersion").asLong() : local.path("version").asLong();
+        var loaded = current();
+        if (baseVersion != loaded.version() && store.archived(baseVersion).isEmpty())
+            throw new AccountFailure(422, "DELIVERY_INBOX_BASE_UNKNOWN", "The file says it was edited from plan version " + baseVersion
+                    + ", but DEV is at version " + loaded.version() + " and has no archived version " + baseVersion
+                    + ". Download the plan on DEV, make the changes in that copy and upload it again.");
+        store.putInbox(bytes);
+        Events.success(Events.EVENT, "delivery.inbox-upload").addKeyValue("account.id", actor.accountId()).addKeyValue("bytes", bytes.length)
+                .addKeyValue("plan.base", baseVersion).addKeyValue("items", local.path("workItems").size())
+                .log("Delivery plan file uploaded by account {} ({} bytes, {} items, base {}); merging it now", actor.accountId(), bytes.length, local.path("workItems").size(), baseVersion);
+        return syncInbox();
+    }
+
+    /** The Delivery Plan page's Sync plan inbox: {@link #syncInbox()} for the owner or a co-author, with the actor on one line. */
+    public Sync syncInboxNow(AccountPrincipal actor) {
+        requirePlanSync(actor);
+        Sync sync = syncInbox();
+        Events.success(Events.EVENT, "delivery.inbox-sync-now").addKeyValue("account.id", actor.accountId()).addKeyValue("merged", sync.synced())
+                .addKeyValue("plan.version", sync.version())
+                .log("Account {} ran the inbox sync now: {}", actor.accountId(), sync.synced() ? "merged into plan version " + sync.version() : sync.reason());
+        return sync;
+    }
+
+    /** Uploading or syncing the inbox: the owner (manages access) or a co-author; nobody else, admins included. */
+    private void requirePlanSync(AccountPrincipal actor) {
+        var permissions = permissions(actor);
+        if (!permissions.manageAccess() && !"co-author".equals(permissions.feedbackRole())) throw denied();
+    }
+
     // ---- Plan edits
 
     /** Reads, checks the expected version, edits and saves; repeats the edit when another writer came first. */

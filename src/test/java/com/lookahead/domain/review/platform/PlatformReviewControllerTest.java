@@ -28,6 +28,7 @@ class PlatformReviewControllerTest {
     final AccountPrincipal reviewer = new AccountPrincipal(UUID.randomUUID(), "reviewer@example.test", "Reviewer", true);
     AccountPrincipal actor;
     MockMvc http;
+    final org.springframework.mock.env.MockEnvironment environment = new org.springframework.mock.env.MockEnvironment().withProperty("app.deployment-environment", "dev");
     PlatformReviewService service;
 
     @BeforeEach void setup() {
@@ -36,7 +37,7 @@ class PlatformReviewControllerTest {
         when(author.allowed(owner)).thenReturn(true);
         var mapper = JsonMapper.builder().build();
         service = PlatformReviewFixtures.service(root, author, mapper, "reviewer@example.test");
-        http = MockMvcBuilders.standaloneSetup(new PlatformReviewController(service, mapper))
+        http = MockMvcBuilders.standaloneSetup(new PlatformReviewController(service, mapper, environment))
                 .setControllerAdvice(new AccountErrorHandler(), new PlatformReviewUploadErrors())
                 .setCustomArgumentResolvers(new HandlerMethodArgumentResolver() {
                     public boolean supportsParameter(MethodParameter parameter) { return parameter.getParameterType() == AccountPrincipal.class; }
@@ -204,5 +205,12 @@ class PlatformReviewControllerTest {
         http.perform(put(ROOT + "/" + id + "/triage").contentType("application/json").content("{\"status\":\"closed\",\"ownerNote\":\"Done by hand\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("data.status").value("closed")).andExpect(jsonPath("data.closedBy").value("owner"))
                 .andExpect(jsonPath("data.closedAt").isString());
+    }
+
+    /** Owner decision 2026-11-07: promoting writes the DEV plan; PROD has no such route. */
+    @Test void prodCannotPromote() throws Exception {
+        actor = owner;
+        environment.setProperty("app.deployment-environment", "prod");
+        http.perform(post(ROOT + "/" + UUID.randomUUID() + "/promote")).andExpect(status().isNotFound()).andExpect(jsonPath("code").value("DEV_ONLY"));
     }
 }
