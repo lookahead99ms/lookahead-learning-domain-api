@@ -52,6 +52,27 @@ public final class DeliveryPlanStore {
 
     public void deleteInbox() { storage(() -> { objects.delete(INBOX); return null; }); }
 
+    /**
+     * DLV-971 (owner, 2026-11-07): the plan file uploaded from the Delivery Plan page becomes the inbox, replacing any
+     * file already there; {@link #inboxCandidate} has checked it first. Unconditional: the owner's upload wins.
+     */
+    public void putInbox(byte[] bytes) { storage(() -> { objects.put(INBOX, bytes); return null; }); }
+
+    /**
+     * The uploaded bytes as a plan, or 413 {@code DELIVERY_PLAN_TOO_LARGE} / 422 {@code DELIVERY_INBOX_INVALID} in the
+     * uploader's words: nothing is written until the file reads as a plan object with a numeric version and a workItems array.
+     */
+    public ObjectNode inboxCandidate(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) throw new AccountFailure(422, "DELIVERY_INBOX_INVALID", "The uploaded file is empty.");
+        if (bytes.length > MAX_BYTES) throw new AccountFailure(413, "DELIVERY_PLAN_TOO_LARGE", "The delivery plan exceeds 16 MB.");
+        JsonNode node;
+        try { node = mapper.readTree(bytes); }
+        catch (JacksonException broken) { throw new AccountFailure(422, "DELIVERY_INBOX_INVALID", "The uploaded file is not valid JSON."); }
+        if (!(node instanceof ObjectNode plan) || !plan.path("workItems").isArray() || !plan.path("version").isIntegralNumber())
+            throw new AccountFailure(422, "DELIVERY_INBOX_INVALID", "The uploaded file is not a delivery plan: it needs a numeric version and a workItems array.");
+        return plan;
+    }
+
     private Optional<Loaded> read(String key) {
         var stored = storage(() -> objects.read(key));
         if (stored.isEmpty()) return Optional.empty();

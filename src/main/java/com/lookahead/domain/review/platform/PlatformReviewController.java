@@ -29,8 +29,10 @@ public class PlatformReviewController {
     private static final Set<String> UPDATE_FIELDS = Set.of("category", "page", "pageUrl", "title", "details", "priority", "keepAttachmentIds");
     private final PlatformReviewService reviews;
     private final ObjectMapper mapper;
+    private final org.springframework.core.env.Environment environment;
 
-    public PlatformReviewController(PlatformReviewService reviews, ObjectMapper mapper) {
+    public PlatformReviewController(PlatformReviewService reviews, ObjectMapper mapper, org.springframework.core.env.Environment environment) {
+        this.environment = environment;
         this.reviews = reviews; this.mapper = mapper;
     }
 
@@ -99,8 +101,10 @@ public class PlatformReviewController {
     }
 
     /** DLV-971: a ticket on the delivery plan from this item; 409 PLATFORM_REVIEW_ALREADY_PROMOTED when it has one. */
+    /** Owner decision 2026-11-07: promoting writes the DEV plan, so it is DEV and local only (404 {@code DEV_ONLY} in prod). */
     @PostMapping("/{id}/promote")
     public ResponseEntity<ApiResponse<Promoted>> promote(@AuthenticationPrincipal AccountPrincipal actor, @PathVariable String id) {
+        com.lookahead.domain.DevOnly.require(environment, "Promoting to a delivery ticket");
         return ResponseEntity.status(201).header(HttpHeaders.CACHE_CONTROL, "no-store").body(ApiResponse.success(reviews.promote(actor, id)));
     }
 

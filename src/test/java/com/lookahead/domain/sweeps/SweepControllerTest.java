@@ -38,6 +38,7 @@ class SweepControllerTest {
     final RuntimeSweeps sweeps = mock(RuntimeSweeps.class);
     AccountPrincipal actor;
     MockMvc http;
+    final org.springframework.mock.env.MockEnvironment environment = new org.springframework.mock.env.MockEnvironment().withProperty("app.deployment-environment", "dev");
     PlatformReviewService service;
 
     @BeforeEach void setup() {
@@ -45,7 +46,7 @@ class SweepControllerTest {
         when(author.allowed(owner)).thenReturn(true);
         var mapper = JsonMapper.builder().build();
         service = PlatformReviewFixtures.service(root, author, mapper, "reviewer@example.test");
-        http = MockMvcBuilders.standaloneSetup(new SweepController(sweeps, service))
+        http = MockMvcBuilders.standaloneSetup(new SweepController(sweeps, service, environment))
                 .setControllerAdvice(new AccountErrorHandler())
                 .setCustomArgumentResolvers(new HandlerMethodArgumentResolver() {
                     public boolean supportsParameter(MethodParameter parameter) { return parameter.getParameterType() == AccountPrincipal.class; }
@@ -115,5 +116,12 @@ class SweepControllerTest {
         actor = owner;
         when(sweeps.runNow(owner.accountId(), RuntimeSweeps.Job.ALL)).thenReturn(new RuntimeSweeps.Result("all", "2026-11-06T18:30:00Z", 0, false, "no inbox file", 0));
         http.perform(run("{\"job\":\"all\"}")).andExpect(status().isOk()).andExpect(jsonPath("data.admissionsRemoved").value(0));
+    }
+
+    @Test void prodHasNoManualRun() throws Exception {
+        actor = owner;
+        environment.setProperty("app.deployment-environment", "prod");
+        http.perform(run("{\"job\":\"all\"}")).andExpect(status().isNotFound()).andExpect(jsonPath("code").value("DEV_ONLY"));
+        verifyNoInteractions(sweeps);
     }
 }

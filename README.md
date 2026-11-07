@@ -647,6 +647,23 @@ the inbox file deleted, and one `delivery.inbox-sync` line carries the counts. A
 lacks, or a missing plan, keeps the inbox for the owner (one WARN per run). The same code runs for a
 local Domain against a local inbox. Tests: `DeliveryPlanMergeTest` (the rule table).
 
+Upload from the page (owner, 2026-11-07): `PUT /api/v1/delivery/plan/inbox` takes the local
+`delivery-plan.json` as the request body (the Delivery Plan page's Upload plan file), checks it
+(`DeliveryPlanStore.inboxCandidate`: 422 `DELIVERY_INBOX_INVALID` unless it is a plan object with a
+numeric `version` and a `workItems` array, 413 over 16 MB), requires its base (`baseVersion`, else
+`version`) to be the DEV plan or an archived version (422 `DELIVERY_INBOX_BASE_UNKNOWN` otherwise,
+nothing written), stores it as `delivery/inbox/plan.json` and merges it at once with the sync above.
+`POST /api/v1/delivery/plan/inbox/sync` (Sync plan inbox) merges a file placed in the inbox by hand.
+Both answer the `Sync` record `{synced, counts, version, reason}`; `reason` is `no inbox file` when
+nothing waited. The owner or a co-author (`manageAccess`, or `feedbackRole` co-author); 403
+`DELIVERY_ACCESS_DENIED` for everyone else, admins included. Lines: `delivery.inbox-upload`
+(account, bytes, items, base) and `delivery.inbox-sync-now` (account, merged, plan.version), then the
+sync's own. The Gateway forwards both like the other delivery routes (8 MB body limit). DEV and
+local only (owner, 2026-11-07): in `prod` (`app.deployment-environment`) every delivery plan write
+(tickets, conflicts, the inbox routes), promoting a review to a ticket and the manual sweep run answer
+404 `DEV_ONLY` before any other check (`DevOnly`); PROD reads the plan only, and the 4-hour schedule
+itself runs everywhere. Tests: `DeliveryPlanControllerTest`, `DeliveryPlanServiceTest`, `SweepControllerTest`.
+
 ## Sweeps (DLV-971)
 
 `RuntimeSweeps` is the one scheduled component: at `ApplicationReadyEvent` (before the task takes
@@ -661,7 +678,8 @@ runs. Tests: `RuntimeSweepsTest`, the sweep clock in `PlatformReviewServiceTest`
 
 Run now (`POST /api/v1/sweeps/run` `{"job": "support-requests" | "delivery-inbox" | "admissions" |
 "all"}`, `SweepController`, owner 2026-11-06): the owner's Jobs buttons on Support tickets and feedback
-(Close stale tickets, Sync plan inbox, Clean up admissions, Run all) run one sweep, or all three, at
+(owner, 2026-11-07: Close idle tickets on Support tickets and feedback, Clean up admissions on
+People & Access; the plan inbox has its own routes above) run one sweep, or all three, at
 once through `RuntimeSweeps.runNow`, the method the start and the schedule share
 (`RuntimeSweeps.sweep(Job)`). The owner alone (`PlatformReviewService.requireOwner`: the account
 that manages access, the author capability without staff access); 401 without a sign-in,

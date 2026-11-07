@@ -183,6 +183,41 @@ class DeliveryPlanServiceTest {
         assertThat(history.rows).hasSize(1);
     }
 
+    @Test void anUploadedPlanFileBecomesTheInboxAndIsMergedWithItsOwnLine() throws Exception {
+        var coauthor = new AccountPrincipal(UUID.randomUUID(), "coauthor@example.test", "Co-author", true);
+        when(access.permissions(coauthor)).thenReturn(StaffPermissions.forRoles(false, Set.of("co-author")));
+        var local = (ObjectNode) mapper.readTree(PlatformReviewFixtures.PLAN);
+        ((ObjectNode) local.path("workItems").get(0)).put("title", "Uploaded rename");
+        byte[] bytes = mapper.writeValueAsBytes(local); // no baseVersion: its version (7) is the base, equal to the current plan
+        DeliveryPlanService.Sync sync;
+        try (var log = com.lookahead.domain.LogCapture.start()) {
+            sync = plans.uploadInbox(coauthor, bytes);
+            var upload = log.only("delivery.inbox-upload");
+            assertThat(upload.getFormattedMessage()).isEqualTo("Delivery plan file uploaded by account " + coauthor.accountId() + " (" + bytes.length + " bytes, 1 items, base 7); merging it now");
+            assertThat(com.lookahead.domain.LogCapture.keys(log.only("delivery.inbox-sync"))).containsEntry("plan.version", 8L).containsEntry("taken", 1);
+        }
+        assertThat(sync.synced()).isTrue();
+        assertThat(sync.version()).isEqualTo(8);
+        assertThat(sync.counts().takenLocal()).isEqualTo(1);
+        assertThat(Files.exists(root.resolve("delivery/inbox/plan.json"))).isFalse();
+        assertThat(plans.plan(owner).path("workItems").get(0).path("title").asString()).isEqualTo("Uploaded rename");
+        // Sync now with nothing waiting: not merged, "no inbox file", one line naming the actor.
+        try (var log = com.lookahead.domain.LogCapture.start()) {
+            var again = plans.syncInboxNow(owner);
+            assertThat(again.synced()).isFalse();
+            assertThat(again.reason()).isEqualTo("no inbox file");
+            assertThat(log.only("delivery.inbox-sync-now").getFormattedMessage()).isEqualTo("Account " + owner.accountId() + " ran the inbox sync now: no inbox file");
+        }
+        // Admins and readers are refused; nothing is written for a base DEV never had or for a non-plan.
+        assertThat(failure(() -> plans.uploadInbox(admin, bytes), 403).code()).isEqualTo("DELIVERY_ACCESS_DENIED");
+        assertThat(failure(() -> plans.syncInboxNow(reviewer), 403).code()).isEqualTo("DELIVERY_ACCESS_DENIED");
+        local.put("baseVersion", 3);
+        assertThat(failure(() -> plans.uploadInbox(owner, mapper.writeValueAsBytes(local)), 422).code()).isEqualTo("DELIVERY_INBOX_BASE_UNKNOWN");
+        assertThat(failure(() -> plans.uploadInbox(owner, "[]".getBytes()), 422).code()).isEqualTo("DELIVERY_INBOX_INVALID");
+        assertThat(failure(() -> plans.uploadInbox(owner, new byte[0]), 422).code()).isEqualTo("DELIVERY_INBOX_INVALID");
+        assertThat(Files.exists(root.resolve("delivery/inbox/plan.json"))).isFalse();
+    }
+
     @Test void theInboxIsMergedAgainstItsBaseArchivedAndDeletedWithOneLine() throws Exception {
         // DEV moves on: version 8 adds DLV-2 and edits DLV-1's status. The owner's copy came from version 7.
         plans.create(owner, 7L, item("Dev new", "backlog"));

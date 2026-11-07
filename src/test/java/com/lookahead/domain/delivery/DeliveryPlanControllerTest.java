@@ -34,19 +34,69 @@ class DeliveryPlanControllerTest {
     final AccountPrincipal learner = new AccountPrincipal(UUID.randomUUID(), "learner@example.test", "Learner", true);
     AccountPrincipal actor;
     MockMvc http;
+    StaffAccessService access;
+    final org.springframework.mock.env.MockEnvironment environment = new org.springframework.mock.env.MockEnvironment().withProperty("app.deployment-environment", "dev");
 
     @BeforeEach void setup() throws Exception {
         actor = owner;
-        var access = mock(StaffAccessService.class);
+        access = mock(StaffAccessService.class);
         when(access.permissions(owner)).thenReturn(StaffPermissions.forRoles(true, Set.of()));
         when(access.permissions(learner)).thenReturn(StaffPermissions.forRoles(false, Set.of()));
         PlatformReviewFixtures.seedPlan(root);
         var plans = PlatformReviewFixtures.delivery(root, JsonMapper.builder().build(), access, new ReviewStatusHistory.InMemory(), Clock.systemUTC(), "local");
-        http = MockMvcBuilders.standaloneSetup(new DeliveryPlanController(plans)).setControllerAdvice(new AccountErrorHandler())
+        http = MockMvcBuilders.standaloneSetup(new DeliveryPlanController(plans, environment)).setControllerAdvice(new AccountErrorHandler())
                 .setCustomArgumentResolvers(new HandlerMethodArgumentResolver() {
                     public boolean supportsParameter(MethodParameter parameter) { return parameter.getParameterType() == AccountPrincipal.class; }
                     public Object resolveArgument(MethodParameter p, ModelAndViewContainer c, NativeWebRequest r, WebDataBinderFactory b) { return actor; }
                 }).build();
+    }
+
+    @Test void theOwnerOrACoAuthorUploadsThePlanFileWhichIsMergedAtOnceAndSyncsTheInbox() throws Exception {
+        var coauthor = new AccountPrincipal(UUID.randomUUID(), "coauthor@example.test", "Co-author", true);
+        var admin = new AccountPrincipal(UUID.randomUUID(), "admin@example.test", "Admin", true);
+        when(access.permissions(coauthor)).thenReturn(StaffPermissions.forRoles(false, Set.of("co-author")));
+        when(access.permissions(admin)).thenReturn(StaffPermissions.forRoles(false, Set.of("admin")));
+        String local = PlatformReviewFixtures.PLAN.replace("\"version\": 7", "\"version\": 7, \"baseVersion\": 7").replace("First ticket", "Renamed locally");
+        org.assertj.core.api.Assertions.assertThat(local).contains("\"baseVersion\": 7");
+        http.perform(put(ROOT + "/inbox").contentType("application/json").content(local))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("data.synced").value(true)).andExpect(jsonPath("data.version").value(8))
+                .andExpect(jsonPath("data.counts.takenLocal").value(1)).andExpect(jsonPath("data.reason").value(org.hamcrest.Matchers.nullValue()));
+        org.assertj.core.api.Assertions.assertThat(Files.exists(root.resolve("delivery/inbox/plan.json"))).isFalse();
+        org.assertj.core.api.Assertions.assertThat(Files.exists(root.resolve("delivery/archive/plan-v7.json"))).isTrue();
+        http.perform(get(ROOT)).andExpect(jsonPath("data.version").value(8)).andExpect(jsonPath("data.workItems[0].title").value("Renamed locally"));
+        // Nothing in the inbox: Sync plan inbox says so and the version stays.
+        http.perform(post(ROOT + "/inbox/sync")).andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("data.synced").value(false)).andExpect(jsonPath("data.version").value(8)).andExpect(jsonPath("data.reason").value("no inbox file"));
+        // A file placed in the inbox by hand is merged by Sync plan inbox.
+        Files.createDirectories(root.resolve("delivery/inbox"));
+        Files.writeString(root.resolve("delivery/inbox/plan.json"), local.replace("\"baseVersion\": 7", "\"baseVersion\": 8").replace("Renamed locally", "Renamed again"));
+        http.perform(post(ROOT + "/inbox/sync")).andExpect(jsonPath("data.synced").value(true)).andExpect(jsonPath("data.version").value(9));
+        // Not a plan, or a base DEV never had: refused before anything is written.
+        http.perform(put(ROOT + "/inbox").contentType("application/json").content("not json"))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("code").value("DELIVERY_INBOX_INVALID"));
+        http.perform(put(ROOT + "/inbox").contentType("application/json").content("{\"version\": 1}"))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("code").value("DELIVERY_INBOX_INVALID"));
+        http.perform(put(ROOT + "/inbox").contentType("application/json").content(local.replace("\"baseVersion\": 7", "\"baseVersion\": 3")))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("code").value("DELIVERY_INBOX_BASE_UNKNOWN"));
+        org.assertj.core.api.Assertions.assertThat(Files.exists(root.resolve("delivery/inbox/plan.json"))).isFalse();
+        // A co-author may; an admin and a learner may not.
+        actor = coauthor;
+        http.perform(post(ROOT + "/inbox/sync")).andExpect(status().isOk()).andExpect(jsonPath("data.synced").value(false));
+        actor = admin;
+        http.perform(put(ROOT + "/inbox").contentType("application/json").content(local)).andExpect(status().isForbidden()).andExpect(jsonPath("code").value("DELIVERY_ACCESS_DENIED"));
+        http.perform(post(ROOT + "/inbox/sync")).andExpect(status().isForbidden());
+        actor = learner;
+        http.perform(put(ROOT + "/inbox").contentType("application/json").content(local)).andExpect(status().isForbidden());
+        // PROD has neither route (owner, 2026-11-07): 404 DEV_ONLY before any check, for the owner too.
+        actor = owner;
+        environment.setProperty("app.deployment-environment", "prod");
+        http.perform(put(ROOT + "/inbox").contentType("application/json").content(local)).andExpect(status().isNotFound()).andExpect(jsonPath("code").value("DEV_ONLY"));
+        http.perform(post(ROOT + "/inbox/sync")).andExpect(status().isNotFound()).andExpect(jsonPath("code").value("DEV_ONLY"));
+        http.perform(get(ROOT)).andExpect(status().isOk());
+        http.perform(post(ROOT + "/work-items").contentType("application/json").content("{\"expectedVersion\":9,\"item\":" + ITEM + "}")).andExpect(status().isNotFound()).andExpect(jsonPath("code").value("DEV_ONLY"));
+        http.perform(put(ROOT + "/work-items/DLV-1").contentType("application/json").content("{\"expectedVersion\":9,\"item\":" + ITEM + "}")).andExpect(status().isNotFound());
+        http.perform(post(ROOT + "/work-items/DLV-1/resolve-conflict").contentType("application/json").content("{\"expectedVersion\":9,\"keep\":\"dev\"}")).andExpect(status().isNotFound());
     }
 
     @Test void readCreateUpdateAndResolveWithTheirStatuses() throws Exception {
