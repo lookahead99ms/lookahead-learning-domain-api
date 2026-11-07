@@ -364,7 +364,8 @@ wrote. `GET /api/v1/platform-reviews` lists both stores merged, newest first, pa
 Every status change is a row of `review_status_events` (V22, append-only: the runtime role inserts and reads,
 nothing updates or deletes). Support requests with no update for seven days are closed by the sweep
 (`closedBy` `system`, the note "No update in 7 days; closed automatically. Reply or reopen to continue.");
-reviews are never swept. The receipt row in `support_receipts` is unchanged. Statuses answered to the learner:
+reviews are never swept. The owner can run one sweep, or all three, at once (`POST /api/v1/sweeps/run`
+`{"job": ...}`, owner only; README, "Sweeps") instead of waiting for the 4-hour cadence. The receipt row in `support_receipts` is unchanged. Statuses answered to the learner:
 `accepted` (email sent), `recorded` (recorded for Team Reviews, mail is not configured: `EMAIL_NOT_SENT` with
 the missing setting, answered 202) and `unconfirmed` (email not confirmed, 503). A record store that is
 unconfigured or fails logs `support.record` / `REQUEST_NOT_RECORDED` and the email still goes; with neither

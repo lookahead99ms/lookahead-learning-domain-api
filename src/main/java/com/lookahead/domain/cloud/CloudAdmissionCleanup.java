@@ -21,13 +21,15 @@ public final class CloudAdmissionCleanup {
     private final TransactionTemplate transaction;
     public CloudAdmissionCleanup(JdbcTemplate jdbc,PlatformTransactionManager manager){this.jdbc=jdbc;this.transaction=new TransactionTemplate(manager);}
 
-    public void run() {
-        try {expire();}
+    /** One guarded run: the number of waiting rows removed; 0 when another task holds the lock or the run did not complete (logged). */
+    public int run() {
+        try {return expire();}
         catch(RuntimeException failure){
             String state=Events.sqlState(failure);
             var line=Events.failed(Events.EVENT,"admission.cleanup","UNEXPECTED").addKeyValue("error.type",Events.types(failure));
             if(state!=null)line=line.addKeyValue("db.sqlState",state);
             line.log("Admission cleanup skipped this run: {}{}; the next run tries again",Events.types(failure),state==null?"":" (SQL state "+state+")");
+            return 0;
         }
     }
     /**

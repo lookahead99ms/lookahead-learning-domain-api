@@ -346,6 +346,12 @@ public class PlatformReviewService {
         throw denied();
     }
 
+    /** DLV-971: the owner alone may run the sweeps now: 401 without a sign-in, 403 for everyone else, admins included. */
+    public void requireOwner(AccountPrincipal actor) {
+        if (actor == null || !actor.isEnabled()) throw new AccountFailure(401, "AUTHENTICATION_REQUIRED", "Sign in to continue");
+        if (!isOwner(actor)) throw denied();
+    }
+
     /** The owner alone, never an admin: {@code manageAccess} with staff access, the author capability without it. */
     private boolean isOwner(AccountPrincipal actor) {
         return access != null ? access.permissions(actor).manageAccess() : author.allowed(actor);
