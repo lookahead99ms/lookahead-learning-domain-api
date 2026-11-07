@@ -28,7 +28,8 @@ public class DeliveryPlanService {
     public static final Set<String> SERVER_FIELDS = Set.of("createdIn", "updatedIn", "updatedAt", "origin", "pendingLocal");
 
     public record Created(long version, JsonNode item) {}
-    public record Sync(boolean synced, DeliveryPlanMerge.Counts counts, long version) {}
+    /** An inbox sync: merged into {@code version} with {@code counts}, or left alone for {@code reason} (plain words; {@code null} when synced). */
+    public record Sync(boolean synced, DeliveryPlanMerge.Counts counts, long version, String reason) {}
 
     private final DeliveryPlanStore store;
     private final StaffAccessService access;
@@ -187,12 +188,12 @@ public class DeliveryPlanService {
     /** The inbox merged into the plan (see {@link DeliveryPlanMerge}); the inbox file is deleted after; one line with the counts. */
     public Sync syncInbox() {
         var inbox = store.inbox();
-        if (inbox.isEmpty()) return new Sync(false, null, store.current().map(DeliveryPlanStore.Loaded::version).orElse(0L));
+        if (inbox.isEmpty()) return new Sync(false, null, store.current().map(DeliveryPlanStore.Loaded::version).orElse(0L), "no inbox file");
         var current = store.current();
         if (current.isEmpty()) {
             Events.failed(Events.EVENT, "delivery.inbox-sync", "DELIVERY_PLAN_MISSING")
                     .log("The delivery inbox is waiting but delivery/plan.json is not there yet; the inbox is kept until the owner uploads the plan");
-            return new Sync(false, null, 0);
+            return new Sync(false, null, 0, "delivery/plan.json missing");
         }
         long baseVersion = inbox.get().plan().path("baseVersion").isIntegralNumber() ? inbox.get().plan().path("baseVersion").asLong() : inbox.get().version();
         var counts = new DeliveryPlanMerge.Counts[1];
@@ -205,7 +206,7 @@ public class DeliveryPlanService {
                 if (base == null) {
                     Events.failed(Events.EVENT, "delivery.inbox-sync", "BASE_VERSION_MISSING").addKeyValue("plan.version", loaded.version()).addKeyValue("plan.base", baseVersion)
                             .log("The delivery inbox names base version {} but the archive has no such plan (current {}); the inbox is kept for the owner to fix", baseVersion, loaded.version());
-                    return new Sync(false, null, loaded.version());
+                    return new Sync(false, null, loaded.version(), "base version " + baseVersion + " not in the archive");
                 }
                 var merged = DeliveryPlanMerge.merge(loaded.plan(), base, inbox.get().plan(), clock.instant().toString());
                 counts[0] = merged.counts();
@@ -219,7 +220,7 @@ public class DeliveryPlanService {
                 .addKeyValue("count", c.added() + c.takenLocal() + c.conflicts()).addKeyValue("added", c.added()).addKeyValue("taken", c.takenLocal())
                 .addKeyValue("kept", c.keptDev()).addKeyValue("conflicts", c.conflicts()).addKeyValue("unchanged", c.unchanged()).addKeyValue("deleted", c.deletedOnDev())
                 .log("Delivery inbox merged into plan version {} (base {}): {}", version, baseVersion, c.words());
-        return new Sync(true, c, version);
+        return new Sync(true, c, version, null);
     }
 
     // ---- Plan edits

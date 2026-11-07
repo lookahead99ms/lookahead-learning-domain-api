@@ -659,6 +659,24 @@ inbox sync; and the 48-hour admission cleanup (`CloudAdmissionCleanup`, moved fr
 cadence). Each sweep is isolated: a failure is logged (`sweep` / `UNEXPECTED`) and the next still
 runs. Tests: `RuntimeSweepsTest`, the sweep clock in `PlatformReviewServiceTest`.
 
+Run now (`POST /api/v1/sweeps/run` `{"job": "support-requests" | "delivery-inbox" | "admissions" |
+"all"}`, `SweepController`, owner 2026-11-06): the owner's Jobs buttons on Support tickets and feedback
+(Close stale tickets, Sync plan inbox, Clean up admissions, Run all) run one sweep, or all three, at
+once through `RuntimeSweeps.runNow`, the method the start and the schedule share
+(`RuntimeSweeps.sweep(Job)`). The owner alone (`PlatformReviewService.requireOwner`: the account
+that manages access, the author capability without staff access); 401 without a sign-in,
+`403 PLATFORM_REVIEW_ACCESS_DENIED` for everyone else, admins included; `400 SWEEP_JOB_INVALID` for
+any other body; `409 SWEEP_NOT_AVAILABLE` for `admissions` where there is no cleanup (a local Domain;
+`all` there simply leaves `admissionsRemoved` null). Answer 200 `{data: {job, ranAt,
+supportRequestsClosed, inboxMerged, inboxResult, admissionsRemoved}}` with the requested job's counts
+filled and the others null: `ranAt` the ISO instant, `inboxResult` the plan version written when
+`inboxMerged` is true, else the reason the inbox was left alone (`no inbox file`,
+`delivery/plan.json missing`, `base version N not in the archive`, or `did not complete
+(ExceptionType)`). A sweep that did not complete counts 0 and keeps its `sweep` / `UNEXPECTED` line.
+One `sweep` line per manual run carries `manual` true, `account.id` (the owner), `job` and the
+counts. The Gateway forwards the route like the delivery plan (staff sign-ins only; a DEV test
+session is refused with 401). Tests: `SweepControllerTest`, `RuntimeSweepsTest`.
+
 ## Staff access and cloud profile candidates (DLV-930/933)
 
 Domain V6 owns `staff_access` and immutable `staff_access_events`; V7 owns
