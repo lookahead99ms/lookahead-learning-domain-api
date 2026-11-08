@@ -46,7 +46,8 @@ public class CloudSecurityConfiguration {
         return new CognitoSignInAccounts(settings,CognitoSignInAccounts.taskRoleClient(settings.region()));
     }
     @Bean CognitoTokenVerifier cognitoVerifier(CognitoSettings settings,CognitoIdentityProviderClient client){return new CognitoTokenVerifier(settings,client);}
-    @Bean CloudSignInRegistry cloudSignIns(JdbcTemplate jdbc,PlatformTransactionManager manager){return new CloudSignInRegistry(jdbc,manager);}
+    /** DLV-971: prepared access by email admits a first contact; a context without the access service (configuration tests) keeps every first contact waiting. */
+    @Bean CloudSignInRegistry cloudSignIns(JdbcTemplate jdbc,PlatformTransactionManager manager,org.springframework.beans.factory.ObjectProvider<com.lookahead.domain.access.StaffAccessService> access){var registry=new CloudSignInRegistry(jdbc,manager);access.ifAvailable(registry::configureStaffAccess);return registry;}
     @Bean CloudAdmissionCleanup cloudAdmissionCleanup(JdbcTemplate jdbc,PlatformTransactionManager manager){return new CloudAdmissionCleanup(jdbc,manager);}
     @Bean CloudDomainTokenConverter cloudAuthenticationConverter(CognitoTokenVerifier verifier,CloudSignInRegistry registry,HttpServletRequest request){return new CloudDomainTokenConverter(verifier,registry,request);}
     @Bean JwtDecoder cloudDecoder(CognitoSettings settings){

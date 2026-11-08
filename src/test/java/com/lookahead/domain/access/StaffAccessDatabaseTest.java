@@ -125,6 +125,22 @@ class StaffAccessDatabaseTest {
         assertThat(repository.forAccount(recipient.accountId()).pendingEmail()).isNull();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM staff_access_events WHERE assignment_id=?",Integer.class,id)).isEqualTo(2);
     }
+    /** DLV-971: the sign-in registry's claim at first contact; no conflict for an account that already holds access. */
+    @Test void preparedAccessIsClaimedForANewAccountOnceAndLeavesAnAssignedAccountAlone() {
+        var recipient=account(false);UUID id=UUID.randomUUID();
+        save(owner,new StaffAccessService.Change(id,null,"Prepared@Example.invalid",Set.of("reviewer"),Set.of(),false,0));
+        java.util.function.Function<String,StaffAccessRepository.Assignment> claim=email->tx.execute(status->service.claimPrepared(recipient.accountId(),email));
+        assertThat(claim.apply(null)).isNull();
+        assertThat(claim.apply("other@example.invalid")).isNull();
+        var claimed=claim.apply("prepared@example.invalid");
+        assertThat(claimed.id()).isEqualTo(id);assertThat(claimed.accountId()).isEqualTo(recipient.accountId());assertThat(claimed.roles()).containsExactly("reviewer");
+        assertThat(claim.apply("prepared@example.invalid")).isNull();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM staff_access_events WHERE assignment_id=? AND action='claim'",Integer.class,id)).isEqualTo(1);
+        save(owner,new StaffAccessService.Change(UUID.randomUUID(),null,"second@example.invalid",Set.of("tester"),Set.of(),false,0));
+        assertThat(claim.apply("second@example.invalid")).isNull();
+        assertThat(repository.forAccount(recipient.accountId()).roles()).containsExactly("reviewer");
+        assertThatThrownBy(()->tx.executeWithoutResult(status->service.claimVerified(recipient,"second@example.invalid"))).isInstanceOf(com.lookahead.learning.content.exception.AccountFailure.class);
+    }
     @Test void expiredAndCancelledInvitationsCannotClaimAccess() {
         var recipient=account(false);UUID id=UUID.randomUUID();
         save(owner,new StaffAccessService.Change(id,null,"expired@example.invalid",Set.of("reviewer"),Set.of(),false,0));
