@@ -101,16 +101,29 @@ public class StaffAccessService {
     public void claimVerified(AccountPrincipal actor, String verifiedEmail) {
         requireIdentity(actor);
         if(verifiedEmail==null||owner.allowed(actor))return;
-        String email=normalizeEmail(verifiedEmail);
+        claim(actor.accountId(),normalizeEmail(verifiedEmail),true);
+    }
+    /**
+     * DLV-971 (owner, 2026-11-07): prepared access by email is a pass through the DEV gate. The sign-in registry calls
+     * this inside its first-contact transaction for the account it has just recorded; the claimed assignment, or null
+     * when nothing is prepared for that address, decides whether the account is admitted at once. Never a conflict: a
+     * brand-new account holds nothing, and an older one that does is simply left alone.
+     */
+    public Assignment claimPrepared(UUID accountId, String verifiedEmail) {
+        if(accountId==null||verifiedEmail==null)return null;
+        return claim(accountId,normalizeEmail(verifiedEmail),false);
+    }
+    private Assignment claim(UUID accountId, String email, boolean conflictWhenAssigned) {
         var pending=repository.pending(email);
-        if(pending==null)return;
-        if(repository.forAccount(actor.accountId())!=null)throw conflict();
-        var next=new Assignment(pending.id(),actor.accountId(),null,pending.roles(),pending.topicGrants(),pending.fullCurriculum(),pending.revision()+1);
-        repository.mutationActor(actor.accountId());
-        repository.update(next);repository.event(actor.accountId(),"claim",pending,next);
-        Events.afterCommit(()->Events.success(Events.EVENT,"access.invitation-claimed").addKeyValue("account.id",actor.accountId())
+        if(pending==null)return null;
+        if(repository.forAccount(accountId)!=null){if(conflictWhenAssigned)throw conflict();return null;}
+        var next=new Assignment(pending.id(),accountId,null,pending.roles(),pending.topicGrants(),pending.fullCurriculum(),pending.revision()+1);
+        repository.mutationActor(accountId);
+        repository.update(next);repository.event(accountId,"claim",pending,next);
+        Events.afterCommit(()->Events.success(Events.EVENT,"access.invitation-claimed").addKeyValue("account.id",accountId)
             .addKeyValue("target.id",pending.id()).addKeyValue("roles",new java.util.TreeSet<>(next.roles()))
-            .log("Account {} claimed pending access invitation {}: roles {}",actor.accountId(),pending.id(),new java.util.TreeSet<>(next.roles())));
+            .log("Account {} claimed pending access invitation {}: roles {}",accountId,pending.id(),new java.util.TreeSet<>(next.roles())));
+        return next;
     }
     public static String normalizeEmail(String email) {
         String clean=email.strip().toLowerCase(Locale.ROOT);

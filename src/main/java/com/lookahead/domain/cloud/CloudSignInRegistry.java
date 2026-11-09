@@ -35,7 +35,10 @@ public final class CloudSignInRegistry {
     private record Challenge(String family,String binding,Instant expires,Instant auth,boolean cancelled,UUID selected,UUID admitted) {}
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transaction;
+    /** DLV-971: prepared access by email (StaffAccessService) admits a first contact at once; null leaves every first contact waiting. */
+    private com.lookahead.domain.access.StaffAccessService access;
     public CloudSignInRegistry(JdbcTemplate jdbc,PlatformTransactionManager manager){this.jdbc=jdbc;this.transaction=new TransactionTemplate(manager);}
+    public void configureStaffAccess(com.lookahead.domain.access.StaffAccessService access){this.access=access;}
 
     static final int CHALLENGES_PER_WINDOW=5;
     /** DLV-969: a sign-in without a cloud_accounts row records a waiting row (first contact) and still answers 403. */
@@ -216,8 +219,12 @@ public final class CloudSignInRegistry {
             if(row==null){
                 if(!firstContact)throw admissionRequired();
                 row=link(identity);
-                if(row==null){waitingId[0]=request(identity);waitingAction[0]="created";waiting[0]=admissionRequired();return null;}
-                linked=true;
+                if(row==null){
+                    // DLV-971 (owner, 2026-11-07): prepared access by email admits the new account inside request(); only a
+                    // row still unadmitted after that waits for the owner.
+                    UUID created=request(identity);row=find(identity);
+                    if(!row.admitted){waitingId[0]=created;waitingAction[0]="created";waiting[0]=admissionRequired();return null;}
+                } else linked=true;
             }
             // DLV-969: an account the owner disabled or deleted (V18) has no sign-in, even before the pool is told.
             var states=jdbc.queryForList("SELECT state FROM cloud_account_states WHERE account_id=?",String.class,row.account.id);
@@ -302,7 +309,22 @@ public final class CloudSignInRegistry {
             id,identity.issuer(),identity.subject(),identity.username(),identity.displayName(),email(identity));
         CloudIdentities.insert(jdbc,id,identity.issuer(),identity.subject(),identity.username(),email(identity),"first_contact");
         jdbc.update("INSERT INTO cloud_admission_events(id,account_id,issuer,subject,actor_id,action,roles) VALUES(?,?,?,?,NULL,'request','[]'::jsonb)",UUID.randomUUID(),id,identity.issuer(),identity.subject());
+        // DLV-971 (owner, 2026-11-07): prepared access by email is a pass through the DEV gate. The invitation is claimed
+        // for the new account and the account admitted in the same transaction, so the owner never sees it waiting.
+        var prepared=access==null?null:access.claimPrepared(id,email(identity));
+        if(prepared!=null){
+            var roles=new TreeSet<>(prepared.roles());
+            jdbc.update("UPDATE cloud_accounts SET admitted=true,admitted_at=clock_timestamp() WHERE account_id=?",id);
+            jdbc.update("INSERT INTO cloud_admission_events(id,account_id,issuer,subject,actor_id,action,roles) VALUES(?,?,?,?,NULL,'admit',?::jsonb)",UUID.randomUUID(),id,identity.issuer(),identity.subject(),json(roles));
+            Events.afterCommit(()->Events.success(Events.EVENT,"admission.admitted-by-invitation").addKeyValue("account.id",id)
+                .addKeyValue("target.id",prepared.id()).addKeyValue("roles",roles)
+                .log("Account {} admitted at first contact by prepared access {}: roles {}",id,prepared.id(),roles.isEmpty()?"none (learner)":roles));
+        }
         return id;
+    }
+    /** Role names come from the fixed StaffPermissions set; escaped all the same. */
+    private static String json(Collection<String> values){
+        return values.stream().map(v->"\""+v.replace("\\","\\\\").replace("\"","\\\"")+"\"").collect(java.util.stream.Collectors.joining(",","[","]"));
     }
     /** The identity's own claims always; the account's profile only from its first identity. */
     private void refresh(CognitoIdentity identity,Row row){

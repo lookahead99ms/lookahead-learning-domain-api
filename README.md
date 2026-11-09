@@ -779,6 +779,14 @@ the sign-in return URL or enable first-time cloud admission. Local signup still
 cannot prove mailbox ownership. Deploy Domain and Gateway before the updated Web
 client; do not use the old mutating GET as fallback if POST fails.
 
+DLV-971 prepared access (owner, 2026-11-07): an invitation saved on People & Access →
+Manage access → DEV gate access by email is a pass through the DEV gate. `CloudSignInRegistry`
+claims it inside the first-contact transaction (`StaffAccessService.claimPrepared`) and admits
+the new account at once (`admitted`, `admitted_at`, an `admit` event carrying the invitation's
+roles and no actor), so the person never appears under Review requests and
+`/auth/invitations/activate` then finds nothing to claim. An address with nothing prepared, or
+an invitation with nothing ticked (a cancelled one), leaves the first contact waiting as before.
+
 ## Local membership purchases (DLV-209)
 
 Domain owns `/api/v1/membership/plans`, `/api/v1/sales/active`, account purchase/quote/access-record endpoints and staff upgrades/sales/price endpoints. Saved study plans retain `/api/v1/plans`. Migration V8 adds only membership tables. Purchases require `Idempotency-Key`; `expectedPriceCents` optionally rejects a stale quote. Effective catalog access is computed dynamically with server-time expiry. Nothing renews automatically.

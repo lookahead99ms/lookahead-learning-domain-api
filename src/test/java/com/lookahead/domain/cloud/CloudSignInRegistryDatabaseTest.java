@@ -206,6 +206,41 @@ class CloudSignInRegistryDatabaseTest {
         return jdbc.queryForObject("SELECT account_id FROM cloud_accounts WHERE issuer=? AND subject=?",UUID.class,identity.issuer(),identity.subject());
     }
     int events(UUID account,String action){return jdbc.queryForObject("SELECT count(*) FROM cloud_admission_events WHERE account_id=? AND action=?",Integer.class,account,action);}
+    /** DLV-971 (owner, 2026-11-07): prepared access by email is a pass through the DEV gate. */
+    @Test void firstContactWithPreparedAccessIsAdmittedAtOnceWithItsRoles(){
+        var staff=new StaffAccessRepository(jdbc,new tools.jackson.databind.ObjectMapper());
+        var catalog=mock(com.lookahead.learning.content.validator.SnapshotValidator.class);when(catalog.allTopicIds()).thenReturn(Set.of("java"));
+        var access=new StaffAccessService(staff,new com.lookahead.learning.content.security.LocalAuthorAccess(new org.springframework.mock.env.MockEnvironment().withProperty("app.deployment-environment","dev")),catalog);
+        UUID preparedBy=UUID.randomUUID();jdbc.update("INSERT INTO platform_subjects VALUES(?)",preparedBy);UUID invitation=UUID.randomUUID();
+        var tx=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source));
+        tx.executeWithoutResult(s->{staff.mutationActor(preparedBy);staff.insert(new StaffAccessRepository.Assignment(invitation,null,"prepared@example.invalid",Set.of("reviewer"),Set.of("java"),false,1));});
+        var wired=service();wired.configureStaffAccess(access);
+        // The address matches however the provider cases it; the first contact gets a session, not a 403.
+        var a=contact("prepared-contact","Prepared@Example.invalid");
+        var admission=wired.admit(a,proof());
+        UUID id=jdbc.queryForObject("SELECT account_id FROM cloud_accounts WHERE issuer=? AND subject=?",UUID.class,issuer,a.subject());
+        assertThat(admission.accountId()).isEqualTo(id);
+        var row=jdbc.queryForMap("SELECT admitted,admitted_at,admitted_by,verified_email FROM cloud_accounts WHERE account_id=?",id);
+        assertThat(row).containsEntry("admitted",true).containsEntry("verified_email","Prepared@Example.invalid");
+        assertThat(row.get("admitted_at")).isNotNull();assertThat(row.get("admitted_by")).isNull();
+        assertThat(events(id,"request")).isEqualTo(1);assertThat(events(id,"admit")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT roles::text FROM cloud_admission_events WHERE account_id=? AND action='admit'",String.class,id)).isEqualTo("[\"reviewer\"]");
+        var assignment=staff.forAccount(id);
+        assertThat(assignment.id()).isEqualTo(invitation);assertThat(assignment.pendingEmail()).isNull();
+        assertThat(assignment.roles()).containsExactly("reviewer");assertThat(assignment.topicGrants()).containsExactly("java");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM staff_access_events WHERE assignment_id=? AND action='claim'",Integer.class,invitation)).isEqualTo(1);
+        // Nothing prepared for another address: that first contact waits as before, even on the wired registry.
+        var b=contact("unprepared-contact","unprepared@example.invalid");
+        failsWith(()->wired.admit(b,proof()),403,"ACCOUNT_ADMISSION_REQUIRED");
+        UUID waitingId=jdbc.queryForObject("SELECT account_id FROM cloud_accounts WHERE issuer=? AND subject=?",UUID.class,issuer,b.subject());
+        assertThat(jdbc.queryForObject("SELECT admitted FROM cloud_accounts WHERE account_id=?",Boolean.class,waitingId)).isFalse();
+        assertThat(events(waitingId,"admit")).isZero();
+        // The invitation is spent, and a later sign-in with the same verified address joins the admitted account (S36 linking).
+        var c=contact("prepared-again","prepared@example.invalid");
+        assertThat(wired.admit(c,proof()).accountId()).isEqualTo(id);
+        assertThat(events(id,"link")).isEqualTo(1);assertThat(events(id,"admit")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM staff_access WHERE id=?",Integer.class,invitation)).isEqualTo(1);
+    }
     AccountAdmissionService admission(){
         var owner=new com.lookahead.learning.content.security.LocalAuthorAccess(new org.springframework.mock.env.MockEnvironment().withProperty("app.deployment-environment","dev"));
         var catalog=mock(com.lookahead.learning.content.validator.SnapshotValidator.class);when(catalog.allTopicIds()).thenReturn(Set.of("java"));
