@@ -89,7 +89,7 @@ public class StaffAccessService {
         Set<String> before=old==null?Set.of():old.roles();
         Events.afterCommit(()->Events.success(Events.EVENT,next.accountId()==null?"access.invitation-saved":"access.saved")
             .addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",next.accountId()==null?next.id():next.accountId())
-            .addKeyValue("roles",new java.util.TreeSet<>(next.roles())).addKeyValue("roles.before",new java.util.TreeSet<>(before))
+            .addKeyValue("roles",new java.util.TreeSet<>(next.roles())).addKeyValue("rolesBefore",new java.util.TreeSet<>(before))
             .log("Owner saved access for {}: roles {} -> {}, {} topic grant(s), full curriculum {}",
                 next.accountId()==null?"pending invitation "+next.id():"account "+next.accountId(),
                 new java.util.TreeSet<>(before),new java.util.TreeSet<>(next.roles()),next.topicGrants().size(),next.fullCurriculum()?"on":"off"));

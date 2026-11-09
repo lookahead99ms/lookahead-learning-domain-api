@@ -191,7 +191,7 @@ class StaffAccessDatabaseTest {
                 "Owner saved access for account "+target.accountId()+": roles [] -> [admin], 1 topic grant(s), full curriculum off",
                 "Owner saved access for account "+target.accountId()+": roles [admin] -> [co-author, tester], 0 topic grant(s), full curriculum on");
             assertThat(com.lookahead.domain.LogCapture.keys(saved.get(1))).containsEntry("account.id",owner.accountId()).containsEntry("target.id",target.accountId())
-                .containsEntry("roles",new java.util.TreeSet<>(Set.of("co-author","tester"))).containsEntry("roles.before",new java.util.TreeSet<>(Set.of("admin")));
+                .containsEntry("roles",new java.util.TreeSet<>(Set.of("co-author","tester"))).containsEntry("rolesBefore",new java.util.TreeSet<>(Set.of("admin")));
             assertThat(com.lookahead.domain.LogCapture.keys(log.only("access.save"))).containsEntry("reason","ACCESS_ASSIGNMENT_CONFLICT");
             assertThat(com.lookahead.domain.LogCapture.keys(log.only("access.owner-check"))).containsEntry("reason","OWNER_REQUIRED").containsEntry("account.id",learner.accountId());
             assertThat(log.only("access.invitation-saved").getFormattedMessage()).isEqualTo("Owner saved access for pending invitation "+pending+": roles [] -> [reviewer], 0 topic grant(s), full curriculum off");
