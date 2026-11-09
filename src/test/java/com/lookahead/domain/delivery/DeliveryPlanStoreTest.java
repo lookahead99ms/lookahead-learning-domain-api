@@ -71,4 +71,22 @@ class DeliveryPlanStoreTest {
             log.containsNone("secret-text");
         }
     }
+
+    /** DLV-998: the first plan is seeded only once, and the release import marker is read back as written. */
+    @Test void seedsOnlyWhileNoPlanExistsAndKeepsTheReleaseImportMarker() throws Exception {
+        var store = store();
+        assertThat(store.current()).isEmpty();
+        assertThat(store.releaseImport()).isEmpty();
+        byte[] plan = com.lookahead.domain.review.platform.PlatformReviewFixtures.PLAN.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(store.seed(plan)).isTrue();
+        assertThat(store.current()).isPresent();
+        assertThat(store.current().get().version()).isEqualTo(7);
+        assertThat(store.seed(plan)).as("a second task starting at the same moment loses").isFalse();
+        assertThat(catchThrowableOfType(AccountFailure.class, () -> store.seed(new byte[DeliveryPlanStore.MAX_BYTES + 1])).status()).isEqualTo(413);
+        store.recordReleaseImport("{\"schema\":\"lookahead.release-plan-import/v1\",\"sha256\":\"abc\",\"release\":\"v2026.11.09.20.00\",\"planVersion\":7}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThat(store.releaseImport()).isPresent();
+        assertThat(store.releaseImport().get().path("sha256").asString()).isEqualTo("abc");
+        store.recordReleaseImport("not json".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThat(store.releaseImport()).as("a damaged marker reads as no marker, so the next start imports again").isEmpty();
+    }
 }

@@ -3,6 +3,7 @@ package com.lookahead.domain.sweeps;
 import com.lookahead.domain.Events;
 import com.lookahead.domain.cloud.CloudAdmissionCleanup;
 import com.lookahead.domain.delivery.DeliveryPlanService;
+import com.lookahead.domain.delivery.ReleasePlanImport;
 import com.lookahead.domain.review.platform.LegacyReviewImport;
 import com.lookahead.domain.review.platform.PlatformReviewService;
 import com.lookahead.learning.content.exception.AccountFailure;
@@ -20,7 +21,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * DLV-971 (owner, 2026-11-06): the one scheduled component. At application start (before the task takes traffic) the
- * legacy review import runs once, then the three sweeps: support requests with no update for seven days are closed,
+ * legacy review import runs once, then (DLV-998) the published delivery plan is seeded or merged, then the three sweeps: support requests with no update for seven days are closed,
  * the delivery inbox is merged into the plan, and the 48-hour admission cleanup runs (cloud only; it was hourly). The
  * sweeps repeat every 4 hours while the task runs (scheduling is enabled in cloud mode only; a local Domain sweeps at
  * each start). Each sweep is independent: a failure in one is logged and the next still runs. The owner can also run
@@ -33,6 +34,7 @@ public class RuntimeSweeps {
     private final PlatformReviewService reviews;
     private final DeliveryPlanService plans;
     private final LegacyReviewImport legacyImport;
+    private final ReleasePlanImport releaseImport;
     private final ObjectProvider<CloudAdmissionCleanup> admissions;
     private final Clock clock;
 
@@ -59,17 +61,20 @@ public class RuntimeSweeps {
     public record Result(String job, String ranAt, Integer supportRequestsClosed, Boolean inboxMerged, String inboxResult, Integer admissionsRemoved) {}
 
     @Autowired
-    public RuntimeSweeps(PlatformReviewService reviews, DeliveryPlanService plans, LegacyReviewImport legacyImport, ObjectProvider<CloudAdmissionCleanup> admissions) {
-        this(reviews, plans, legacyImport, admissions, Clock.systemUTC());
+    public RuntimeSweeps(PlatformReviewService reviews, DeliveryPlanService plans, LegacyReviewImport legacyImport, ReleasePlanImport releaseImport,
+            ObjectProvider<CloudAdmissionCleanup> admissions) {
+        this(reviews, plans, legacyImport, releaseImport, admissions, Clock.systemUTC());
     }
 
-    public RuntimeSweeps(PlatformReviewService reviews, DeliveryPlanService plans, LegacyReviewImport legacyImport, ObjectProvider<CloudAdmissionCleanup> admissions, Clock clock) {
-        this.reviews = reviews; this.plans = plans; this.legacyImport = legacyImport; this.admissions = admissions; this.clock = clock;
+    public RuntimeSweeps(PlatformReviewService reviews, DeliveryPlanService plans, LegacyReviewImport legacyImport, ReleasePlanImport releaseImport,
+            ObjectProvider<CloudAdmissionCleanup> admissions, Clock clock) {
+        this.reviews = reviews; this.plans = plans; this.legacyImport = legacyImport; this.releaseImport = releaseImport; this.admissions = admissions; this.clock = clock;
     }
 
     @EventListener(ApplicationReadyEvent.class)
     public void atStart() {
         guarded("legacy import", () -> { legacyImport.run(); return null; }, failure -> null);
+        if (releaseImport != null) guarded("release plan import", releaseImport::run, failure -> null);
         sweep(Job.ALL);
     }
 

@@ -284,7 +284,7 @@ public class DeliveryPlanService {
 
     private DeliveryPlanStore.Loaded current() {
         return store.current().orElseThrow(() -> new AccountFailure(404, "DELIVERY_PLAN_MISSING",
-                "The delivery plan has not been uploaded yet. The owner uploads delivery/plan.json to the assets bucket by hand; nothing is seeded from the publication."));
+                "The delivery plan is not there yet. The Domain seeds delivery/plan.json from the published plan at its next start on DEV and local; the owner can also upload it by hand."));
     }
 
     private static void replace(ObjectNode plan, String id, ObjectNode next) {
