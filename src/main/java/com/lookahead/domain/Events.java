@@ -22,7 +22,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * </ul>
  * Never names, emails, passwords, tokens, codes, bodies or exception messages: IDs (UUIDs), stable codes, counts and
  * exception types only. Successes are INFO; refusals, limit hits, retries and a retry sequence that gives up are WARN.
- * ERROR stays for real crashes, which {@link RequestLog} and the global handler already log (the deploy fails on it).
+ * ERROR stays for real crashes, which {@link RequestLog} and the global handler already log (the deploy fails on it),
+ * and (owner, 2026-11-09) for a permission refusal by an IAM-governed service such as S3 (HTTP 403, AccessDenied): a
+ * grant the deployment lacks is a configuration defect, never a user's doing, so it must not pass as a warning.
  */
 public final class Events {
     public static final Logger EVENT = LoggerFactory.getLogger("lookahead.event");
@@ -106,7 +108,7 @@ public final class Events {
      */
     public static void upstreamFailed(String service, String operation, long started, Throwable failure, Integer status, String code) {
         long millis = millis(started);
-        var line = upstream(UPSTREAM.atWarn(), service, operation, "failure", millis);
+        var line = upstream(permissionRefused(status, code) ? UPSTREAM.atError() : UPSTREAM.atWarn(), service, operation, "failure", millis);
         var parts = new ArrayList<String>();
         if (status != null) { line = line.addKeyValue("upstream.status", status); parts.add("HTTP " + status); }
         if (code != null) { line = line.addKeyValue("upstream.code", code); parts.add(code); }
@@ -119,6 +121,11 @@ public final class Events {
     }
 
     /** The provider's HTTP status, when the failure carries one. */
+    /** A 403 or an AccessDenied code: the deployment lacks a grant, which is an ERROR, not a warning (owner, 2026-11-09). */
+    static boolean permissionRefused(Integer status, String code) {
+        return (status != null && status == 403) || (code != null && code.startsWith("AccessDenied"));
+    }
+
     public static Integer status(Throwable failure) {
         if (failure instanceof software.amazon.awssdk.core.exception.SdkServiceException aws) return aws.statusCode();
         if (failure instanceof org.springframework.web.client.RestClientResponseException http) return http.getStatusCode().value();

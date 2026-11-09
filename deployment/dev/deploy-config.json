@@ -47,7 +47,7 @@
     "PlatformReviewsBucket": "lookahead-assets-dev-use2",
     "PlatformReviewsPrefix": "platform-reviews/",
     "PlatformReviewsKmsKeyArn": "arn:aws:kms:us-east-2:509614632283:key/861f7cfd-5136-4ad9-b77c-0f9c37494d62",
-    "PlatformReviewsLegacyPrefix": "platform-reviews/",
+    "PlatformReviewsLegacyPrefix": "",
     "ReviewsPrefix": "reviews/",
     "SupportRequestsPrefix": "support-requests/",
     "DeliveryPrefix": "delivery/",
