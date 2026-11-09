@@ -14,11 +14,13 @@ import tools.jackson.databind.node.ObjectNode;
  * is the plan the Domain serves and edits; every write raises its {@code version}, copies the previous file to
  * {@code archive/plan-v<N>.json} and writes the new one only if the object is still the one that was read
  * (If-Match on its ETag), so two edits cannot lose each other. {@code inbox/plan.json} is the owner's upload from
- * local, consumed by the next sync and deleted. Nothing here is ever seeded from the publication: the owner uploads
- * the first {@code plan.json} by hand.
+ * local, consumed by the next sync and deleted. DLV-998 (owner, 2026-11-09): the published plan seeds the first
+ * {@code plan.json} and later arrives through the inbox at each start ({@link ReleasePlanImport}); the digest of the
+ * last import sits in {@code inbox/.release-import.json}.
  */
 public final class DeliveryPlanStore {
     public static final String PLAN = "plan.json", INBOX = "inbox/plan.json";
+    static final String RELEASE_IMPORT = ReleasePlanImport.MARKER;
     static final int MAX_BYTES = 16 * 1024 * 1024;
 
     /** A plan as read: its parsed object (always with a numeric version and a workItems array) and the version read. */
@@ -51,6 +53,25 @@ public final class DeliveryPlanStore {
     }
 
     public void deleteInbox() { storage(() -> { objects.delete(INBOX); return null; }); }
+
+    /**
+     * DLV-998: the first plan, written as it is (its own version, no archive) only while no plan.json exists. False:
+     * another task seeded it first; read the current plan and merge instead.
+     */
+    public boolean seed(byte[] bytes) {
+        if (bytes.length > MAX_BYTES) throw new AccountFailure(413, "DELIVERY_PLAN_TOO_LARGE", "The delivery plan exceeds 16 MB.");
+        return storage(() -> objects.write(PLAN, bytes, null));
+    }
+
+    /** The last release import's marker (its {@code sha256}, release and plan version), or empty before the first import. */
+    public Optional<ObjectNode> releaseImport() {
+        var stored = storage(() -> objects.read(RELEASE_IMPORT));
+        if (stored.isEmpty()) return Optional.empty();
+        try { return mapper.readTree(stored.get().bytes()) instanceof ObjectNode marker ? Optional.of(marker) : Optional.empty(); }
+        catch (JacksonException broken) { return Optional.empty(); }
+    }
+
+    public void recordReleaseImport(byte[] bytes) { storage(() -> { objects.put(RELEASE_IMPORT, bytes); return null; }); }
 
     /**
      * DLV-971 (owner, 2026-11-07): the plan file uploaded from the Delivery Plan page becomes the inbox, replacing any

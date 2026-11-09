@@ -619,8 +619,8 @@ reads the current file, checks the caller's `expectedVersion` (`409 VERSION_CONF
 `currentRevision` when stale), raises `version`, copies the previous file to
 `delivery/archive/plan-v<N>.json` and writes with If-Match on the ETag, so two edits cannot lose
 each other. The stamps are `dev` when the cloud policy is on, else `local`; a ticket without a stamp
-reads as `local`, never an error. Nothing is seeded from the publication: the owner uploads the first
-`plan.json` by hand; until then `GET` answers `404 DELIVERY_PLAN_MISSING` with that message.
+reads as `local`, never an error. Until a plan exists `GET` answers `404 DELIVERY_PLAN_MISSING`; the
+published plan seeds it at the next start (below), or the owner uploads it by hand.
 
 | Call | Right | Answer |
 | --- | --- | --- |
@@ -646,6 +646,19 @@ the same rule field by field. The DEV plan is written as a new version, the prev
 the inbox file deleted, and one `delivery.inbox-sync` line carries the counts. A base the archive
 lacks, or a missing plan, keeps the inbox for the owner (one WARN per run). The same code runs for a
 local Domain against a local inbox. Tests: `DeliveryPlanMergeTest` (the rule table).
+
+Published plan at start (DLV-998, owner 2026-11-09; `ReleasePlanImport`): the publication tar carries the
+repository's `runtime/delivery/delivery-plan.json` as `content/staff/delivery-plan.json` (a local Domain serving a
+content tree reads `delivery/delivery-plan.json` under its content root). After the legacy review import and before
+the sweeps, `RuntimeSweeps.atStart` runs the import: no `plan.json` yet, the released file becomes the first plan as it
+is (`DeliveryPlanStore.seed`, If-None-Match, its own version); otherwise it becomes the inbox and the sync above merges it
+at once, its `baseVersion` (else `version`) having to be the DEV plan or an archived version. The SHA-256 of the imported
+bytes is kept in `delivery/inbox/.release-import.json` with the release tag and the plan version, so a restart on the same
+release imports nothing and the version does not climb; a file already in the inbox (an owner's upload) is never
+replaced and the release is imported at the next start. DEV and local only (`DevOnly.allowed`); in prod nothing runs.
+One `delivery.release-import` line: `seeded`, `merged` (with the counts) or the reason it was left (`BASE_VERSION_UNKNOWN`,
+`INBOX_OCCUPIED`, `RELEASE_PLAN_INVALID`, `RELEASE_PLAN_UNREADABLE`); a storage failure is logged by the start guard
+and never stops the task. Tests: `ReleasePlanImportTest`, `RuntimeSweepsTest`, `DeliveryPlanStoreTest`.
 
 Upload from the page (owner, 2026-11-07): `PUT /api/v1/delivery/plan/inbox` takes the local
 `delivery-plan.json` as the request body (the Delivery Plan page's Upload plan file), checks it

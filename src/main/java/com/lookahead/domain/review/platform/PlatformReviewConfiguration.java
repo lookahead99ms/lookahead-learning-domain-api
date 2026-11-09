@@ -97,4 +97,11 @@ public class PlatformReviewConfiguration {
             ReviewStatusHistory history, PublicationSettings publication) {
         return new DeliveryPlanService(store, access, history, publication.cloud() ? "dev" : "local", java.time.Clock.systemUTC());
     }
+
+    /** DLV-998: the published plan seeded or merged at each start, on DEV and local only. */
+    @Bean com.lookahead.domain.delivery.ReleasePlanImport releasePlanImport(DeliveryPlanStore store, DeliveryPlanService plans,
+            com.lookahead.domain.publication.PublicationLocation location, com.lookahead.domain.publication.LiveRelease release,
+            org.springframework.core.env.Environment environment, ObjectMapper mapper) {
+        return new com.lookahead.domain.delivery.ReleasePlanImport(store, plans, location, release, com.lookahead.domain.DevOnly.allowed(environment), mapper, java.time.Clock.systemUTC());
+    }
 }
