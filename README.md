@@ -183,7 +183,7 @@ or RDS TLS behavior.
 | `app.content.root` | `LOOKAHEAD_CONTENT_ROOT` | Read-only published content directory |
 | `app.publication.live-prefix` | `LOOKAHEAD_PUBLICATION_LIVE_PREFIX` | DLV-971: the prefix holding exactly one publication tar (DEV `release/live/` after the AWS lane's cutover; empty keeps today's `live/<tag>/` discovery) |
 | `app.reviews.prefix`, `app.support-requests.prefix`, `app.delivery.prefix` | `LOOKAHEAD_REVIEWS_PREFIX`, `LOOKAHEAD_SUPPORT_REQUESTS_PREFIX`, `LOOKAHEAD_DELIVERY_PREFIX` | DLV-971 runtime store roots in the assets bucket (`reviews/`, `support-requests/`, `delivery/`) |
-| `app.platform-reviews.legacy-prefix` | `LOOKAHEAD_PLATFORM_REVIEWS_LEGACY_PREFIX` | DLV-971: the retired day-file prefix imported once at start (DEV `platform-reviews/`) |
+| `app.platform-reviews.legacy-prefix` | `LOOKAHEAD_PLATFORM_REVIEWS_LEGACY_PREFIX` | DLV-971: the retired day-file prefix imported once at start; empty on DEV since 2026-11-09 (DLV-976 transition B removed the grant; the prefix held no day files) |
 
 Configuration-tree files can supply the corresponding dotted property names;
 `LOOKAHEAD_SECRETS_DIRECTORY` selects their directory. Never mount Identity DB
@@ -534,7 +534,7 @@ and `ticketStatus` (the ticket's `statusId` read from the delivery plan when `ti
 | `LOOKAHEAD_REVIEWS_PREFIX` | `app.reviews.prefix`, the review store root (DEV `reviews/`) |
 | `LOOKAHEAD_SUPPORT_REQUESTS_PREFIX` | `app.support-requests.prefix`, the support request store root (DEV `support-requests/`) |
 | `LOOKAHEAD_DELIVERY_PREFIX` | `app.delivery.prefix`, the delivery plan root (DEV `delivery/`) |
-| `LOOKAHEAD_PLATFORM_REVIEWS_LEGACY_PREFIX` | `app.platform-reviews.legacy-prefix`, the retired day-file prefix read once by the import (DEV `platform-reviews/`); empty skips it. `LOOKAHEAD_PLATFORM_REVIEWS_PREFIX` is no longer read for records |
+| `LOOKAHEAD_PLATFORM_REVIEWS_LEGACY_PREFIX` | `app.platform-reviews.legacy-prefix`, the retired day-file prefix read once by the import; empty skips it, and DEV passes empty since 2026-11-09 (DLV-976). `LOOKAHEAD_PLATFORM_REVIEWS_PREFIX` is no longer read for records |
 | `LOOKAHEAD_PLATFORM_REVIEWERS` | Legacy compatibility setting; ignored by the wired runtime. Current authorization uses Domain staff assignments. The owner is the author capability |
 
 Limits: 6 images per item, 5 MB each, 20 MB per item, PNG/JPEG/WebP checked by file signature,

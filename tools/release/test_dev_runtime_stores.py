@@ -24,7 +24,9 @@ class DevRuntimeStoreSettingsTests(unittest.TestCase):
         self.assertEqual(self.config['ReviewsPrefix'], 'reviews/')
         self.assertEqual(self.config['SupportRequestsPrefix'], 'support-requests/')
         self.assertEqual(self.config['DeliveryPrefix'], 'delivery/')
-        self.assertEqual(self.config['PlatformReviewsLegacyPrefix'], 'platform-reviews/')
+        # DLV-976 (2026-11-09): runtime stores transition B removed the app task's platform-reviews/ grant, so the legacy
+        # import is switched off; a non-empty prefix would only produce a refused S3 listing (a WARN) at every start.
+        self.assertEqual(self.config['PlatformReviewsLegacyPrefix'], '')
         # 2026-11-06 late evening: the owner copied the live tar to release/live/ and IAM A is installed, so DEV serves the single tar.
         self.assertEqual(self.config['PublicationLivePrefix'], 'release/live/')
         self.assertEqual(self.template['Parameters']['PublicationLivePrefix']['Default'], '', 'the template default stays empty; the DEV value is the config')
