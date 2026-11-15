@@ -45,7 +45,7 @@ class AuthorReviewDatabaseTest {
         catalog=new ReviewArtifactCatalog(manifest.toString(),mapper);access=mock(AuthorPreviewAccessService.class);
     }
     @AfterAll void stop(){if(jdbc!=null){jdbc.execute("DROP SCHEMA "+schema+" CASCADE");if(createdRuntimeRole)jdbc.execute("DROP ROLE lookahead_platform_app");}}
-    AuthorReviewService service(){return new AuthorReviewService(access,catalog,jdbc,new DataSourceTransactionManager(source),mapper);}
+    AuthorReviewService service(){return new AuthorReviewService(access,catalog,new JdbcAuthorReviewStore(jdbc,new DataSourceTransactionManager(source)),mapper);}
     AccountPrincipal actor(){var id=UUID.randomUUID();jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",id);return new AccountPrincipal(id,"synthetic@example.test","Synthetic",true);}
     Submission submission(Decision decision,String comment,UUID prior){return new Submission("dlv-704/review-2026-09-19.1","a".repeat(64),"DLV-704",decision,comment,prior);}
     @Test void durableReceiptSurvivesServiceReconstructionAndSameRetryDoesNotAppend() {
@@ -145,12 +145,13 @@ class AuthorReviewDatabaseTest {
     }
     @org.springframework.context.annotation.Configuration
     @org.springframework.boot.autoconfigure.EnableAutoConfiguration(excludeName={"org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration","org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration"})
-    @org.springframework.context.annotation.Import({AuthorReviewController.class,AuthorReviewService.class,
+    @org.springframework.context.annotation.Import({AuthorReviewController.class,AuthorReviewService.class,JdbcAuthorReviewStore.class,
+        com.lookahead.learning.content.repository.JdbcAccountStore.class, // DLV-970: AccountRepository reads through its store
         com.lookahead.learning.content.handler.AccountErrorHandler.class,
         com.lookahead.learning.content.service.AuthorPreviewAccessService.class,
         com.lookahead.learning.content.security.LocalAuthorAccess.class,
         com.lookahead.learning.content.repository.AccountRepository.class,
-        com.lookahead.domain.access.StaffAccessRepository.class,
+        com.lookahead.domain.access.JdbcStaffAccessRepository.class,
         com.lookahead.domain.access.StaffAccessService.class,
         com.lookahead.domain.security.DomainSecurityConfiguration.class})
     static class HttpApp {

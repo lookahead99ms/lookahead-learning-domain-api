@@ -1,6 +1,7 @@
 package com.lookahead.domain.migration;
 
 import com.lookahead.domain.DomainApiMigration;
+import com.lookahead.learning.content.repository.JdbcPlanRepository;
 import com.lookahead.learning.content.repository.PlanRepository;
 import com.lookahead.learning.content.service.PlanService;
 import com.lookahead.learning.content.util.CatalogIds;
@@ -204,7 +205,7 @@ class BlazeCatalogMigrationDatabaseTest {
              "records":[{"id":"blaze:system-design:caching","aliases":[],"contentType":"theory",
                "topicIds":["blaze:system-design"],"route":["/","blaze","system-design","caching"]}]}
             """.replace("VERSION", CATALOG_VERSION)));
-        var service = new PlanService(new PlanRepository(jdbc, json), mapper, catalog, json);
+        var service = new PlanService(new JdbcPlanRepository(jdbc, json), mapper, catalog, json);
         JsonNode view = service.get(owner, plan, null);
         assertThat(view.path("restrictedContentIds")).isEmpty();
         assertThat(view.path("snapshot").path("includedTopics").get(0).path("path").asText()).isEqualTo("blaze");

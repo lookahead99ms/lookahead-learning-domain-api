@@ -7,7 +7,6 @@ import com.lookahead.learning.content.repository.PlanRepository;
 import com.lookahead.learning.content.util.PlanJson;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.MockMakers;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -21,11 +20,11 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.withSettings;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
-import static org.mockito.Mockito.withSettings;
 
 class PlanCardListingTest {
     private static final UUID OWNER = UUID.fromString("33b6c7d5-b25a-4937-a04e-364957273490");
@@ -35,7 +34,8 @@ class PlanCardListingTest {
 
     @BeforeEach
     void createService() {
-        repository = mock(PlanRepository.class, withSettings().mockMaker(MockMakers.SUBCLASS));
+        // DLV-970: PlanRepository is an interface now; the default mock maker keeps every PlanRepository mock on one maker.
+        repository = mock(PlanRepository.class, withSettings().mockMaker(org.mockito.MockMakers.PROXY));
         // Listing must use saved metadata and cannot require catalog validation or selection.
         service = new PlanService(repository, mapper, null, new PlanJson(mapper));
     }

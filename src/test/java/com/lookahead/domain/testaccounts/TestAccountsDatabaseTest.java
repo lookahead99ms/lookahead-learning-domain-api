@@ -116,7 +116,7 @@ class TestAccountsDatabaseTest {
  }
  @Test void createdLearnersSpendLifetimeAllowanceAndDeletionErasesPlans() {
   var operator=mock(TestIdentityOperator.class);
-  var repository=mock(StaffAccessRepository.class);
+  var repository=mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
   when(repository.forAccount(admin.accountId())).thenReturn(new StaffAccessRepository.Assignment(
       UUID.randomUUID(),admin.accountId(),null,Set.of("admin"),Set.of(),false,1));
   var owner=mock(LocalAuthorAccess.class);
@@ -168,7 +168,7 @@ class TestAccountsDatabaseTest {
   assertThatThrownBy(()->created.create(admin,request)).hasMessageContaining("deleted");
  }
  @Test void adminAndCoauthorLifetimeLimitsSurviveDeletionAndProtectStaff() {
-  var operator=mock(TestIdentityOperator.class);var repository=mock(StaffAccessRepository.class);
+  var operator=mock(TestIdentityOperator.class);var repository=mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
   var owner=mock(LocalAuthorAccess.class);
   UUID coauthorId=UUID.randomUUID();
   jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",coauthorId);
@@ -219,7 +219,7 @@ class TestAccountsDatabaseTest {
   var owner=mock(LocalAuthorAccess.class);when(owner.allowed(admin)).thenReturn(true);
   var identity=mock(TestIdentityOperator.class);
   var managed=new CreatedTestAccounts(jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),
-      new TestAccountPolicy(TestAccountPolicyTest.local()),new StaffAccessRepository(jdbc,json),owner,identity);
+      new TestAccountPolicy(TestAccountPolicyTest.local()),new JdbcStaffAccessRepository(jdbc,json),owner,identity);
   tx.executeWithoutResult(status->{
    for(var given:Map.of(coauthorTarget,"co-author",coauthorActor,"co-author",adminTarget,"admin").entrySet())
     jdbc.update("INSERT INTO staff_access(id,account_id,roles,topic_grants,full_curriculum) VALUES (?,?,?::jsonb,'[]'::jsonb,true)",
@@ -278,7 +278,7 @@ class TestAccountsDatabaseTest {
   var identity=mock(TestIdentityOperator.class);
   var owner=mock(LocalAuthorAccess.class);when(owner.allowed(admin)).thenReturn(true);
   var managed=new CreatedTestAccounts(jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),
-      new TestAccountPolicy(TestAccountPolicyTest.local()),mock(StaffAccessRepository.class),owner,identity);
+      new TestAccountPolicy(TestAccountPolicyTest.local()),mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)),owner,identity);
   managed.delete(admin,id);
   verify(identity).disable(id,"learner27");
   assertThat(jdbc.queryForObject("SELECT creation_state FROM test_account_registry WHERE account_id=?",String.class,id)).isEqualTo("deleted");
@@ -287,7 +287,7 @@ class TestAccountsDatabaseTest {
   assertThat(jdbc.queryForObject("SELECT count(*) FROM membership_audit WHERE id=?",Integer.class,auditId)).isZero();
  }
  @Test void activationFailureKeepsOneManagedRecordForSameKeyRecovery() {
-  var operator=mock(TestIdentityOperator.class);var repository=mock(StaffAccessRepository.class);
+  var operator=mock(TestIdentityOperator.class);var repository=mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
   when(repository.forAccount(admin.accountId())).thenReturn(new StaffAccessRepository.Assignment(
       UUID.randomUUID(),admin.accountId(),null,Set.of("admin"),Set.of(),false,1));
   var created=new CreatedTestAccounts(jdbc,new DataSourceTransactionManager(jdbc.getDataSource()),
@@ -362,7 +362,7 @@ class TestAccountsDatabaseTest {
   var hashes=new com.lookahead.learning.content.util.PlanJson(json);
   var policy=new TestAccountPolicy(TestAccountPolicyTest.local());
   var lifecycle=new com.lookahead.learning.content.service.PlanLifecycle(jdbc,json);
-  var realPlans=new ScenarioPlans(publication,catalog,new com.lookahead.learning.content.repository.PlanRepository(jdbc,hashes),lifecycle,hashes,json,policy,System.getenv("TEST_ACCOUNT_FIXTURES"));
+  var realPlans=new ScenarioPlans(publication,catalog,new com.lookahead.learning.content.repository.JdbcPlanRepository(jdbc,hashes),lifecycle,hashes,json,policy,System.getenv("TEST_ACCOUNT_FIXTURES"));
   var purchases=new ScenarioPurchases(jdbc,json,policy);
   for(var row:LearnerScenario.all()) {
    UUID id=UUID.randomUUID();jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",id);

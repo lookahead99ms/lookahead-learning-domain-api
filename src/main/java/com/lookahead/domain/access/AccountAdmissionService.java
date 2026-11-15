@@ -2,10 +2,8 @@ package com.lookahead.domain.access;
 
 import com.lookahead.domain.Events;
 import com.lookahead.domain.cloud.CloudAdmissionCleanup;
-import com.lookahead.domain.cloud.CloudIdentities;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.security.AccountPrincipal;
-import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
@@ -13,7 +11,6 @@ import java.util.TreeSet;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
 /** DLV-969: the owner admits accounts that signed in but have no access yet. Roles go through the staff assignment. */
@@ -33,32 +30,26 @@ public class AccountAdmissionService {
     public record WaitingList(List<Waiting> waiting,long expiryHours) {}
     public record Request(String accountId,List<String> roles) {}
     public record Admitted(UUID accountId,String username,String displayName,Instant admittedAt,List<String> roles) {}
-    private record Row(UUID accountId,String username,String displayName,String issuer,String subject,boolean admitted) {}
-    private final JdbcTemplate jdbc;
+    /** The account to admit as read for update; {@code state} is the V18 state ("disabled"/"removed") or null. */
+    public record Row(UUID accountId,String username,String displayName,String issuer,String subject,boolean admitted,String state) {}
+    private final AdmissionStore store;
     private final StaffAccessService access;
     private final StaffAccessRepository staff;
-    private final ObjectMapper mapper;
-    public AccountAdmissionService(JdbcTemplate jdbc,StaffAccessService access,StaffAccessRepository staff,ObjectMapper mapper){this.jdbc=jdbc;this.access=access;this.staff=staff;this.mapper=mapper;}
+    public AccountAdmissionService(JdbcTemplate jdbc,StaffAccessService access,StaffAccessRepository staff,ObjectMapper mapper){this(new JdbcAdmissionStore(jdbc,mapper,null),access,staff);}
+    /** DLV-970: the store (PostgreSQL or DynamoDB) is selected by {@code app.persistence.store}. */
+    @org.springframework.beans.factory.annotation.Autowired
+    public AccountAdmissionService(AdmissionStore store,StaffAccessService access,StaffAccessRepository staff){this.store=store;this.access=access;this.staff=staff;}
 
     public WaitingList waiting(AccountPrincipal actor) {
         access.requireOwner(actor);
         // DLV-969 S36: a waiting row whose Gmail two or more accounts share was not linked; the owner sees how many.
-        var rows=jdbc.query("SELECT w.account_id,w.username,w.display_name,w.verified_email,w.requested_at,"+CloudIdentities.sameEmailAccounts("w.verified_email","w.account_id")
-            // DLV-971: a waiting row the owner disabled (Reject) stays out of the list until it is enabled again.
-            +" AS same_email_accounts FROM cloud_accounts w WHERE NOT admitted AND NOT EXISTS (SELECT 1 FROM cloud_account_states s WHERE s.account_id=w.account_id) ORDER BY requested_at,account_id",(r,i)->{
-            Instant requested=r.getTimestamp("requested_at").toInstant();
-            return new Waiting(r.getObject("account_id",UUID.class),r.getString("username"),r.getString("display_name"),r.getString("verified_email"),requested,requested.plus(CloudAdmissionCleanup.WAITING_EXPIRY),
-                r.getInt("same_email_accounts"));
-        });
-        rows=rows.stream().map(w->new Waiting(w.accountId(),w.username(),w.displayName(),w.email(),w.requestedAt(),w.expiresAt(),w.sameEmailAccounts(),
-            CloudIdentities.signInMethods(jdbc,w.accountId()))).toList();
+        var rows=store.waiting();
         return new WaitingList(rows,CloudAdmissionCleanup.WAITING_EXPIRY.toHours());
     }
 
-    @Transactional
     public Admitted admit(AccountPrincipal actor,Request request) {
         try {
-            var admitted=admitChecked(actor,request);
+            var admitted=store.transaction(()->admitChecked(actor,request));
             Events.afterCommit(()->Events.success(Events.EVENT,"admission.admitted").addKeyValue("account.id",actor.accountId())
                 .addKeyValue("target.id",admitted.accountId()).addKeyValue("roles",admitted.roles())
                 .log("Owner admitted account {} with roles {}",admitted.accountId(),admitted.roles().isEmpty()?"none (learner)":admitted.roles()));
@@ -74,23 +65,19 @@ public class AccountAdmissionService {
         if(request==null||request.roles()==null||!StaffPermissions.ROLES.containsAll(request.roles()))throw invalid();
         UUID accountId=accountId(request.accountId());
         var roles=List.copyOf(new TreeSet<>(request.roles()));
-        var rows=jdbc.query("SELECT account_id,username,display_name,issuer,subject,admitted FROM cloud_accounts WHERE account_id=? FOR UPDATE",
-            (r,i)->new Row(r.getObject("account_id",UUID.class),r.getString("username"),r.getString("display_name"),r.getString("issuer"),r.getString("subject"),r.getBoolean("admitted")),accountId);
-        if(rows.isEmpty())throw new AccountFailure(404,"ACCOUNT_NOT_FOUND","No account with that id is waiting.");
-        Row row=rows.getFirst();
-        if(row.admitted)throw new AccountFailure(409,"ACCOUNT_ALREADY_ADMITTED","This account was already admitted.");
+        Row row=store.lock(accountId);
+        if(row==null)throw new AccountFailure(404,"ACCOUNT_NOT_FOUND","No account with that id is waiting.");
+        if(row.admitted())throw new AccountFailure(409,"ACCOUNT_ALREADY_ADMITTED","This account was already admitted.");
         // DLV-969 S36: never admit an account that was disabled or deleted (read under the row lock, on its own).
-        var state=jdbc.queryForList("SELECT state FROM cloud_account_states WHERE account_id=?",String.class,accountId);
-        if(state!=null&&!state.isEmpty())throw new AccountFailure(409,"ACCOUNT_REMOVED","This account was disabled or deleted and cannot be admitted.");
-        Instant admittedAt=jdbc.queryForObject("UPDATE cloud_accounts SET admitted=true,admitted_at=clock_timestamp(),admitted_by=? WHERE account_id=? RETURNING admitted_at",Timestamp.class,actor.accountId(),accountId).toInstant();
-        if(!roles.isEmpty()){
-            var existing=staff.forAccount(accountId);
-            access.save(actor,existing==null
-                ? new StaffAccessService.Change(UUID.randomUUID(),accountId,null,Set.copyOf(roles),Set.of(),false,0)
-                : new StaffAccessService.Change(existing.id(),accountId,null,Set.copyOf(roles),existing.topicGrants(),existing.fullCurriculum(),existing.revision()));
-        }
-        jdbc.update("INSERT INTO cloud_admission_events(id,account_id,issuer,subject,actor_id,action,roles) VALUES(?,?,?,?,?,'admit',?::jsonb)",
-            UUID.randomUUID(),accountId,row.issuer,row.subject,actor.accountId(),mapper.writeValueAsString(roles));
+        if(row.state()!=null)throw new AccountFailure(409,"ACCOUNT_REMOVED","This account was disabled or deleted and cannot be admitted.");
+        Instant admittedAt=store.admit(actor.accountId(),row,roles,()->{
+            if(!roles.isEmpty()){
+                var existing=staff.forAccount(accountId);
+                access.save(actor,existing==null
+                    ? new StaffAccessService.Change(UUID.randomUUID(),accountId,null,Set.copyOf(roles),Set.of(),false,0)
+                    : new StaffAccessService.Change(existing.id(),accountId,null,Set.copyOf(roles),existing.topicGrants(),existing.fullCurriculum(),existing.revision()));
+            }
+        });
         return new Admitted(accountId,row.username,row.displayName,admittedAt,roles);
     }
     private static UUID accountId(String value) {

@@ -6,9 +6,7 @@ import com.lookahead.domain.membership.AccessSummaryService;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.security.AccountPrincipal;
 import com.lookahead.learning.content.validator.SnapshotValidator;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 import java.time.Instant;
@@ -16,12 +14,18 @@ import java.util.*;
 
 @Service
 public class TestAccountsService {
-    private final JdbcTemplate jdbc;private final ObjectMapper json;private final TestAccountPolicy policy;
+    private final TestAccountStore store;private final ObjectMapper json;private final TestAccountPolicy policy;
     private final ScenarioPurchases purchases;private final ScenarioPlans plans;private final StaffAccessService staff;
     private final AccessSummaryService summaries;private final SnapshotValidator catalog;
-    public TestAccountsService(JdbcTemplate jdbc,ObjectMapper json,TestAccountPolicy policy,ScenarioPurchases purchases,
+    @org.springframework.beans.factory.annotation.Autowired
+    public TestAccountsService(TestAccountStore store,ObjectMapper json,TestAccountPolicy policy,ScenarioPurchases purchases,
             ScenarioPlans plans,StaffAccessService staff,AccessSummaryService summaries,SnapshotValidator catalog){
-        this.jdbc=jdbc;this.json=json;this.policy=policy;this.purchases=purchases;this.plans=plans;this.staff=staff;this.summaries=summaries;this.catalog=catalog;
+        this.store=store;this.json=json;this.policy=policy;this.purchases=purchases;this.plans=plans;this.staff=staff;this.summaries=summaries;this.catalog=catalog;
+    }
+    /** PostgreSQL convenience (existing tests and fixtures): the JDBC store on the template's data source. */
+    public TestAccountsService(org.springframework.jdbc.core.JdbcTemplate jdbc,ObjectMapper json,TestAccountPolicy policy,ScenarioPurchases purchases,
+            ScenarioPlans plans,StaffAccessService staff,AccessSummaryService summaries,SnapshotValidator catalog){
+        this(new JdbcTestAccountStore(jdbc,new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource())),json,policy,purchases,plans,staff,summaries,catalog);
     }
     /**
      * {@code expectedRevision} is a {@code Long}: a JSON reader refuses an absent value for a primitive, which answered
@@ -32,7 +36,6 @@ public class TestAccountsService {
         /** True only when the body sent this revision. */
         public boolean expects(long revision){return expectedRevision!=null&&expectedRevision==revision;}
     }
-    private void actor(String actor){jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor);}
     private StaffAliases aliases;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     public void configureAliases(StaffAliases aliases){this.aliases=aliases;}
@@ -41,7 +44,7 @@ public class TestAccountsService {
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     public void configureMemberships(com.lookahead.domain.membership.MembershipService memberships){this.memberships=memberships;}
     /** DLV-969 (owner, 2026-11-04): the "upgraded by" marker, from the wired memberships and aliases (none: no marker). */
-    private UpgradeMarkers markers(){return new UpgradeMarkers(jdbc,memberships,aliases);}
+    private UpgradeMarkers markers(){return new UpgradeMarkers(store,memberships,aliases);}
     /**
      * DLV-969 (owner, 2026-11-04): the owner or an admin approves or declines a test account's DEV purchase request,
      * for an account the one hierarchy lets them act on ({@link TestAccountTemplates#allows}); everyone else 403
@@ -71,30 +74,43 @@ public class TestAccountsService {
     }
     private TestAccountRoster.Entry entry(UUID id){return TestAccountRoster.entries().stream().filter(e->e.accountId().equals(id)).findFirst()
             .orElseThrow(()->new AccountFailure(404,"TEST_ACCOUNT_NOT_FOUND","Managed test account not found"));}
-    @Transactional
-    public int seed(){
-        policy.requireLocal();actor("seed");
-        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended('test-account-seed',0))",rs->{});
-        var fresh=new ArrayList<TestAccountRoster.Entry>();
-        for(var entry:TestAccountRoster.entries()){
-            boolean created=jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT DO NOTHING",entry.accountId())==1;
-            jdbc.query("SELECT id FROM platform_subjects WHERE id=? FOR UPDATE",rs->{},entry.accountId());
-            int registered=jdbc.update("INSERT INTO test_account_registry(account_id,username,initialization,last_changed_by) VALUES (?,?,?,'seed') ON CONFLICT DO NOTHING",
-                    entry.accountId(),entry.username(),created?"scenario":"preserved");
-            if(created&&registered==1)fresh.add(entry);
-        }
+    /** The Local roster seed ({@link TestAccountRoster#entries}); see {@link #seed(List)}. */
+    public int seed(){return seed(TestAccountRoster.entries());}
+    /**
+     * Seeds a roster one account per transaction (DLV-970): the subject and the registry row commit together, fenced on
+     * the subject's revision, and the scenario (grants, purchases, plan) follows in a second transaction of its own, so a
+     * roster of any size stays well inside the store's statement bound and a failure part-way leaves every earlier
+     * account complete and the failed one consistent: its subject and registry row exist, its scenario is what the
+     * failure left (the store's note on immediate commits), and a repeat seed leaves it alone. A subject that exists
+     * without a registry row (a crash between the two writes, or an account made elsewhere) is registered as
+     * {@code preserved} and gets no scenario.
+     * @return how many accounts were created now
+     */
+    int seed(List<TestAccountRoster.Entry> roster){
+        policy.requireLocal();
         // DLV-971 (owner, 2026-11-06): the roster has no staff accounts, so the Local author/owner account is the operator
         // of the scenario purchases (learner19's staff upgrade and the purchase actor rows). It gets its subject row here
         // and is never registered as a test account.
         UUID operator=com.lookahead.learning.content.security.LocalAuthorAccess.ACCOUNT_ID;
-        jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT DO NOTHING",operator);
-        Instant now=Instant.now();for(var entry:fresh)defaults(entry,operator,"scenario",now);
-        int created=fresh.size();
-        Events.afterCommit(()->Events.success(Events.EVENT,"test-account.seed").addKeyValue("count",created)
-            .log("Local test roster seeded: {} new account(s) of {}",created,TestAccountRoster.entries().size()));
+        store.transact(work->{work.actor("seed");work.seedLock();work.createSubject(operator);return null;});
+        Instant now=Instant.now();int created=0;
+        for(var entry:roster){
+            boolean fresh=store.transact(work->{
+                work.actor("seed");
+                work.seedLock();
+                boolean subject=work.createSubject(entry.accountId());
+                work.lockSubject(entry.accountId());
+                return work.registerSeed(entry.accountId(),entry.username(),subject?"scenario":"preserved")&&subject;
+            });
+            if(!fresh)continue;
+            created++;
+            store.transact(work->{work.actor("seed");work.lockSubject(entry.accountId());defaults(work,entry,operator,"scenario",now);return null;});
+        }
+        int count=created;
+        Events.afterCommit(()->Events.success(Events.EVENT,"test-account.seed").addKeyValue("count",count)
+            .log("Local test roster seeded: {} new account(s) of {}",count,roster.size()));
         return created;
     }
-    @Transactional(readOnly=true)
     public List<ObjectNode> list(AccountPrincipal actor){reader(actor);var permissions=staff.permissions(actor);var actorRole=permissions.feedbackRole();
     // DLV-969 (owner, 2026-11-04): each reader sees the test accounts the one hierarchy lets them act on.
     String hierarchyRole=TestAccountTemplates.role(permissions);
@@ -102,38 +118,35 @@ public class TestAccountsService {
     var markers=markers();var people=new HashMap<String,String>();
     // Cloud mode: learners created through CreatedTestAccounts, and the DEV roster the owner created (it records its
     // creator; Local's seed does not, and never runs in cloud mode).
-    String rows=policy.cloud()?"SELECT * FROM test_account_registry WHERE creation_state='active' AND (initialization='created' OR creator_id IS NOT NULL) ORDER BY username"
-        :"SELECT * FROM test_account_registry WHERE creation_state='active' ORDER BY username";
-    return jdbc.query(rows,(r,n)->{
-        UUID id=r.getObject("account_id",UUID.class);
-        var roleRows=jdbc.queryForList("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,id);
-        var targetRoles=new HashSet<String>();
-        var roleNode=roleRows.isEmpty()?json.createArrayNode():json.readTree(roleRows.getFirst());
-        roleNode.forEach(role -> targetRoles.add(role.asText()));
+    return store.activeRegistry(policy.cloud()).stream().map(r->{
+        UUID id=r.accountId();
+        var roles=store.staffRoles(id);
+        var targetRoles=new HashSet<String>(roles);
+        var roleNode=json.createArrayNode();roles.forEach(roleNode::add);
         if(!TestAccountTemplates.allows(hierarchyRole,targetRoles))return null;
-        var item=json.createObjectNode().put("accountId",r.getString("account_id")).put("username",r.getString("username"))
-                .put("isTestAccount",true).put("revision",r.getLong("revision")).put("initialization",r.getString("initialization"))
-                .put("lastChangedBy",person(actor,named,r.getString("last_changed_by"),people)).put("lastChangedAt",r.getTimestamp("last_changed_at").toInstant().toString());
-        if(r.getObject("creator_id",UUID.class)!=null)item.put("creatorId",person(actor,named,r.getObject("creator_id",UUID.class).toString(),people));
+        var item=json.createObjectNode().put("accountId",r.accountId().toString()).put("username",r.username())
+                .put("isTestAccount",true).put("revision",r.revision()).put("initialization",r.initialization())
+                .put("lastChangedBy",person(actor,named,r.lastChangedBy(),people)).put("lastChangedAt",r.lastChangedAt().toString());
+        if(r.creatorId()!=null)item.put("creatorId",person(actor,named,r.creatorId().toString(),people));
         item.set("roles",roleNode);
         item.put("canDelete",policy.cloud()
-                ?TestAccountDeletionPolicy.allowsInDev("owner".equals(actorRole),actor.accountId(),id,r.getObject("creator_id",UUID.class))
+                ?TestAccountDeletionPolicy.allowsInDev("owner".equals(actorRole),actor.accountId(),id,r.creatorId())
                 :TestAccountDeletionPolicy.allows(actorRole,actor.accountId(),id,targetRoles));
         item.set("access",json.valueToTree(summaries.get(actor,id)));
-        item.put("legacyPresetAvailable",policy.local()&&r.getString("username").matches("learner(0[1-9]|10)"));
+        item.put("legacyPresetAvailable",policy.local()&&r.username().matches("learner(0[1-9]|10)"));
         // DLV-969 (owner, 2026-11-04): the request waiting for a decision, for the owner and admins in DEV (null: none).
         if(policy.cloud()&&memberships!=null&&Set.of("owner","admin").contains(hierarchyRole))item.set("pendingPurchase",pendingPurchase(actor,named,id));
         // DLV-969 (owner, 2026-11-04): who upgraded it since its latest Reset, for every reader of the row (null: nobody);
         // and whether this viewer may reset it: the existing rule and, while it is upgraded, owner or requester only.
         var marker=policy.cloud()?markers.find(id):null;
         if(policy.cloud()&&memberships!=null)item.set("upgradedBy",markers.row(marker,actor.accountId(),named));
-        boolean rosterRow=r.getObject("creator_id",UUID.class)!=null&&!"created".equals(r.getString("initialization"));
+        boolean rosterRow=r.creatorId()!=null&&!"created".equals(r.initialization());
         boolean canReset;
         try{requireResettable(permissions,id,rosterRow,targetRoles);requireNotReserved(actor,permissions,marker,markers);canReset=true;}
         catch(AccountFailure refused){canReset=false;}
         item.put("canReset",canReset);
         return item;
-    }).stream().filter(Objects::nonNull).toList();}
+    }).filter(Objects::nonNull).toList();}
     /**
      * DLV-969 (owner, 2026-11-04): the request with who sent it: {@code {"self": true}} for the viewer's own, otherwise
      * the sender's permanent role label, and for the owner also their display name. Null: no request, or sender unknown.
@@ -146,13 +159,12 @@ public class TestAccountsService {
         var who=body.putObject("requestedBy").put("self",by.equals(viewer.accountId()));
         if(by.equals(viewer.accountId()))return body;
         who.put("label",aliases==null?null:aliases.label(by));
-        if(named)who.put("name",jdbc.queryForList("SELECT display_name FROM cloud_accounts WHERE account_id=?",String.class,by).stream().findFirst().orElse(null));
+        if(named)who.put("name",store.displayName(by));
         return body;
     }
-    @Transactional
     public void reset(AccountPrincipal actor,UUID id,Reset request){
         try{
-            boolean repeated=resetChecked(actor,id,request);
+            boolean repeated=store.transact(work->resetChecked(work,actor,id,request));
             Events.afterCommit(()->Events.success(Events.EVENT,"test-account.reset").addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",id)
                 .addKeyValue("preset",request.preset()).addKeyValue("repeated",repeated)
                 .log(repeated?"Test account {} reset retried with the same key; it was already reset to its {} preset by account {}"
@@ -164,38 +176,38 @@ public class TestAccountsService {
         }
     }
     /** @return true when this key already reset the account (a retry), false when it was reset now. */
-    private boolean resetChecked(AccountPrincipal actor,UUID id,Reset request){
+    private boolean resetChecked(TestAccountStore.Work work,AccountPrincipal actor,UUID id,Reset request){
         reader(actor);var permissions=staff.permissions(actor);
         if(policy.cloud()&&(request==null||!"scenario".equals(request.preset())))throw resetUnavailable();
-        requireResettable(permissions,id,policy.cloud()&&!jdbc.queryForList("SELECT 1 FROM test_account_registry WHERE account_id=? AND creator_id IS NOT NULL AND initialization<>'created'",Integer.class,id).isEmpty(),null);
+        requireResettable(permissions,id,policy.cloud()&&work.rosterRow(id),null);
         var entry=entry(id);
         // DLV-969 (owner, 2026-11-04): while upgraded, only the owner or the requester; checked under the account's lock.
-        jdbc.query("SELECT id FROM platform_subjects WHERE id=? FOR UPDATE",rs->{},id);
+        work.lockSubject(id);
         var markers=markers();
         requireNotReserved(actor,permissions,policy.cloud()?markers.find(id):null,markers);
         String shown=policy.cloud()?entry.cloudUsername():entry.username(); // the username the list shows
         if(request==null||request.key()==null||!shown.equals(request.confirmation())||(request.preset()==null||!Set.of("scenario","legacy").contains(request.preset())))
             throw new AccountFailure(422,"RESET_CONFIRMATION_REQUIRED","Confirm the exact test username and preset");
         if(request.preset().equals("legacy")&&!entry.username().matches("learner(0[1-9]|10)"))throw new AccountFailure(422,"LEGACY_PRESET_UNAVAILABLE","Legacy fixtures exist only for learner01–learner10");
-        var retries=jdbc.queryForList("SELECT actor_id::text || ':' || preset FROM test_account_resets WHERE account_id=? AND mutation_key=?",String.class,id,request.key());
-        if(!retries.isEmpty()){
-            if(!retries.getFirst().equals(actor.accountId()+":"+request.preset()))throw new AccountFailure(409,"IDEMPOTENCY_CONFLICT","Reset key belongs to another request");
+        var retry=work.resetReceipt(id,request.key());
+        if(retry!=null){
+            if(!retry.equals(actor.accountId()+":"+request.preset()))throw new AccountFailure(409,"IDEMPOTENCY_CONFLICT","Reset key belongs to another request");
             return true;
         }
-        var revisions=jdbc.queryForList("SELECT revision FROM test_account_registry WHERE account_id=? AND creation_state='active' FOR UPDATE",Long.class,id);
-        if(revisions.isEmpty())throw new AccountFailure(404,"TEST_ACCOUNT_NOT_FOUND","Managed test account not found");
+        var revision=work.activeRevision(id);
+        if(revision==null)throw new AccountFailure(404,"TEST_ACCOUNT_NOT_FOUND","Managed test account not found");
         if(request.expectedRevision()==null)throw new AccountFailure(428,"REVISION_REQUIRED","An expected revision is required");
-        if(!request.expects(revisions.getFirst()))throw new AccountFailure(409,"REVISION_CONFLICT","Test account changed; reload before resetting");
-        actor(actor.accountId().toString());
+        if(!request.expects(revision))throw new AccountFailure(409,"REVISION_CONFLICT","Test account changed; reload before resetting");
+        work.actor(actor.accountId().toString());
         // Preserve purchase/audit history. Superseded purchases grant nothing.
-        jdbc.update("UPDATE membership_purchases SET superseded_at=COALESCE(superseded_at,now()),updated_at=now() WHERE account_id=?",id);
-        jdbc.update("UPDATE mutation_receipts SET deleted=true,response=NULL WHERE account_id=?",id);
-        jdbc.update("DELETE FROM plans WHERE account_id=?",id);
-        jdbc.update("DELETE FROM account_grants WHERE account_id=?",id);
-        jdbc.update("UPDATE staff_access SET roles='[]',topic_grants='[]',full_curriculum=false,revision=revision+1,updated_at=clock_timestamp() WHERE account_id=?",id);
-        defaults(entry,actor.accountId(),request.preset(),Instant.now());
-        jdbc.update("UPDATE test_account_registry SET initialization=?,revision=revision+1,last_changed_by=?,last_changed_at=clock_timestamp() WHERE account_id=?",request.preset(),actor.accountId().toString(),id);
-        jdbc.update("INSERT INTO test_account_resets(account_id,mutation_key,actor_id,preset) VALUES (?,?,?,?)",id,request.key(),actor.accountId(),request.preset());
+        work.supersedePurchases(id);
+        work.tombstoneReceipts(id);
+        work.deletePlans(id);
+        work.deleteGrants(id);
+        work.clearStaffAccess(id);
+        defaults(work,entry,actor.accountId(),request.preset(),Instant.now());
+        work.resetRegistry(id,request.preset(),actor.accountId());
+        work.insertReset(id,request.key(),actor.accountId(),request.preset());
         return false;
     }
     private static AccountFailure resetUnavailable(){
@@ -231,11 +243,7 @@ public class TestAccountsService {
             ?"Only the owner can reset this upgraded account."
             :"Only the owner or "+label+", who upgraded this account, can reset it.");
     }
-    private Set<String> targetRoles(UUID id){
-        var roles=new HashSet<String>();
-        for(String row:jdbc.queryForList("SELECT roles::text FROM staff_access WHERE account_id=?",String.class,id))json.readTree(row).forEach(role->roles.add(role.asText()));
-        return roles;
-    }
+    private Set<String> targetRoles(UUID id){return new HashSet<>(store.staffRoles(id));}
     /** DLV-969: the existing owner check (403 OWNER_REQUIRED), for the roster's Restore. */
     void requireOwner(AccountPrincipal actor){staff.requireOwner(actor);}
     /**
@@ -248,29 +256,30 @@ public class TestAccountsService {
         policy.requireCloud();
         UUID id=entry.accountId();
         if(!TestAccountRoster.isRoster(id))return false;
-        jdbc.query("SELECT id FROM platform_subjects WHERE id=? FOR UPDATE",rs->{},id);
-        if(jdbc.queryForList("SELECT 1 FROM test_account_registry WHERE account_id=? AND creation_state='deleted' AND creator_id IS NOT NULL AND initialization<>'created' FOR UPDATE",Integer.class,id).isEmpty())
+        return store.transact(work->{
+        work.lockSubject(id);
+        if(!work.deletedRosterRow(id))
             return false;
-        actor(owner.accountId().toString());
+        work.actor(owner.accountId().toString());
         // As Reset: purchase history stays (superseded), everything else the scenario sets is rebuilt.
-        jdbc.update("UPDATE membership_purchases SET superseded_at=COALESCE(superseded_at,now()),updated_at=now() WHERE account_id=?",id);
-        jdbc.update("UPDATE mutation_receipts SET deleted=true,response=NULL WHERE account_id=?",id);
-        jdbc.update("DELETE FROM plans WHERE account_id=?",id);
-        jdbc.update("DELETE FROM account_grants WHERE account_id=?",id);
-        jdbc.update("UPDATE staff_access SET roles='[]',topic_grants='[]',full_curriculum=false,revision=revision+1,updated_at=clock_timestamp() WHERE account_id=?",id);
+        work.supersedePurchases(id);
+        work.tombstoneReceipts(id);
+        work.deletePlans(id);
+        work.deleteGrants(id);
+        work.clearStaffAccess(id);
         // Its admitted cloud row stays on deletion (V17); a roster account deleted before that rule gets one again.
-        if(jdbc.queryForList("SELECT 1 FROM cloud_accounts WHERE account_id=?",Integer.class,id).isEmpty())
-            admitTestAccount(id,entry.cloudUsername(),entry.firstName(),owner.accountId());
-        jdbc.update("UPDATE test_account_registry SET creation_state='active',initialization='scenario',revision=revision+1,last_changed_by=?,last_changed_at=clock_timestamp() WHERE account_id=?",
-                owner.accountId().toString(),id);
-        jdbc.update("UPDATE test_account_creations SET state='active' WHERE account_id=? AND state='deleted'",id);
-        defaults(entry,owner.accountId(),"scenario",Instant.now());
+        if(!work.hasAccountRecord(id))
+            work.admitTestAccount(id,entry.cloudUsername(),entry.firstName(),owner.accountId());
+        work.restoreRegistry(id,owner.accountId());
+        work.restoreCreations(id);
+        defaults(work,entry,owner.accountId(),"scenario",Instant.now());
         // The append-only reset ledger records who restored it and when.
-        jdbc.update("INSERT INTO test_account_resets(account_id,mutation_key,actor_id,preset) VALUES (?,?,?,'restore')",id,UUID.randomUUID(),owner.accountId());
+        work.insertReset(id,UUID.randomUUID(),owner.accountId(),"restore");
         return true;
+        });
     }
-    private void defaults(TestAccountRoster.Entry entry,UUID actor,String preset,Instant now){
-        applyTemplate(entry.accountId(),entry.template(),actor,preset,now);
+    private void defaults(TestAccountStore.Work work,TestAccountRoster.Entry entry,UUID actor,String preset,Instant now){
+        applyTemplate(work,entry.accountId(),entry.template(),actor,preset,now);
     }
     /**
      * DLV-969 S35: one DEV roster account inside the caller's transaction: the subject, the registry row with its
@@ -279,48 +288,45 @@ public class TestAccountsService {
      */
     void admitRosterEntry(AccountPrincipal owner,TestAccountRoster.Entry entry){
         policy.requireCloud();
-        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended('test-account-seed',0))",rs->{});
-        if(!jdbc.queryForList("SELECT 1 FROM test_account_registry WHERE account_id=?",Integer.class,entry.accountId()).isEmpty())return;
-        actor(owner.accountId().toString());
-        jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT DO NOTHING",entry.accountId());
-        jdbc.update("INSERT INTO test_account_registry(account_id,username,initialization,creator_id,last_changed_by) VALUES (?,?,'scenario',?,?)",
-                entry.accountId(),entry.cloudUsername(),owner.accountId(),owner.accountId().toString());
-        admitTestAccount(entry.accountId(),entry.cloudUsername(),entry.firstName(),owner.accountId());
-        defaults(entry,owner.accountId(),"scenario",Instant.now());
+        store.transact(work->{
+        work.seedLock();
+        if(work.registry(entry.accountId())!=null)return null;
+        work.actor(owner.accountId().toString());
+        work.createSubject(entry.accountId());
+        work.registerRoster(entry.accountId(),entry.cloudUsername(),owner.accountId());
+        work.admitTestAccount(entry.accountId(),entry.cloudUsername(),entry.firstName(),owner.accountId());
+        defaults(work,entry,owner.accountId(),"scenario",Instant.now());
         // DLV-969 (owner, 2026-11-04): its scenario start in the reset ledger, the transaction's last write, so the
         // roster's "changed" count (DevTestRoster.STATUS) has a start for an account that was never reset.
-        jdbc.update("INSERT INTO test_account_resets(account_id,mutation_key,actor_id,preset) VALUES (?,?,?,'create')",entry.accountId(),UUID.randomUUID(),owner.accountId());
+        work.insertReset(entry.accountId(),UUID.randomUUID(),owner.accountId(),"create");
+        return null;
+        });
     }
     /** DLV-969 S35: the admitted cloud_accounts row of a DEV test account, on the test issuer, its identity (S36) and its 'admit' event. */
     void admitTestAccount(UUID id,String username,String displayName,UUID admittedBy){
-        jdbc.update("""
-                INSERT INTO cloud_accounts(account_id,issuer,subject,admitted,enabled,author_access,username,display_name,requested_at,admitted_at,admitted_by)
-                VALUES (?,?,?,true,true,false,?,?,clock_timestamp(),clock_timestamp(),?)
-                """,id,TestAccountRoster.TEST_ISSUER,id.toString(),username,displayName,admittedBy);
-        // DLV-969 S36: its one identity, on the test issuer; a test account is never a link candidate.
-        com.lookahead.domain.cloud.CloudIdentities.insert(jdbc,id,TestAccountRoster.TEST_ISSUER,id.toString(),username,null,"first_contact");
-        jdbc.update("INSERT INTO cloud_admission_events(id,account_id,issuer,subject,actor_id,action,roles) VALUES (?,?,?,?,?,'admit','[]'::jsonb)",
-                UUID.randomUUID(),id,TestAccountRoster.TEST_ISSUER,id.toString(),admittedBy);
+        store.transact(work->{work.admitTestAccount(id,username,displayName,admittedBy);return null;});
     }
     /** A created test account starts from a scenario (DLV-969 S35), inside the creating transaction. */
     void applyCreated(UUID id,String template,UUID actor){
-        this.actor(actor.toString());
-        applyTemplate(id,template,actor,"scenario",Instant.now());
+        store.transact(work->{
+        work.actor(actor.toString());
+        applyTemplate(work,id,template,actor,"scenario",Instant.now());
+        return null;
+        });
     }
     /**
      * {@code learnerNN} gets its Local scenario (or the legacy preset). DLV-971 (owner, 2026-11-06): there is no staff
      * scenario any more; a test account never gets a staff role here.
      */
-    private void applyTemplate(UUID id,String template,UUID actor,String preset,Instant now){
+    private void applyTemplate(TestAccountStore.Work work,UUID id,String template,UUID actor,String preset,Instant now){
         int number=Integer.parseInt(template.substring(7));
         if(preset.equals("legacy")){
             var topics=number==9?Set.of("learn:hands-on-dsa","learn:algorithmic-patterns"):catalog.allTopicIds();
-            for(String topic:topics)jdbc.update("INSERT INTO account_grants(account_id,topic_id) VALUES (?,?)",id,topic);
+            work.grantTopics(id,topics);
             return;
         }
         var scenario=LearnerScenario.of(number);
-        if(number==4)for(String topic:List.of("learn:algorithmic-patterns","learn:core-java"))
-            jdbc.update("INSERT INTO account_grants(account_id,topic_id) VALUES (?,?)",id,topic);
+        if(number==4)work.grantTopics(id,List.of("learn:algorithmic-patterns","learn:core-java"));
         purchases.populate(id,actor,scenario,now);
         try { plans.populate(id,scenario,now); }
         catch(ScenarioPlans.TemplateMissing missing) {

@@ -12,7 +12,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -29,12 +28,12 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Configuration
 @ConditionalOnExpression("'${app.deployment-environment:}' == 'dev'")
 public class DevTestSessionConfiguration {
-    @Bean DevTestSessions devTestSessions(JdbcTemplate jdbc, TestAccountPolicy policy, CognitoSettings cognito,
+    @Bean DevTestSessions devTestSessions(TestAccountStore store, TestAccountPolicy policy, CognitoSettings cognito,
             org.springframework.beans.factory.ObjectProvider<com.lookahead.domain.membership.MembershipService> memberships,
             org.springframework.beans.factory.ObjectProvider<com.lookahead.domain.access.StaffAliases> aliases) {
-        var sessions = new DevTestSessions(jdbc, policy, cognito.issuer(), cognito.gatewaySecret());
+        var sessions = new DevTestSessions(store, policy, cognito.issuer(), cognito.gatewaySecret());
         // DLV-969 (owner, 2026-11-04): the picker shows who upgraded each account (none without DEV purchase requests).
-        sessions.configureMarkers(new UpgradeMarkers(jdbc, memberships.getIfAvailable(), aliases.getIfAvailable()));
+        sessions.configureMarkers(new UpgradeMarkers(store, memberships.getIfAvailable(), aliases.getIfAvailable()));
         return sessions;
     }
 

@@ -14,7 +14,7 @@ import java.util.Properties;
 import java.util.Set;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
-/** Shared transport contract for runtime, migrations and one-shot account administration. */
+/** Shared transport contract for runtime, migrations and one-shot account administration. PostgreSQL only (DLV-970); no bean, nothing here runs in dynamodb mode. */
 public final class DomainDatabaseConnections {
     private DomainDatabaseConnections() { }
 

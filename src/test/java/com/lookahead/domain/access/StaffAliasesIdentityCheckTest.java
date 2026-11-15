@@ -17,7 +17,7 @@ import static org.mockito.Mockito.*;
 /** DLV-969 (owner, 2026-11-04): when the owner check fails, role labels are shown (fail closed) and the log says why. */
 class StaffAliasesIdentityCheckTest {
     final StaffAccessService access = mock(StaffAccessService.class);
-    final StaffAliases aliases = new StaffAliases(mock(JdbcTemplate.class), access, mock(StaffAccessRepository.class),
+    final StaffAliases aliases = new StaffAliases(mock(JdbcTemplate.class), access, mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)),
             mock(PlatformTransactionManager.class, withSettings().mockMaker(MockMakers.SUBCLASS)));
     final AccountPrincipal viewer = new AccountPrincipal(UUID.randomUUID(), "owner@example.invalid", "Owner Person", true);
 

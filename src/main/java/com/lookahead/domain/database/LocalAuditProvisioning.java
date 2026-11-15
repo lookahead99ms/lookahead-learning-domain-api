@@ -5,7 +5,7 @@ import java.sql.SQLException;
 import java.util.Set;
 import javax.sql.DataSource;
 
-/** Migrator-only Local fixture grant, deliberately outside the common Flyway history. */
+/** Migrator-only Local fixture grant, deliberately outside the common Flyway history. PostgreSQL only (DLV-970). */
 public final class LocalAuditProvisioning {
     private LocalAuditProvisioning() {}
 

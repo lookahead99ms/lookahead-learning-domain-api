@@ -1,5 +1,29 @@
 # Look Ahead Learning Domain API
 
+## DynamoDB persistence (DLV-970)
+
+The Domain runs on one of two stores, chosen at startup by `app.persistence.store`
+(`LOOKAHEAD_PERSISTENCE_STORE`): `postgresql`, the default and today's running backend,
+or `dynamodb`, four tables (**User Account Details**, **Administrator Audit Events**,
+**User Study Plan Details**, **Protected Owner Identity**). Every aggregate has a store
+per backend behind the same interface (`Jdbc*` with the SQL as it always was, `Dynamo*`
+with PartiQL transactions fenced on the owner's `ACCOUNT#id / META` revision); in
+`dynamodb` mode the context starts without a JDBC bean and never falls back. Accounts,
+identities, sessions, admission, the e-mailed account merge, staff access and labels,
+plans/versions/progress/receipts/lifecycle, memberships, test accounts, author reviews,
+record numbers and the sweeps all run on either store. Study-plan snapshots stay
+complete, account-owned copies (≤ 200 KiB inline, larger ones as verified chunked
+documents with atomic publication, retirement and bounded cleanup). Data changes are
+numbered steps applied by the migration entrypoint before a deploy that needs them
+(`DomainDynamoCatalog`); readiness refuses to serve a store that is behind. See
+[docs/dynamodb-persistence.md](docs/dynamodb-persistence.md) (design, item families,
+libraries) and [docs/dynamodb-runtime.md](docs/dynamodb-runtime.md) (settings, local run,
+migration entrypoint, sweeps). The AWS DEV cutover (tables, IAM, `07 · Migrate DEV data`,
+deploy with `persistence_store=dynamodb`) stays user-run and is described in the Infra
+cutover guide; local tests do not establish AWS permissions. On DynamoDB the
+`CloudAccountAdministration` command-line tool is not needed: the protected owner identity
+admits itself at first contact and every other account action is an owner endpoint.
+
 ## Audit retention and Local fixture provisioning
 
 The local source candidate adds forward migration V15; V1–V14 remain immutable.
@@ -253,7 +277,8 @@ Domain API does not persist a stale copy of Identity's enabled state.
 An account disable blocks newly verified requests, but cannot atomically cancel
 an already admitted Domain API transaction across databases. Plan/version/activity/
 mutation-receipt writes remain one Domain API transaction. Support receipt
-reservation and per-account limits lock the Domain API subject row; uncertain
+reservation and per-account limits lock the Domain API subject row (PostgreSQL) or commit under the
+owner's `ACCOUNT#id / META` revision, answering 409 after three lost fences (DynamoDB); uncertain
 SMTP delivery is never automatically resent by replaying a request key.
 DLV-971: a support request is recorded for Team Reviews first (see Platform reviews),
 then emailed. Receipt statuses: `accepted` (email sent, 202), `recorded` (recorded for
@@ -979,3 +1004,118 @@ restricts these sessions to ECR publication operations; the workflow retains its
 additional repository-scoped session policy, existing approval and scan gates.
 Infra owns the reviewed policy update and registry provisioning. These local
 workflow changes do not install IAM policies or publish an image.
+
+## DynamoDB store and DEV data migration
+
+DLV-970 (lane F, 2026-11-10). The DEV task definition carries a store switch and a new workflow moves
+the data ahead of the application: `07 · Migrate DEV data` runs the migration entrypoint of a release's
+own image as a one-off Fargate task, then `04 · Deploy DEV` serves that release on the DynamoDB store.
+Nothing here is activated by merging: DEV stays on PostgreSQL until the owner dispatches both runs.
+
+### The store switch
+
+`deployment/dev/service.template.json` has the parameter `PersistenceStore` (`postgresql`, the
+default, or `dynamodb`) and four table parameters pinned by `AllowedPattern` to the DEV names
+(`UserAccountDetailsTable` = `lookahead-dev-user-account-details`, `AdministratorAuditEventsTable`,
+`UserStudyPlanDetailsTable`, `ProtectedOwnerIdentityTable`). The container reads them as
+`LOOKAHEAD_PERSISTENCE_STORE` and the four `LOOKAHEAD_DYNAMODB_*_TABLE` variables beside the unchanged
+`AWS_REGION` and `LOOKAHEAD_ENVIRONMENT=dev`; the JDBC settings stay in the task definition and are
+ignored in dynamodb mode. `deployment/dev/deploy-config.json` carries the standing value
+(`PersistenceStore: postgresql` today) and the four names. `04 · Deploy DEV` has a new input
+`persistence_store`: `as-configured` (the default, also what `01 · Full` passes) renders the
+configuration's value, `postgresql` or `dynamodb` overrides it for that one run. The plan, the approval
+issue (title, `persistenceStore` / `currentPersistenceStore` fields, the stack and service resource
+rows) and the result name the store; a store change on the same image is a change, not a duplicate.
+After the cutover the standing value is changed to `dynamodb` in `deploy-config.json` by a PR, so that
+later deploys need no input.
+
+### Order: migrate, then deploy
+
+The migration entrypoint ships in the application image
+(`java -cp /opt/lookahead/app.jar -Dloader.main=com.lookahead.domain.persistence.dynamodb.migration.DomainDynamoMigration org.springframework.boot.loader.launch.PropertiesLauncher migrate|verify|status`)
+and must run under `lookahead-dev-migration-task` before the application of the same release is
+deployed on `dynamodb` ("data first, then app"). There is no pipeline gate: the running release keeps
+serving while the data moves ahead; a release deployed on `dynamodb` before its migration reports
+`DATA_VERSION_BEHIND` in readiness and never becomes healthy, and the ECS circuit breaker rolls it back.
+
+### Dispatching `07 · Migrate DEV data` (one step at a time)
+
+1. Make sure the release is published: `01 · Full` or `03 · Publish` finished with the tag `vYYYY.MM.DD.HH.NN` in ECR as `domain-vYYYY.MM.DD.HH.NN`.
+2. On GitHub, open Actions → `07 · Migrate DEV data` → Run workflow.
+3. Enter `release_version` (the tag) and leave `command` at `migrate` (`verify` re-checks every recorded step, `status` only reports; both write nothing).
+4. Wait for the Security gate and "Plan DEV data migration" to finish; the plan artifact `migrate-plan` holds `plan.json`.
+5. Open the approval issue the run created (its link is the last line of "Approve DEV data migration") and read it.
+6. Post one new comment with exactly the command the issue shows: `APPROVE MIGRATE domain-vYYYY.MM.DD.HH.NN` (`APPROVE VERIFY …` / `APPROVE STATUS …` for the other commands), within 10 minutes of the issue opening (`APPROVAL_WAIT_MINUTES`), or `REJECT`.
+7. Wait for "Migrate DEV data" to finish; it closes the issue with the outcome and keeps `migrate-result/result.json` and one `migrate-record-<tag>-<run>` artifact.
+8. On success, dispatch `04 · Deploy DEV` with the same `release_version` and `persistence_store` = `dynamodb`.
+
+The workflow shares the `deploy-dev` concurrency group, so it never runs beside a deploy, recovery or
+restart. The approval is the same owner mechanism as a deploy (v2 issue, `owner_approval` windows, a
+live recheck before any credential, `issue_close.py` at the end).
+
+### What the approval issue shows
+
+A v2 issue titled `DEV: Migrate domain data domain-v… — one Fargate task lookahead-dev-domain-migrate
+applies the data steps of this release to the four DynamoDB tables; the service is not touched · run N`
+(`Verify domain data` / `Read domain data status` for the other commands). "What this run does" lists
+the five steps in order; "Affected AWS resources" has one row per resource with its type and physical
+name: the task definition family `lookahead-dev-domain-migrate` (CREATE, a new revision), the one-off
+`AWS::ECS::Task` on `lookahead-dev-cluster` (RUN ONCE), the service `lookahead-dev-domain` (NO CHANGE,
+with the store and DesiredCount it serves now), the four tables (MODIFY for `migrate`, READ ONLY
+otherwise) and the three ledger items in `lookahead-dev-protected-owner-identity` under
+`DATA_VERSION#DOMAIN`: `STEP#<ten-digit version>`, `CURRENT`, `LOCK`. The "Migration task" table names
+the image digest, roles, session and source commits; "Tables the task reads" maps each variable to its
+table; the validation table shows the tag resolution, the digest read back from ECR, the configuration
+hash and the command; the payload is the whole plan.
+
+### Reading the result
+
+`migrate-result/result.json` (schema `app-migrate-result/v1`): `outcome` (`success` / `failure`),
+`error`, `command`, `taskDefinition` (the revision registered), `task` (the ARN), `exitCode`,
+`stopCode`, `stoppedReason`, `report` (the entrypoint's JSON line) and `steps` (`identity`,
+`registered`, `started`, `stopped`, `report` or `no-report`, `ahead`). The report line is
+`{"command":"migrate","environment":"dev","runId":"github-<run>","before":N,"after":M,"required":R,"applied":[…],"verified":[…],"ahead":false}`.
+A run succeeds only with exit code 0, a report line without `failed`, the command and run identity it
+names, and for `migrate` `after` at `required`; `verify` and `status` must report an empty `applied`
+list (no ledger change). Exit code 1 means the entrypoint failed and the ledger is unchanged past the
+last recorded step: fix the cause and run again with the same release (it continues from `CURRENT`).
+Exit code 2 is a usage error of the entrypoint (a tooling bug). A stop code other than
+`EssentialContainerExited` (for example `TaskFailedToStart`) is reported with ECS's reason; the log
+stream of the task is `migrate/migrate/<task id>` in `/lookahead/dev/domain`.
+
+### Rollback rule
+
+The line is the application's first write on DynamoDB. The seed rows a `migrate` writes (staff counters and
+markers, the membership catalog, the sequence counters, the ledger) are not application data and PostgreSQL
+stays complete until that first application write, so until then the store parameter goes back: run
+`04 · Deploy DEV` with `persistence_store` = `postgresql` (the input must name the store; `as-configured`
+is refused while deploy-config.json and the stack disagree). After the first application write the way
+back is a data decision, not a flag: PostgreSQL no longer holds what DynamoDB holds, so switching the
+parameter back would serve stale data; from then on a rollback is a reviewed data operation, not a deploy
+input. Right after the cutover, merge the deploy-config pull request (`PersistenceStore=dynamodb`) before
+any further Domain merge or deploy.
+
+### AWS actions of the workflow and the role each needs (IAM candidate for Infra)
+
+The workflow runs as `lookahead-dev-deploy` in the sessions `domain-deploy-migrate-plan-<run>-1`
+(plan, 15 minutes) and `domain-deploy-migrate-<run>-1` (execute, 60 minutes); the deploy trust must
+admit them as it admits `domain-deploy-*`. Calls, in order:
+
+| Stage | AWS API call | Role that makes it | Resource |
+| --- | --- | --- | --- |
+| plan | `ecr:BatchGetImage` | `lookahead-dev-deploy` (already granted) | `lookahead-dev-ecr` |
+| plan | `cloudformation:DescribeStacks` | `lookahead-dev-deploy` (already granted) | stack `lookahead-dev-domain` (read: current store and DesiredCount) |
+| execute | `sts:GetCallerIdentity` | `lookahead-dev-deploy` | — |
+| execute | `ecs:RegisterTaskDefinition` | `lookahead-dev-deploy` (new) | family `lookahead-dev-domain-migrate` |
+| execute | `iam:PassRole` | `lookahead-dev-deploy` (new) | `lookahead-dev-migration-task` and `lookahead-dev-ecs-execution`, to `ecs-tasks.amazonaws.com` |
+| execute | `ecs:RunTask` | `lookahead-dev-deploy` (new) | task definition `lookahead-dev-domain-migrate:*` on `lookahead-dev-cluster`, Fargate, the service's subnets and security group |
+| execute | `ecs:DescribeTasks` | `lookahead-dev-deploy` (already granted for the service's tasks; needs the migrate tasks too) | tasks of `lookahead-dev-cluster` |
+| execute | `logs:GetLogEvents` | `lookahead-dev-deploy` (new; the deploy has `logs:FilterLogEvents` only) | log group `/lookahead/dev/domain`, streams `migrate/migrate/*` |
+| the task | `ecr:GetAuthorizationToken`, `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `logs:CreateLogStream`, `logs:PutLogEvents` | `lookahead-dev-ecs-execution` (already granted for the service) | the image and the log group above |
+| the task | reads `dynamodb:DescribeTable` (all four tables), `GetItem` (also authorises `TransactGetItems`) and `Query` on the account and audit tables, `Scan` on the audit table only (the bootstrap's empty-namespace check); PartiQL writes `dynamodb:PartiQLInsert` through `ExecuteTransaction` on the account and audit tables (staff counters and markers, `CATALOG / PLAN#<id>` + `META`, `SEQUENCE#* / COUNTER`); the ledger on the protected table, partition `DATA_VERSION#DOMAIN` only: `GetItem`, `Query`, `PutItem`, `UpdateItem`, `ConditionCheckItem` (`TransactWriteItems`). No `DeleteItem`, nothing on `OWNER/ROOT`. The running application's role: `ExecuteTransaction` (PartiQL `INSERT` / `UPDATE` / `DELETE`; `PartiQLInsert` only on the audit table) plus `GetItem`, `Query`, `Scan`, `BatchGetItem`, `TransactGetItems`, `DescribeTable`; no native write anywhere | `lookahead-dev-migration-task` | the four `lookahead-dev-*` tables |
+
+The task definition is registered without tags (no `ecs:TagResource`), with a read-only root file
+system, `/tmp` as a volume and blocking `awslogs` (the report line is never dropped). The service's
+task role `lookahead-dev-app-task` reads the ledger only; the migrate task is the single writer.
+Local check: `python3 -m unittest discover -s tools/release -p 'test_*.py'` (the `07` gate also
+requires 85 percent coverage over `migrate.py`).

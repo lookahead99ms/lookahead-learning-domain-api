@@ -10,7 +10,8 @@
     ],
     "Deploy": "tools/release/deploy.py renders one change set app-<run> against this template; a deploy is an ECS rolling update (surge to two tasks, circuit-breaker rollback); DesiredCount 1 serves, 0 parks the service (user decision V, 2026-11-01)",
     "PublicationMode": "live: the newest complete release under live/ in the publication bucket (DLV-968 T9); with PublicationLivePrefix set, the single v*.tar under release/live/ (DLV-971, after the AWS lane's cutover)",
-    "HealthCheck": "Spring Boot starts in 75-90 s on 512 CPU units; a 60 s start period with 3 retries killed healthy tasks (Domain run 41327104117, 2026-11-01), so the grace is 180 s plus 5 retries."
+    "HealthCheck": "Spring Boot starts in 75-90 s on 512 CPU units; a 60 s start period with 3 retries killed healthy tasks (Domain run 41327104117, 2026-11-01), so the grace is 180 s plus 5 retries.",
+    "PersistenceStore": "DLV-970: PersistenceStore selects postgresql (default) or dynamodb; the four table parameters are pinned to the DEV names. 07 \u00b7 Migrate DEV data (tools/release/migrate.py) runs the migration entrypoint of the same image under lookahead-dev-migration-task before this service is deployed on dynamodb; this template never runs it."
   },
   "Parameters": {
     "Cluster": {
@@ -151,6 +152,39 @@
         "true"
       ],
       "Description": "DLV-969 S36: true sends the merge-link email through SES with the task role (app.email.enabled); false only logs that an email was skipped"
+    },
+    "PersistenceStore": {
+      "Type": "String",
+      "Default": "postgresql",
+      "AllowedValues": [
+        "postgresql",
+        "dynamodb"
+      ],
+      "Description": "DLV-970: the one store the application reads and writes (app.persistence.store, LOOKAHEAD_PERSISTENCE_STORE). postgresql keeps RDS; dynamodb uses the four tables below, after 07 \u00b7 Migrate DEV data has recorded the data steps of this release (data first, then app). Before the application's first write on DynamoDB (the migration's seed rows are not application data; PostgreSQL stays complete until then) a deploy with persistence_store postgresql goes back; after the first application write the way back is a data decision, not a flag. as-configured is refused while deploy-config.json and the stack disagree"
+    },
+    "UserAccountDetailsTable": {
+      "Type": "String",
+      "Default": "lookahead-dev-user-account-details",
+      "AllowedPattern": "^lookahead-dev-user-account-details$",
+      "Description": "DLV-970: the DEV User Account Details table; pinned to the one approved name (read in dynamodb mode only)"
+    },
+    "AdministratorAuditEventsTable": {
+      "Type": "String",
+      "Default": "lookahead-dev-administrator-audit-events",
+      "AllowedPattern": "^lookahead-dev-administrator-audit-events$",
+      "Description": "DLV-970: the DEV Administrator Audit Events table; pinned to the one approved name (read in dynamodb mode only)"
+    },
+    "UserStudyPlanDetailsTable": {
+      "Type": "String",
+      "Default": "lookahead-dev-user-study-plan-details",
+      "AllowedPattern": "^lookahead-dev-user-study-plan-details$",
+      "Description": "DLV-970: the DEV User Study Plan Details table; pinned to the one approved name (read in dynamodb mode only)"
+    },
+    "ProtectedOwnerIdentityTable": {
+      "Type": "String",
+      "Default": "lookahead-dev-protected-owner-identity",
+      "AllowedPattern": "^lookahead-dev-protected-owner-identity$",
+      "Description": "DLV-970: the DEV Protected Owner Identity table; pinned to the one approved name (read in dynamodb mode only)"
     },
     "RefreshToken": {
       "Type": "String",
@@ -428,6 +462,36 @@
               {
                 "Name": "LOOKAHEAD_PUBLIC_URL",
                 "Value": "https://dev.devlookahead.com"
+              },
+              {
+                "Name": "LOOKAHEAD_PERSISTENCE_STORE",
+                "Value": {
+                  "Ref": "PersistenceStore"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_DYNAMODB_USER_ACCOUNT_DETAILS_TABLE",
+                "Value": {
+                  "Ref": "UserAccountDetailsTable"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_DYNAMODB_ADMINISTRATOR_AUDIT_EVENTS_TABLE",
+                "Value": {
+                  "Ref": "AdministratorAuditEventsTable"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_DYNAMODB_USER_STUDY_PLAN_DETAILS_TABLE",
+                "Value": {
+                  "Ref": "UserStudyPlanDetailsTable"
+                }
+              },
+              {
+                "Name": "LOOKAHEAD_DYNAMODB_PROTECTED_OWNER_IDENTITY_TABLE",
+                "Value": {
+                  "Ref": "ProtectedOwnerIdentityTable"
+                }
               }
             ],
             "HealthCheck": {

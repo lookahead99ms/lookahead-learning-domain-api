@@ -14,6 +14,7 @@ under `deployment/dev/` that describe this application's own DEV service stack.
 | `03 · Publish` | `publish.yml` | `release.yml` with `action: publish`: cut the next tag at the main head, build, scan, owner approval, publish to ECR |
 | `04 · Deploy DEV` | `deploy-dev.yml` | its own workflow, dispatched by hand for a tag already in ECR (redeploys, rollbacks, `desired_count` 0 to park) or called by `01 · Full` after publication: Security gate → Plan DEV deploy → Approve DEV deploy → Deploy to DEV (one change set, ECS rolling update) → Record deploy (DLV-968) |
 | `05 · Recover DEV` | `recover-dev.yml` | dispatched by hand when a deploy left the service unhealthy or its stack stuck: Security gate → Plan DEV recovery → Approve DEV recovery (one approval) → Recover DEV (park, target, and only if needed park again, fallback, park) → Record recovery (DLV-969) |
+| `07 · Migrate DEV data` | `migrate-dev.yml` | Domain only, dispatched by hand for a tag already in ECR before that release is deployed on the dynamodb store: Security gate → Plan DEV data migration → Approve DEV data migration → Migrate DEV data (one Fargate task runs the migration entrypoint `migrate`, `verify` or `status` under `lookahead-dev-migration-task`) → Record migration (DLV-970) |
 
 `release.yml` is what `02` and `03` call through `workflow_call` (`secrets: inherit`), so the run
 keeps the caller's path; `owner_approval.PUBLISHERS` registers `release.yml` and `publish.yml` as
@@ -212,6 +213,59 @@ plan's digest and template, the change-set preview, and the session identity. St
 `app-<run>-<stage>`. Prerequisite: the busy-stack park's `ecs:UpdateService` for the `<app>-deploy-*` sessions (above);
 without it a busy stack stops the run at its first stage, and an idle stack recovers without it.
 
+## Stages of `07 · Migrate DEV data` (Domain only)
+
+DLV-970: the Domain's data moves to DynamoDB release by release, before the application of the same release serves on it
+("data first, then app"; no pipeline gate: the running release keeps serving). The migration entrypoint ships in the
+application image (`DomainDynamoMigration migrate|verify|status`) and `tools/release/migrate.py` runs it as one Fargate task
+in the task definition family `lookahead-dev-domain-migrate` with the task role `lookahead-dev-migration-task`, the service's
+execution role, cluster, subnets, security group and log group (`deployment/dev/deploy-config.json`) and the four pinned DEV
+table names. Inputs: `release_version` (a tag already in ECR) and `command` (`migrate` default, `verify`, `status`). It shares
+the `deploy-dev` concurrency group, so it never runs beside a deploy, recovery or restart. The service, its stack and its
+task definition family are never touched; `04 · Deploy DEV` with `persistence_store` `dynamodb` follows a successful run.
+
+1. **Security gate**: the release tooling tests with the 85 percent gate, now including `migrate.py`.
+2. **Plan DEV data migration** (`plan-migration`, environment `dev`, session `domain-deploy-migrate-plan-<run>-1`):
+   `release_version.py resolve` freezes the tag; `migrate.py plan` reads the published digest back from ECR, the stack's
+   current store and DesiredCount, and writes `plan.json` (artifact `migrate-plan`): roles, network, entry point, environment,
+   tables, ledger items and the resource rows the issue shows.
+3. **Approve DEV data migration**: one v2 issue (task definition family, the one-off task, the untouched service, the four
+   tables, the ledger items `DATA_VERSION#DOMAIN / STEP#…`, `CURRENT`, `LOCK`); the owner answers
+   `APPROVE MIGRATE <app>-<tag>` (`APPROVE VERIFY …`, `APPROVE STATUS …`) within `APPROVAL_WAIT_MINUTES` (default 10) of the
+   issue being created; `REJECT` or silence closes it with nothing run.
+4. **Migrate DEV data** (environment `dev`): the live approval is rechecked before any credentials; then session
+   `domain-deploy-migrate-<run>-1` (60 minutes) runs `migrate.py execute`: `ecs register-task-definition` (the digest, both roles,
+   blocking awslogs, GITHUB_RUN_ID in the environment), `ecs run-task` (Fargate 1.4.0, `--started-by migrate-<run>`),
+   `ecs describe-tasks` until STOPPED (at most 30 minutes), `logs get-log-events` on `migrate/migrate/<task id>` for the one JSON
+   report line. Success needs exit code 0, a report without `failed`, the command and `github-<run>` it names, `after` at
+   `required` for `migrate`, and an empty `applied` list for `verify` / `status`. The result (`migrate-result/result.json`,
+   schema `app-migrate-result/v1`) is kept whatever the outcome and the issue is closed with it.
+5. **Record migration**: one `migrate-record-<release>-<run>` artifact per run.
+
+IAM candidate (Infra): `lookahead-dev-deploy` needs `ecs:RegisterTaskDefinition`, `ecs:RunTask` (family
+`lookahead-dev-domain-migrate`), `ecs:DescribeTasks` for the cluster's tasks, `iam:PassRole` for `lookahead-dev-migration-task`
+and `lookahead-dev-ecs-execution`, and `logs:GetLogEvents` on `/lookahead/dev/domain`; the trust must admit the two
+`domain-deploy-migrate*` sessions. The full table is in the repository README, "DynamoDB store and DEV data migration".
+
+## Persistence store switch (Domain only, DLV-970)
+
+`deploy.py` renders the template parameter `PersistenceStore` from `deployment/dev/deploy-config.json` unless the `04 · Deploy DEV`
+input `persistence_store` names a store for one run (`01 · Full` and `03 · Publish` call the deploy with `as-configured`). Rules the
+plan enforces:
+
+- **`as-configured` never changes the store a stack serves.** When the configuration and the stack's current `PersistenceStore`
+  disagree (the window between the cutover and the merge of the deploy-config pull request) the plan is refused with
+  `The stack serves the dynamodb store but deployment/dev/deploy-config.json says postgresql …`, a park included (the next
+  scheduled start would serve the flipped revision). Only an input that names the store switches it, on purpose. So right after the
+  cutover (`persistence_store` = `dynamodb`), merge the deploy-config pull request (`PersistenceStore=dynamodb`) before any further
+  Domain merge or deploy.
+- **`05 · Recover DEV` keeps the store the stack serves**: every stage names it explicitly, whatever the configuration or the
+  environment says; a recovery never switches the store.
+- **Rollback rule**: the line is the application's first write on DynamoDB. The migration's seed rows (counters, markers, the
+  membership catalog, the ledger) are not application data and PostgreSQL stays complete until then, so before the first application
+  write the flag goes back with `04 · Deploy DEV` and `persistence_store` = `postgresql`. After the first application write the way back
+  is a data decision, not a flag.
+
 ## Settings the repository needs
 
 Environment `dev` allowing exactly the `main` branch and **without** required reviewers (the owner
@@ -226,6 +280,8 @@ trust must admit the sessions `<app>-deploy-plan-*` and `<app>-deploy-*` (DLV-96
 
 ## Shared copies and local checks
 
+`migrate.py`, `test_migrate.py`, `migrate-dev.yml` and `test_dev_persistence_store.py` exist in the Domain repository only (DLV-970);
+`deploy.py` carries the persistence store switch code everywhere, dormant where the configuration has no `PersistenceStore`.
 `recover.py` and `test_recover.py` are identical across the three app repositories too; `recover-dev.yml` differs only in the
 application name (as `deploy-dev.yml` does). `release_version.py`, `issue_template.py`, `issue_close.py` and `owner_approval.py` are byte-identical copies of
 Infra's `github/releases/release_version.py`, `github/approvals/issue_template.py` and
@@ -236,7 +292,7 @@ Infra's `github/releases/release_version.py`, `github/approvals/issue_template.p
 ```sh
 python3 -m unittest discover -s tools/release -p 'test_*.py'
 python3 -P -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'
-python3 -P -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py' --fail-under=85
+python3 -P -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py,*/migrate.py' --fail-under=85
 actionlint .github/workflows/*.yml
 ```
 

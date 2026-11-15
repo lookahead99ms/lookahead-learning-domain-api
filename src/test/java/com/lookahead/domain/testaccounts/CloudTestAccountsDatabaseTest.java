@@ -55,13 +55,13 @@ class CloudTestAccountsDatabaseTest {
  }
  @BeforeEach void service(){
   // Every test starts without test accounts or their purchases, plans and grants; as in DEV, audit rows stay.
-  var erasure=new AccountDataErasure(jdbc);var transactions=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source));
+  var erasure=new JdbcAccountDataErasure(jdbc);var transactions=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source));
   for(UUID id:jdbc.queryForList("SELECT account_id FROM test_account_registry",UUID.class))transactions.executeWithoutResult(status->erasure.erase(id,false));
   jdbc.update("DELETE FROM cloud_sign_ins");jdbc.update("DELETE FROM cloud_account_states");
   // The reset ledger is append-only by row trigger; TRUNCATE (no row triggers) clears it between tests.
   jdbc.execute("TRUNCATE test_account_resets");jdbc.update("DELETE FROM test_account_registry");jdbc.update("DELETE FROM test_account_creations");
   jdbc.update("DELETE FROM staff_access");jdbc.update("UPDATE cloud_accounts SET admitted=false");jdbc.update("DELETE FROM cloud_accounts");
-  repository=mock(StaffAccessRepository.class);
+  repository=mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
   when(repository.forAccount(admin.accountId())).thenReturn(new StaffAccessRepository.Assignment(UUID.randomUUID(),admin.accountId(),null,Set.of("admin"),Set.of(),false,1));
   ownerAccess=mock(LocalAuthorAccess.class);when(ownerAccess.allowed(owner)).thenReturn(true);
   plans=mock(ScenarioPlans.class);
@@ -482,7 +482,7 @@ class CloudTestAccountsDatabaseTest {
  /** As DELETE did before roster accounts were permanent: data erased, the registry row deleted, the admitted row kept. */
  void deleteTheOldWay(UUID id){
   new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source)).executeWithoutResult(status->{
-   new AccountDataErasure(jdbc).erase(id,false);
+   new JdbcAccountDataErasure(jdbc).erase(id,false);
    jdbc.update("UPDATE test_account_creations SET state='deleted' WHERE account_id=?",id);
    jdbc.update("UPDATE test_account_registry SET creation_state='deleted',revision=revision+1,last_changed_by=? WHERE account_id=?",owner.accountId().toString(),id);
   });
@@ -652,7 +652,7 @@ class CloudTestAccountsDatabaseTest {
  @org.springframework.context.annotation.Configuration @org.springframework.security.config.annotation.web.configuration.EnableWebSecurity
  @org.springframework.web.servlet.config.annotation.EnableWebMvc
  @org.springframework.context.annotation.Import({com.lookahead.domain.security.DomainSecurityConfiguration.class,com.lookahead.domain.cloud.CloudSecurityConfiguration.class,
-     DevTestSessionConfiguration.class,DevTestSessionsController.class,TestAccountPolicy.class,com.lookahead.learning.content.handler.AccountErrorHandler.class,Probe.class})
+     DevTestSessionConfiguration.class,JdbcTestAccountStore.class,DevTestSessionsController.class,TestAccountPolicy.class,com.lookahead.learning.content.handler.AccountErrorHandler.class,Probe.class})
  static class Application {
   @org.springframework.context.annotation.Bean JdbcTemplate jdbc(){return fixtureJdbc;}
   @org.springframework.context.annotation.Bean org.springframework.transaction.PlatformTransactionManager transactions(){return fixtureTransactions;}
@@ -883,7 +883,7 @@ class CloudTestAccountsDatabaseTest {
   assertThat(answer.path("purchase").path("status").asString()).isEqualTo("failed");
   assertThat(answer.path("purchase").path("providerStatus").asString()).isEqualTo("requires_payment_method");
   // An approval the provider declined upgrades nothing: no marker.
-  assertThat(new UpgradeMarkers(jdbc,declining,null).find(learner01.accountId())).isNull();
+  assertThat(new UpgradeMarkers(new JdbcTestAccountStore(jdbc,new DataSourceTransactionManager(source)),declining,null).find(learner01.accountId())).isNull();
   // A transient provider failure leaves the request waiting; approving again succeeds once the provider recovers.
   var flaky=memberships("network");var learner02=session(rosterId("learner02"));
   var waiting=flaky.buy(learner02,learner02.accountId(),buy("learn",null),"provider-flaky",false);
@@ -901,7 +901,7 @@ class CloudTestAccountsDatabaseTest {
   assertThatThrownBy(()->decider(local,true).decidePurchase(owner,approve)).isInstanceOfSatisfying(AccountFailure.class,f->{assertThat(f.status()).isEqualTo(403);assertThat(f.code()).isEqualTo("PURCHASE_APPROVAL_DISABLED");});
   assertThat(local.pendingRequest(learner02.accountId())).isNull();
   assertThat(local.approvedRequest(learner02.accountId())).isNull();
-  assertThat(new UpgradeMarkers(jdbc,null,null).find(learner02.accountId())).isNull();
+  assertThat(new UpgradeMarkers(new JdbcTestAccountStore(jdbc,new DataSourceTransactionManager(source)),null,null).find(learner02.accountId())).isNull();
   var unwired=new TestAccountsService(jdbc,json,policy,new ScenarioPurchases(jdbc,json,policy),plans,ownerStaff(),new AccessSummaryService(jdbc,json,ownerStaff()),mock(SnapshotValidator.class));
   assertThatThrownBy(()->unwired.decidePurchase(owner,approve)).isInstanceOfSatisfying(AccountFailure.class,f->assertThat(f.code()).isEqualTo("PURCHASE_APPROVAL_DISABLED"));
   assertThat(unwired.list(owner)).allSatisfy(r->assertThat(r.has("pendingPurchase")).isFalse());
@@ -940,7 +940,7 @@ class CloudTestAccountsDatabaseTest {
   var m=memberships("success");
   var ownerSide=decider(m,true);var adminSide=decider(m,false,"admin");var coauthorSide=decider(m,false,"co-author");
   var aliases=new StaffAliases(jdbc,ownerStaff(),repository,new DataSourceTransactionManager(source));
-  var sessions=sessions();sessions.configureMarkers(new UpgradeMarkers(jdbc,m,aliases));
+  var sessions=sessions();sessions.configureMarkers(new UpgradeMarkers(new JdbcTestAccountStore(jdbc,new DataSourceTransactionManager(source)),m,aliases));
   String labelA=aliases.label(adminA);assertThat(labelA).matches("Admin [0-9]+");
   UUID learner05=rosterId("learner05"),learner01=rosterId("learner01"),learner02=rosterId("learner02"),learner03=rosterId("learner03"),learner04=rosterId("learner04");
 
@@ -1035,7 +1035,7 @@ class CloudTestAccountsDatabaseTest {
   assertThat(unknownForOwner.get("canReset").asBoolean()).isTrue();
   for(var viewer:List.of(viewerA,viewerB))assertThatThrownBy(()->adminSide.reset(viewer,learner03,resetOf(learner03)))
       .isInstanceOfSatisfying(AccountFailure.class,f->{assertThat(f.code()).isEqualTo("RESET_RESERVED");assertThat(f.getMessage()).isEqualTo("Only the owner can reset this upgraded account.");});
-  assertThat(new UpgradeMarkers(jdbc,m,null).label(adminA)).isEqualTo("Unknown");
+  assertThat(new UpgradeMarkers(new JdbcTestAccountStore(jdbc,new DataSourceTransactionManager(source)),m,null).label(adminA)).isEqualTo("Unknown");
 
   // No approved purchase: today's rules. Admin B resets learner04; a co-author never resets; a created learner never resets in DEV.
   var createdLearner=created.create(admin,new CreatedTestAccounts.Create(UUID.randomUUID(),null,"learner05",false)).accountId();

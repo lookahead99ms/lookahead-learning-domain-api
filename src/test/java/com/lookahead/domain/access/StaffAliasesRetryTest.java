@@ -19,7 +19,7 @@ class StaffAliasesRetryTest {
     final JdbcTemplate jdbc = mock(JdbcTemplate.class);
     // Interface mock: the subclass maker, as in the other suites.
     final PlatformTransactionManager manager = mock(PlatformTransactionManager.class, withSettings().mockMaker(MockMakers.SUBCLASS));
-    final StaffAliases aliases = new StaffAliases(jdbc, mock(StaffAccessService.class), mock(StaffAccessRepository.class), manager);
+    final StaffAliases aliases = new StaffAliases(jdbc, mock(StaffAccessService.class), mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)), manager);
     final UUID account = UUID.randomUUID();
 
     @Test void aClashIsRetriedAndTheNumberGivenOnTheNextTryIsLogged() {

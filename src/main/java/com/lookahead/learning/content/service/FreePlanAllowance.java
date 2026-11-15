@@ -8,14 +8,13 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
-import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
-/** Free allowances are checked after PlanService takes the owner row lock. */
+/** Free allowances are checked after PlanService takes the owner row lock. DLV-970: the ledgers sit behind {@link FreePlanLedgerStore}. */
 @Service
 @Profile("accounts")
 public class FreePlanAllowance {
@@ -24,21 +23,32 @@ public class FreePlanAllowance {
     static final int MAX_DELETIONS = 3;
     static final long DELETION_WINDOW_DAYS = 21;
 
-    private final JdbcTemplate jdbc;
+    private final FreePlanLedgerStore ledger;
     private final AccountRepository accounts;
     private final ProtectedContentPolicy publication;
     private final PlanJson json;
     private final Clock clock;
 
     @org.springframework.beans.factory.annotation.Autowired
+    public FreePlanAllowance(FreePlanLedgerStore ledger, AccountRepository accounts,
+            ProtectedContentPolicy publication, PlanJson json) {
+        this(ledger, accounts, publication, json, Clock.systemUTC());
+    }
+
+    /** PostgreSQL callers and tests: the ledgers on this JdbcTemplate. */
     public FreePlanAllowance(JdbcTemplate jdbc, AccountRepository accounts,
             ProtectedContentPolicy publication, PlanJson json) {
-        this(jdbc, accounts, publication, json, Clock.systemUTC());
+        this(new JdbcFreePlanLedgerStore(jdbc, json), accounts, publication, json, Clock.systemUTC());
     }
 
     FreePlanAllowance(JdbcTemplate jdbc, AccountRepository accounts,
             ProtectedContentPolicy publication, PlanJson json, Clock clock) {
-        this.jdbc = jdbc;
+        this(new JdbcFreePlanLedgerStore(jdbc, json), accounts, publication, json, clock);
+    }
+
+    FreePlanAllowance(FreePlanLedgerStore ledger, AccountRepository accounts,
+            ProtectedContentPolicy publication, PlanJson json, Clock clock) {
+        this.ledger = ledger;
         this.accounts = accounts;
         this.publication = publication;
         this.json = json;
@@ -66,8 +76,7 @@ public class FreePlanAllowance {
     }
 
     public void afterCreate(UUID owner, UUID planId, boolean freeCreation) {
-        if (freeCreation)
-            jdbc.update("INSERT INTO free_plan_creations(account_id,plan_id) VALUES (?,?) ON CONFLICT DO NOTHING", owner, planId);
+        if (freeCreation) ledger.recordCreation(owner, planId);
     }
 
     public void beforeActivation(UUID owner, UUID planId, Set<String> contentIds) {
@@ -80,10 +89,7 @@ public class FreePlanAllowance {
         if (!freeAccount(owner) || freeContent(priorContent) || !freeContent(nextContent)) return false;
         if (active && activeFreePlans(owner, planId) >= MAX_ACTIVE)
             throw activeLimit(owner, "plan.version", "Archive or delete a free plan before changing this plan");
-        Integer recorded = jdbc.queryForObject(
-                "SELECT count(*) FROM free_plan_creations WHERE account_id=? AND plan_id=?",
-                Integer.class, owner, planId);
-        if (recorded != null && recorded > 0) return false;
+        if (ledger.creationRecorded(owner, planId)) return false;
         if (creations(owner) >= MAX_CREATIONS) throw lifetimeLimit(owner, "plan.version");
         return true;
     }
@@ -104,15 +110,11 @@ public class FreePlanAllowance {
     public void beforeDelete(UUID owner) {
         if (!freeAccount(owner)) return;
         var since = Instant.now(clock).minusSeconds(DELETION_WINDOW_DAYS * 86400);
-        Integer count = jdbc.queryForObject(
-                "SELECT count(*) FROM free_plan_deletions WHERE account_id=? AND deleted_at>?",
-                Integer.class, owner, java.sql.Timestamp.from(since));
-        if (count != null && count >= MAX_DELETIONS) {
-            java.sql.Timestamp oldest = jdbc.queryForObject(
-                    "SELECT min(deleted_at) FROM free_plan_deletions WHERE account_id=? AND deleted_at>?",
-                    java.sql.Timestamp.class, owner, java.sql.Timestamp.from(since));
+        int count = ledger.deletionsSince(owner, since);
+        if (count >= MAX_DELETIONS) {
+            Instant oldest = ledger.oldestDeletionSince(owner, since);
             String available = oldest == null ? "after the current window" :
-                    oldest.toInstant().plusSeconds(DELETION_WINDOW_DAYS * 86400)
+                    oldest.plusSeconds(DELETION_WINDOW_DAYS * 86400)
                             .atOffset(ZoneOffset.UTC).toString();
             Events.limit("plan.delete", "FREE_DELETE_LIMIT", "free-plan-deletions", MAX_DELETIONS, DELETION_WINDOW_DAYS + "d").addKeyValue("account.id", owner)
                     .log("Free plan limit hit for account {}: at most {} deletions in each rolling {} days; next deletion allowed {}",
@@ -123,31 +125,15 @@ public class FreePlanAllowance {
     }
 
     public void afterDelete(UUID owner, UUID planId, boolean freeAccountAtDelete) {
-        if (freeAccountAtDelete)
-            jdbc.update("INSERT INTO free_plan_deletions(account_id,plan_id) VALUES (?,?)", owner, planId);
+        if (freeAccountAtDelete) ledger.recordDeletion(owner, planId);
     }
 
     public int creations(UUID owner) {
-        return jdbc.queryForObject("SELECT count(*) FROM free_plan_creations WHERE account_id=?", Integer.class, owner);
+        return ledger.creations(owner);
     }
 
     private int activeFreePlans(UUID owner, UUID excludedPlan) {
         LocalDate today = LocalDate.now(clock.withZone(ZoneOffset.UTC));
-        return jdbc.query("""
-            SELECT p.id, v.membership::text AS membership, l.state, l.start_date, l.day_count
-            FROM plans p JOIN plan_versions v ON v.account_id=p.account_id AND v.id=p.current_version
-            LEFT JOIN plan_lifecycle l ON l.account_id=p.account_id AND l.plan_id=p.id
-            WHERE p.account_id=?
-            """, (row, index) -> {
-                UUID id = row.getObject("id", UUID.class);
-                String state = row.getString("state");
-                if (id.equals(excludedPlan) || "archived".equals(state) || "completed".equals(state)) return false;
-                if ("active".equals(state) && row.getDate("start_date").toLocalDate()
-                        .plusDays(row.getInt("day_count") + 90L).compareTo(today) <= 0) return false;
-                Set<String> content = new HashSet<>();
-                json.parse(row.getString("membership")).properties()
-                        .forEach(entry -> content.add(entry.getValue().asText()));
-                return freeContent(content);
-            }, owner).stream().filter(Boolean::booleanValue).toList().size();
+        return ledger.activeFreePlans(owner, excludedPlan, today, this::freeContent);
     }
 }

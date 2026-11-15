@@ -1,6 +1,9 @@
 package com.lookahead.domain;
 
+import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
 import jakarta.servlet.FilterChain;
+import software.amazon.awssdk.core.exception.SdkClientException;
+import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -50,6 +53,25 @@ public class DomainStorageFailureFilter extends OncePerRequestFilter {
             response.reset(); response.setStatus(503); response.setContentType("application/json");
             response.setHeader("Cache-Control", "no-store");
             response.getWriter().write("{\"status\":503,\"code\":\"ACCOUNT_STORAGE_UNAVAILABLE\",\"message\":\"Account storage is unavailable; retain your work and retry\"}");
+        }
+        // DLV-970: the DynamoDB store before MVC (bearer authentication, session checks): the same 503 for a failed write
+        // (Unavailable), a failed read (DynamoOwnerUnavailable, an Unavailable) or the SDK's own failure, and a condition
+        // that did not hold is the existing conflict answer. The SDK message never reaches the log or the body.
+        catch (DynamoWrites.Unavailable | SdkClientException | DynamoDbException error) {
+            if (response.isCommitted()) throw error;
+            unavailable(request, "ACCOUNT_STORAGE_UNAVAILABLE", "Account storage unavailable", error);
+            response.reset(); response.setStatus(503); response.setContentType("application/json");
+            response.setHeader("Cache-Control", "no-store");
+            response.getWriter().write("{\"status\":503,\"code\":\"ACCOUNT_STORAGE_UNAVAILABLE\",\"message\":\"Account storage is unavailable; retain your work and retry\"}");
+        }
+        catch (DynamoWrites.Conflict error) {
+            if (response.isCommitted()) throw error;
+            Events.failed(Events.EVENT, "request.dependency", "REVISION_CONFLICT").addKeyValue("url.path", Events.path(request))
+                    .addKeyValue("http.status", 409).addKeyValue("error.type", Events.types(error))
+                    .log("Account storage conflict on {}: REVISION_CONFLICT ({}); answered 409", Events.path(request), Events.types(error));
+            response.reset(); response.setStatus(409); response.setContentType("application/json");
+            response.setHeader("Cache-Control", "no-store");
+            response.getWriter().write("{\"status\":409,\"code\":\"REVISION_CONFLICT\",\"message\":\"The record changed while you were saving; reload before retrying\"}");
         }
     }
 }

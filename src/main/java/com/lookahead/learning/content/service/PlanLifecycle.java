@@ -12,27 +12,25 @@ import java.time.*;
 import java.util.*;
 import static com.lookahead.learning.content.util.PayloadReaders.*;
 
-/** Called inside PlanService's owner-locked transaction. Reads never write or infer dates. */
+/** Called inside PlanService's owner-locked transaction. Reads never write or infer dates. DLV-970: rows sit behind {@link PlanLifecycleStore}. */
 @Service @Profile("accounts")
 public class PlanLifecycle {
-    record Entry(UUID id,String state,LocalDate start,int days,int minutes,Set<String> subjects) {
+    public record Entry(UUID id,String state,LocalDate start,int days,int minutes,Set<String> subjects) {
         LocalDate end(){return start.plusDays(days);}
         String effective(LocalDate today){return state.equals("active")&&!today.isBefore(end().plusDays(90))?"archived":state;}
         PlanReservationPolicy.Reservation reservation(){return new PlanReservationPolicy.Reservation(id,subjects,start,days,minutes);}
     }
-    private final JdbcTemplate jdbc;
+    private final PlanLifecycleStore store;
     private final ObjectMapper json;
     private final Clock clock;
     @org.springframework.beans.factory.annotation.Autowired
-    public PlanLifecycle(JdbcTemplate jdbc,ObjectMapper json){this(jdbc,json,Clock.systemUTC());}
-    public PlanLifecycle(JdbcTemplate jdbc,ObjectMapper json,Clock clock){this.jdbc=jdbc;this.json=json;this.clock=clock;}
+    public PlanLifecycle(PlanLifecycleStore store,ObjectMapper json){this(store,json,Clock.systemUTC());}
+    public PlanLifecycle(PlanLifecycleStore store,ObjectMapper json,Clock clock){this.store=store;this.json=json;this.clock=clock;}
+    /** PostgreSQL callers and tests: the rows on this JdbcTemplate. */
+    public PlanLifecycle(JdbcTemplate jdbc,ObjectMapper json){this(new JdbcPlanLifecycleStore(jdbc,json),json);}
+    public PlanLifecycle(JdbcTemplate jdbc,ObjectMapper json,Clock clock){this(new JdbcPlanLifecycleStore(jdbc,json),json,clock);}
     private LocalDate today(){return LocalDate.now(clock.withZone(ZoneOffset.UTC));}
-    private List<Entry> entries(UUID owner){
-        return jdbc.query("SELECT * FROM plan_lifecycle WHERE account_id=? ORDER BY plan_id",(r,n)->{
-            var subjects=new TreeSet<String>();json.readTree(r.getString("subject_ids")).forEach(x->subjects.add(x.asText()));
-            return new Entry(r.getObject("plan_id",UUID.class),r.getString("state"),r.getDate("start_date").toLocalDate(),r.getInt("day_count"),r.getInt("daily_minutes"),Set.copyOf(subjects));
-        },owner);
-    }
+    private List<Entry> entries(UUID owner){return store.entries(owner);}
     public ObjectNode view(UUID owner,UUID id){
         var row=entries(owner).stream().filter(e->e.id.equals(id)).findFirst().orElse(null);
         var result=json.createObjectNode().put("state",row==null?"unactivated":row.effective(today()));
@@ -55,7 +53,7 @@ public class PlanLifecycle {
         if(state.equals("active")){reserve(owner,id,snapshot,date(start));return;}
         var old=entries(owner).stream().filter(e->e.id.equals(id)).findFirst().orElse(null);
         if(old==null)throw new AccountFailure(409,"PLAN_DATES_REQUIRED","Activate this undated plan with explicit dates first");
-        jdbc.update("UPDATE plan_lifecycle SET state=? WHERE account_id=? AND plan_id=?",state,owner,id);
+        store.setState(owner,id,state);
     }
     private LocalDate date(JsonNode input){
         require(input.isString()&&input.asText().matches("[0-9]{4}-[0-9]{2}-[0-9]{2}"),"An explicit UTC startDate is required");
@@ -76,12 +74,6 @@ public class PlanLifecycle {
             var failure=result.violations().getFirst();
             throw new AccountFailure(409,"PLAN_"+failure.code().name(),failure.detail());
         }
-        jdbc.update("""
-            INSERT INTO plan_lifecycle(account_id,plan_id,state,start_date,day_count,daily_minutes,subject_ids)
-            VALUES (?,?,'active',?,?,?,?::jsonb)
-            ON CONFLICT(plan_id) DO UPDATE SET state='active',start_date=excluded.start_date,
-              day_count=excluded.day_count,daily_minutes=excluded.daily_minutes,subject_ids=excluded.subject_ids
-            WHERE plan_lifecycle.account_id=excluded.account_id
-            """,owner,id,java.sql.Date.valueOf(start),days,minutes,json.writeValueAsString(subjects));
+        store.reserve(owner,id,start,days,minutes,subjects);
     }
 }

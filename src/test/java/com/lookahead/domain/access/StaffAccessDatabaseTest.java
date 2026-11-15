@@ -36,7 +36,7 @@ class StaffAccessDatabaseTest {
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V6__staff_access.sql")));
         // Only what the People list reads of V4: who has author (owner) access.
         jdbc.execute("CREATE TABLE cloud_accounts(account_id uuid PRIMARY KEY, author_access boolean NOT NULL DEFAULT false)");
-        repository=new StaffAccessRepository(jdbc,new ObjectMapper());
+        repository=new JdbcStaffAccessRepository(jdbc,new ObjectMapper());
         var catalog=mock(SnapshotValidator.class);when(catalog.allTopicIds()).thenReturn(Set.of("java","system-design"));
         service=new StaffAccessService(repository,new LocalAuthorAccess(new MockEnvironment().withProperty("app.deployment-environment","dev")),catalog);
         owner=account(true);learner=account(false);other=account(false);
@@ -104,7 +104,7 @@ class StaffAccessDatabaseTest {
             f->assertThat(f.code()).isEqualTo("ACCESS_READER_REQUIRED"));
         // The Local author account counts as the owner too.
         var local=new StaffAccessRepository.Assignment(UUID.randomUUID(),LocalAuthorAccess.ACCOUNT_ID,null,Set.of(),Set.of(),false,1);
-        var stubbed=mock(StaffAccessRepository.class);
+        var stubbed=mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
         when(stubbed.list()).thenReturn(List.of(local));when(stubbed.owners()).thenReturn(Set.of());
         when(stubbed.forAccount(coauthor.accountId())).thenReturn(new StaffAccessRepository.Assignment(UUID.randomUUID(),coauthor.accountId(),null,Set.of("co-author"),Set.of(),false,1));
         var catalog=mock(SnapshotValidator.class);

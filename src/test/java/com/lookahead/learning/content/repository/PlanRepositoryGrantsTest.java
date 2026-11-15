@@ -23,7 +23,7 @@ class PlanRepositoryGrantsTest {
     @Test void staffScopeIsDroppedFromPlanGrants() {
         when(jdbc.queryForList(anyString(), eq(String.class), eq(account))).thenReturn(List.of("look-ahead:system-design"));
         when(accounts.findTopicGrants(account)).thenReturn(Set.of("staff:documents", "learn:core-java"));
-        var repository = new PlanRepository(jdbc, new PlanJson(new JsonMapper()));
+        var repository = new JdbcPlanRepository(jdbc, new PlanJson(new JsonMapper()));
         repository.accounts(accounts);
         assertThat(repository.grants(account)).containsExactlyInAnyOrder("blaze:system-design", "learn:core-java");
     }

@@ -49,7 +49,7 @@ class DomainActivationConfigurationTest {
             assertThat(environment.getProperty("management.server.port", Integer.class)).isEqualTo(8081);
             assertThat(environment.getProperty("management.server.ssl.enabled", Boolean.class)).isFalse();
             assertThat(environment.getProperty("management.endpoint.health.group.readiness.include"))
-                    .isEqualTo("readinessState,domainDatabase,contentPublication");
+                    .isEqualTo("readinessState,domainDatabase,dynamodb,contentPublication");
             assertThat(environment.getProperty("spring.flyway.enabled", Boolean.class)).isFalse();
             assertThat(environment.getProperty("app.local-test.seed-enabled", Boolean.class)).isFalse();
             assertThat(environment.getProperty("app.local-test.author-enabled", Boolean.class)).isFalse();

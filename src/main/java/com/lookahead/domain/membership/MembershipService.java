@@ -4,15 +4,11 @@ import com.lookahead.domain.Events;
 import com.lookahead.domain.access.StaffAccessService;
 import com.lookahead.learning.content.security.AccountPrincipal;
 import com.lookahead.learning.content.exception.AccountFailure;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.transaction.PlatformTransactionManager;
 import tools.jackson.databind.*;
 import tools.jackson.databind.node.ObjectNode;
 import java.time.*;
 import java.util.*;
-import java.sql.Timestamp;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import static com.lookahead.domain.membership.MembershipRules.*;
@@ -30,9 +26,8 @@ public class MembershipService {
     /** What the purchase transaction decided, for its log line once it has committed. {@code kind}: new, renewal, upgrade, change or staff-upgrade. */
     private record Requested(UUID id,boolean reused,String plan,int price,String kind,Integer fullPrice) {}
     static final int PAYMENT_ATTEMPTS=3;
-    private final JdbcTemplate jdbc;
+    private final MembershipStore store;
     private final ObjectMapper json;
-    private final TransactionTemplate tx;
     private final PaymentGateway payments;
     private final StaffAccessService staff;
     private final Clock clock;
@@ -42,39 +37,40 @@ public class MembershipService {
     // One local payment workflow at a time leaves a connection for the independent mock provider.
     private final java.util.concurrent.Semaphore paymentSlot = new java.util.concurrent.Semaphore(1, true);
     @org.springframework.beans.factory.annotation.Autowired
-    public MembershipService(JdbcTemplate jdbc,ObjectMapper json,PlatformTransactionManager manager,PaymentGateway payments,StaffAccessService staff) {
-        this(jdbc,json,manager,payments,staff,Clock.systemUTC());
+    public MembershipService(MembershipStore store,ObjectMapper json,PaymentGateway payments,StaffAccessService staff) {
+        this(store,json,payments,staff,Clock.systemUTC());
     }
-    public MembershipService(JdbcTemplate jdbc,ObjectMapper json,PlatformTransactionManager manager,PaymentGateway payments,StaffAccessService staff,Clock clock) {
-        this.jdbc=jdbc;this.json=json;this.tx=new TransactionTemplate(manager);this.payments=payments;this.staff=staff;this.clock=clock;
+    public MembershipService(MembershipStore store,ObjectMapper json,PaymentGateway payments,StaffAccessService staff,Clock clock) {
+        this.store=store;this.json=json;this.payments=payments;this.staff=staff;this.clock=clock;
         this.ownerApproval=payments instanceof OwnerApprovalPaymentGateway;
     }
-    private Instant now(){return clock.instant();}
-    private ObjectNode parse(String value){return (ObjectNode)json.readTree(value);}
-    private static Timestamp ts(Instant value){return Timestamp.from(value);}
-    private Set<String> catalogs(JsonNode plan){var out=new HashSet<String>();plan.path("scope").path("catalogs").forEach(x->out.add(x.asText()));return out;}
-    private ObjectNode definition(String id) {
-        return jdbc.query("SELECT definition,price_cents FROM membership_plans WHERE id=?",(r,n)->{var p=parse(r.getString(1));p.put("priceCents",r.getInt(2));return p;},id)
-            .stream().findFirst().orElseThrow(()->invalid("Unknown membership plan"));
+    /** PostgreSQL convenience (existing tests and fixtures): the JDBC store built from the template and manager. */
+    public MembershipService(org.springframework.jdbc.core.JdbcTemplate jdbc,ObjectMapper json,org.springframework.transaction.PlatformTransactionManager manager,PaymentGateway payments,StaffAccessService staff) {
+        this(new JdbcMembershipStore(jdbc,json,manager),json,payments,staff,Clock.systemUTC());
     }
+    public MembershipService(org.springframework.jdbc.core.JdbcTemplate jdbc,ObjectMapper json,org.springframework.transaction.PlatformTransactionManager manager,PaymentGateway payments,StaffAccessService staff,Clock clock) {
+        this(new JdbcMembershipStore(jdbc,json,manager),json,payments,staff,clock);
+    }
+    private Instant now(){return clock.instant();}
+    private Set<String> catalogs(JsonNode plan){var out=new HashSet<String>();plan.path("scope").path("catalogs").forEach(x->out.add(x.asText()));return out;}
+    private static ObjectNode require(ObjectNode definition){if(definition==null)throw invalid("Unknown membership plan");return definition;}
+    private ObjectNode definition(String id){return require(store.definition(id));}
     public List<ObjectNode> catalog() {
-        return jdbc.queryForList("SELECT id FROM membership_plans ORDER BY price_cents,id",String.class).stream().map(id->{var p=definition(id);p.put("onSale",p.path("pending").isEmpty()&&!id.equals("free")&&(!p.path("group").asText().equals("promo")||saleAllows(id)));return p;}).toList();
+        return store.catalog().stream().map(p->{String id=p.path("id").asText();p.put("onSale",p.path("pending").isEmpty()&&!id.equals("free")&&(!p.path("group").asText().equals("promo")||saleAllows(id)));return p;}).toList();
     }
     public ObjectNode activeSale() {
-        return jdbc.query("SELECT * FROM membership_sales WHERE stopped_at IS NULL AND starts_at<=? AND ends_at>? ORDER BY starts_at DESC LIMIT 1",(r,n)->{
-            var p=json.createObjectNode();p.put("id",r.getString("id"));p.put("template",r.getString("template"));p.put("greeting",r.getString("greeting"));p.put("startsAt",r.getTimestamp("starts_at").toInstant().toString());p.put("endsAt",r.getTimestamp("ends_at").toInstant().toString());p.set("planIds",json.readTree(r.getString("plan_ids")));return p;
-        },ts(now()),ts(now())).stream().findFirst().orElse(null);
+        return store.activeSale(now());
     }
-    private boolean saleAllows(String id){var sale=activeSale();if(sale==null)return false;for(var value:sale.path("planIds"))if(value.asText().equals(id))return true;return false;}
+    private boolean saleAllows(String id){return saleAllows(activeSale(),id);}
+    private static boolean saleAllows(ObjectNode sale,String id){if(sale==null)return false;for(var value:sale.path("planIds"))if(value.asText().equals(id))return true;return false;}
     private void identity(AccountPrincipal actor){if(actor==null||!actor.isEnabled())throw new AccountFailure(401,"AUTHENTICATION_REQUIRED","Sign in to continue");}
-    private void audit(UUID actor,String action,String subject,JsonNode detail){jdbc.update("INSERT INTO membership_audit(id,actor_id,action,subject_id,detail) VALUES (?,?,?,?,?::jsonb)",UUID.randomUUID(),actor,action,subject,detail.toString());}
-    private ObjectNode purchase(UUID account,UUID id,boolean lock) {
-        return jdbc.query("SELECT * FROM membership_purchases WHERE account_id=? AND id=?"+(lock?" FOR UPDATE":""),(r,n)->{
-            var p=json.createObjectNode();p.put("id",r.getString("id"));p.put("planId",r.getString("plan_id"));p.set("plan",json.readTree(r.getString("plan_snapshot")));p.put("pricePaidCents",r.getInt("price_paid_cents"));p.put("currency","USD");p.put("status",r.getString("status"));p.put("startsAt",r.getTimestamp("starts_at").toInstant().toString());p.put("endsAt",r.getTimestamp("ends_at").toInstant().toString());p.put("source",r.getString("source"));p.put("provider","mock");p.put("providerPaymentId",r.getString("provider_payment_id"));p.put("providerStatus",r.getString("provider_status"));p.put("replacesId",r.getString("replaces_id"));p.put("supersededAt",r.getTimestamp("superseded_at")==null?null:r.getTimestamp("superseded_at").toInstant().toString());p.put("fingerprint",r.getString("request_fingerprint"));p.putArray("courses");if(r.getString("discount")==null)p.putNull("discount");else p.set("discount",json.readTree(r.getString("discount")));return p;
-        },account,id).stream().findFirst().orElseThrow(()->new AccountFailure(404,"PURCHASE_NOT_FOUND","Purchase not found"));
-    }
-    public ObjectNode get(AccountPrincipal actor,UUID id){identity(actor);var p=purchase(actor.accountId(),id,false);p.remove("fingerprint");return p;}
-    public List<ObjectNode> access(AccountPrincipal actor,UUID target) {
+    private static AccountFailure purchaseNotFound(){return new AccountFailure(404,"PURCHASE_NOT_FOUND","Purchase not found");}
+    private ObjectNode purchase(UUID account,UUID id){var p=store.purchase(account,id);if(p==null)throw purchaseNotFound();return p;}
+    private static ObjectNode purchase(MembershipStore.Work work,UUID account,UUID id,boolean lock){var p=work.purchase(account,id,lock);if(p==null)throw purchaseNotFound();return p;}
+    public ObjectNode get(AccountPrincipal actor,UUID id){identity(actor);var p=purchase(actor.accountId(),id);p.remove("fingerprint");return p;}
+    public List<ObjectNode> access(AccountPrincipal actor,UUID target) {return access(null,actor,target);}
+    /** {@code work}: inside a purchase transaction, the same reads through it. */
+    private List<ObjectNode> access(MembershipStore.Work work,AccountPrincipal actor,UUID target) {
         identity(actor);
         if (!actor.accountId().equals(target)) {
             var permissions = staff.permissions(actor);
@@ -82,8 +78,8 @@ public class MembershipService {
                     && !"co-author".equals(permissions.feedbackRole()))
                 throw new AccountFailure(403, "STAFF_REQUIRED", "Author, co-author or admin required");
         }
-        return jdbc.queryForList("SELECT id FROM membership_purchases WHERE account_id=? AND status IN ('succeeded','scheduled','expired') ORDER BY created_at DESC",UUID.class,target).stream().map(id->{
-            var p=purchase(target,id,false);p.remove("fingerprint");Instant start=Instant.parse(p.path("startsAt").asText()),end=Instant.parse(p.path("endsAt").asText());
+        return (work==null?store.accessIds(target):work.accessIds(target)).stream().map(id->{
+            var p=work==null?purchase(target,id):purchase(work,target,id,false);p.remove("fingerprint");Instant start=Instant.parse(p.path("startsAt").asText()),end=Instant.parse(p.path("endsAt").asText());
             p.put("status",!p.path("supersededAt").isNull()||!now().isBefore(end)?"expired":now().isBefore(start)?"scheduled":"active");return p;
         }).toList();
     }
@@ -93,11 +89,10 @@ public class MembershipService {
      */
     private void requireTestAccount(AccountPrincipal actor){
         if(!ownerApproval)return;
-        if(!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM test_account_registry WHERE account_id=? AND creation_state='active' AND creator_id IS NOT NULL AND username LIKE '%@lookahead.dev')",Boolean.class,actor.accountId())))
+        if(!store.staffCreatedTestAccount(actor.accountId()))
             throw new AccountFailure(403,"PURCHASES_TEST_ACCOUNTS_ONLY",TEST_ACCOUNTS_ONLY);
     }
     private void requireStaff(AccountPrincipal actor){var permissions=staff.permissions(actor);if(!permissions.manageAccess()&&!permissions.triageFeedback())throw new AccountFailure(403,"STAFF_REQUIRED","Author or admin required");}
-    private void accountLock(UUID account){if(jdbc.queryForList("SELECT id FROM platform_subjects WHERE id=? FOR UPDATE",UUID.class,account).isEmpty())throw new AccountFailure(404,"ACCOUNT_NOT_FOUND","Account not found");}
     private String fingerprint(Buy request,String source,UUID actor){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest((request.planId()+"|"+request.replacesId()+"|"+source+"|"+actor).getBytes(StandardCharsets.UTF_8)));}catch(Exception e){throw new IllegalStateException(e);}}
     public ObjectNode buy(AccountPrincipal actor,UUID target,Buy request,String key,boolean staffUpgrade) {return buy(actor,target,request,key,staffUpgrade,null);}
     /** {@code requestedBy}: DEV, the staff account using the test account's session (recorded on the request), or null. */
@@ -137,24 +132,23 @@ public class MembershipService {
         if(key==null||!key.matches("[A-Za-z0-9_-]{8,128}"))throw invalid("A valid Idempotency-Key is required");
         if(request==null||request.planId()==null||(request.chosenCourses()!=null&&!request.chosenCourses().isEmpty()))throw invalid("Course purchases are not available");
         String source=staffUpgrade?"staff-upgrade":"checkout",fingerprint=fingerprint(request,source,actor.accountId());
-        Requested requested=tx.execute(s->{
-            jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor.accountId().toString());
-            accountLock(target);
-            var existing=jdbc.queryForList("SELECT id FROM membership_purchases WHERE account_id=? AND idempotency_key=?",UUID.class,target,key);
-            if(!existing.isEmpty()){var prior=purchase(target,existing.getFirst(),false);if(!fingerprint.equals(prior.path("fingerprint").asText()))throw new AccountFailure(409,"IDEMPOTENCY_CONFLICT","Key was used for a different request");return new Requested(existing.getFirst(),true,prior.path("planId").asText(),prior.path("pricePaidCents").asInt(),null,null);}
+        Requested requested=store.transact(actor.accountId(),work->{
+            work.lockAccount(target);
+            var existing=work.purchasesByKey(target,key);
+            if(!existing.isEmpty()){var prior=purchase(work,target,existing.getFirst(),false);if(!fingerprint.equals(prior.path("fingerprint").asText()))throw new AccountFailure(409,"IDEMPOTENCY_CONFLICT","Key was used for a different request");return new Requested(existing.getFirst(),true,prior.path("planId").asText(),prior.path("pricePaidCents").asInt(),null,null);}
             // A DEV request that a Reset superseded grants nothing and no longer blocks; every other pending purchase does.
-            var pending=jdbc.queryForList("SELECT coalesce(provider_status,'') FROM membership_purchases WHERE account_id=? AND status='pending' AND (coalesce(provider_status,'')<>? OR superseded_at IS NULL)",String.class,target,OwnerApprovalPaymentGateway.AWAITING);
+            var pending=work.pendingProviderStatuses(target,OwnerApprovalPaymentGateway.AWAITING);
             if(pending.contains(OwnerApprovalPaymentGateway.AWAITING))throw new AccountFailure(409,"PURCHASE_REQUEST_PENDING","A request is already waiting for the owner or an admin.");
             if(!pending.isEmpty())throw new AccountFailure(409,"PURCHASE_PENDING","Resolve the pending purchase before starting another");
-            ObjectNode plan=definition(request.planId());
+            ObjectNode plan=require(work.definition(request.planId()));
             if(!plan.path("pending").isEmpty()||request.planId().equals("free"))throw invalid("Plan is not purchasable");
-            if(plan.path("group").asText().equals("promo")&&!saleAllows(request.planId()))throw new AccountFailure(409,"SALE_INACTIVE","This promo is available only during its sale");
+            if(plan.path("group").asText().equals("promo")&&!saleAllows(work.activeSale(now()),request.planId()))throw new AccountFailure(409,"SALE_INACTIVE","This promo is available only during its sale");
             Instant starts=now(),ends=end(starts,plan.path("duration").path("kind").asText(),plan.path("duration").path("count").asInt());int price=plan.path("priceCents").asInt();
             String kind="new";Integer fullPrice=null;
             if(request.replacesId()!=null){
-                var old=purchase(target,request.replacesId(),true);var previous=old.path("plan");Instant oldStart=Instant.parse(old.path("startsAt").asText()),oldEnd=Instant.parse(old.path("endsAt").asText());
+                var old=purchase(work,target,request.replacesId(),true);var previous=old.path("plan");Instant oldStart=Instant.parse(old.path("startsAt").asText()),oldEnd=Instant.parse(old.path("endsAt").asText());
                 if(!Set.of("succeeded","scheduled").contains(old.path("status").asText())||!old.path("supersededAt").isNull()||now().isBefore(oldStart)||!now().isBefore(oldEnd))throw invalid("An active purchase is required");
-                if(jdbc.queryForObject("SELECT count(*) FROM membership_purchases WHERE replaces_id=? AND status IN ('pending','scheduled')",Integer.class,request.replacesId())>0)throw new AccountFailure(409,"CHANGE_ALREADY_SCHEDULED","An existing change is already scheduled");
+                if(work.replacementsScheduled(request.replacesId())>0)throw new AccountFailure(409,"CHANGE_ALREADY_SCHEDULED","An existing change is already scheduled");
                 if(old.path("planId").asText().equals(request.planId())){if(staffUpgrade)throw new AccountFailure(409,"STAFF_DOWNGRADE_REJECTED","Choose a larger plan");starts=oldEnd;ends=end(starts,plan.path("duration").path("kind").asText(),plan.path("duration").path("count").asInt());kind="renewal";}
                 else {
                 if(!YEARLY.contains(old.path("planId").asText())||!YEARLY.contains(request.planId()))throw invalid("Change rules apply only between different yearly plans");
@@ -162,15 +156,15 @@ public class MembershipService {
                 else {if(staffUpgrade)throw new AccountFailure(409,"STAFF_DOWNGRADE_REJECTED","Staff cannot reduce or replace access");requireChangeWindow(now(),oldEnd);starts=oldEnd;ends=end(starts,"years",1);kind="change";}
                 }
             } else {
-                var active=access(actor,target).stream().filter(p->p.path("status").asText().equals("active")||p.path("status").asText().equals("scheduled")).toList();
+                var active=access(work,actor,target).stream().filter(p->p.path("status").asText().equals("active")||p.path("status").asText().equals("scheduled")).toList();
                 if(!active.isEmpty())throw new AccountFailure(409,"EXISTING_MEMBERSHIP","Select an explicit plan change for existing access");
             }
             if(staffUpgrade){price=0;kind="staff-upgrade";}
             else if(request.expectedPriceCents()!=null&&request.expectedPriceCents()!=price)throw new AccountFailure(409,"PRICE_CHANGED","The price changed. Review a fresh quote before purchasing");
-            UUID next=UUID.randomUUID();jdbc.update("INSERT INTO membership_purchases(id,account_id,plan_id,plan_snapshot,request_fingerprint,idempotency_key,price_paid_cents,status,starts_at,ends_at,source,actor_id,provider,replaces_id) VALUES (?,?,?,?::jsonb,?,?,?,'pending',?,?,?,?, 'mock',?)",next,target,request.planId(),plan.toString(),fingerprint,key,price,ts(starts),ts(ends),source,actor.accountId(),request.replacesId());
+            UUID next=UUID.randomUUID();work.insertPurchase(new MembershipStore.NewPurchase(next,target,request.planId(),plan,fingerprint,key,price,starts,ends,source,actor.accountId(),request.replacesId()));
             // DEV: the request's audit row also names who used the test account (its purchase actor is the account itself).
             var created=plan;if(ownerApproval&&!staffUpgrade&&requestedBy!=null){created=plan.deepCopy();created.put("requestedBy",requestedBy.toString());}
-            audit(actor.accountId(),"purchase-created",next.toString(),created);
+            work.audit(actor.accountId(),"purchase-created",next.toString(),created);
             return new Requested(next,false,request.planId(),price,kind,fullPrice);
         });
         var line=(requested.reused()?Events.success(Events.PAYMENT,"purchase.reused"):Events.success(Events.PAYMENT,"purchase.requested"))
@@ -186,26 +180,27 @@ public class MembershipService {
     }
     private ObjectNode process(AccountPrincipal actor,UUID target,UUID id) {
         var settled=new boolean[1];
-        var done=tx.execute(s->{
-            jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor.accountId().toString());
-            accountLock(target);var p=purchase(target,id,true);
+        var done=store.transact(actor.accountId(),work->{
+            // DLV-970: the store re-runs the body after a lost race; only the run that commits decides whether it settled.
+            settled[0]=false;
+            work.lockAccount(target);var p=purchase(work,target,id,true);
             if(!p.path("status").asText().equals("pending")){p.remove("fingerprint");return p;}
             // A DEV request waits for its decision: retrying it never asks the provider again.
             if(p.path("providerStatus").asText().equals(OwnerApprovalPaymentGateway.AWAITING)){p.remove("fingerprint");return p;}
             PaymentGateway.Result result=null;long deadline=System.nanoTime()+Duration.ofSeconds(3).toNanos();
-            int already=jdbc.queryForObject("SELECT count(*) FROM membership_payment_attempts WHERE purchase_id=?",Integer.class,id);
+            int already=work.paymentAttempts(id);
             boolean staff=p.path("source").asText().equals("staff-upgrade");
             int tried=already;String last=null;boolean stopped=false;
             for(int attempt=already;attempt<PAYMENT_ATTEMPTS&&System.nanoTime()<deadline;attempt++) {
                 tried=attempt+1;
                 try {
                     result=staff?new PaymentGateway.Result("pi_mock_staff_"+id,"succeeded",0,"USD"):payments.create("membership-"+id,p.path("pricePaidCents").asInt(),"USD");
-                    jdbc.update("INSERT INTO membership_payment_attempts VALUES (?,?,?,NULL,now())",UUID.randomUUID(),id,result.status());break;
+                    work.recordAttempt(id,result.status(),null);break;
                 } catch(PaymentGateway.Failure failure){
-                    jdbc.update("INSERT INTO membership_payment_attempts VALUES (?,?,?,?,now())",UUID.randomUUID(),id,"error",failure.getMessage());
+                    work.recordAttempt(id,"error",failure.getMessage());
                     last=failure.getMessage();
                     if(!failure.transientFailure()){
-                        jdbc.update("UPDATE membership_purchases SET status='failed',provider_status='validation-failed' WHERE id=?",id);
+                        work.failValidation(id);
                         attemptLine(Events.failed(Events.PAYMENT,"payment.attempt",last),actor,target,id,tried)
                             .log("Payment attempt {} of {} for purchase {} failed: {} (not retryable); purchase failed, no access granted",tried,PAYMENT_ATTEMPTS,id,last);
                         stopped=true;break;
@@ -248,23 +243,22 @@ public class MembershipService {
                         .log("Payment for purchase {} not settled on attempt {} of {} (provider status {}); purchase stays pending",id,tried,PAYMENT_ATTEMPTS,provider);
                 }
             }
-            if(result!=null&&apply(actor,target,id,p,result))settled[0]=true;
-            var finished=purchase(target,id,false);finished.remove("fingerprint");return finished;
+            if(result!=null&&apply(work,actor,target,id,p,result))settled[0]=true;
+            var finished=purchase(work,target,id,false);finished.remove("fingerprint");return finished;
         });
         if(settled[0])membershipLine(actor,target,done);
         return done;
     }
     /** The provider's answer on the purchase: succeeded or scheduled (and the replaced one superseded), failed, or pending. */
-    private boolean apply(AccountPrincipal actor,UUID target,UUID id,ObjectNode p,PaymentGateway.Result result){
+    private boolean apply(MembershipStore.Work work,AccountPrincipal actor,UUID target,UUID id,ObjectNode p,PaymentGateway.Result result){
         if(result.amountCents()!=p.path("pricePaidCents").asInt()||!result.currency().equals("USD"))throw new IllegalStateException("Provider amount mismatch");
         boolean success=result.status().equals("succeeded");
         String state=success?(Instant.parse(p.path("startsAt").asText()).isAfter(now())?"scheduled":"succeeded"):result.status().equals("requires_payment_method")?"failed":"pending";
-        jdbc.update("UPDATE membership_purchases SET status=?,provider_payment_id=?,provider_status=?,updated_at=now() WHERE id=?",state,result.id(),result.status(),id);
+        work.settle(id,state,result.id(),result.status());
         if(!success)return false;
-        int inserted=jdbc.update("INSERT INTO membership_provider_events(provider,event_id,purchase_id) VALUES ('mock',?,?) ON CONFLICT DO NOTHING",result.id()+":succeeded",id);
-        if(inserted!=1)return false;
-        if(!p.path("replacesId").isNull()&&!state.equals("scheduled"))jdbc.update("UPDATE membership_purchases SET superseded_at=? WHERE id=? AND account_id=?",ts(now()),UUID.fromString(p.path("replacesId").asText()),target);
-        audit(actor.accountId(),"purchase-succeeded",id.toString(),json.createObjectNode().put("providerPaymentId",result.id()));
+        if(!work.recordProviderEvent(result.id()+":succeeded",id))return false;
+        if(!p.path("replacesId").isNull()&&!state.equals("scheduled"))work.supersede(target,UUID.fromString(p.path("replacesId").asText()),now());
+        work.audit(actor.accountId(),"purchase-succeeded",id.toString(),json.createObjectNode().put("providerPaymentId",result.id()));
         return true;
     }
     private static org.slf4j.spi.LoggingEventBuilder attemptLine(org.slf4j.spi.LoggingEventBuilder line,AccountPrincipal actor,UUID target,UUID purchase,int attempt){
@@ -296,9 +290,9 @@ public class MembershipService {
         if(!plan.path("pending").isEmpty()||request.planId().equals("free"))throw invalid("Plan is not purchasable");
         if(plan.path("group").asText().equals("promo")&&!saleAllows(request.planId()))throw new AccountFailure(409,"SALE_INACTIVE","Sale is not active");
         Instant starts=now(),ends=end(starts,plan.path("duration").path("kind").asText(),plan.path("duration").path("count").asInt());int price=plan.path("priceCents").asInt();
-        if(request.replacesId()!=null){var old=purchase(actor.accountId(),request.replacesId(),false);Instant oldStart=Instant.parse(old.path("startsAt").asText()),oldEnd=Instant.parse(old.path("endsAt").asText());
+        if(request.replacesId()!=null){var old=purchase(actor.accountId(),request.replacesId());Instant oldStart=Instant.parse(old.path("startsAt").asText()),oldEnd=Instant.parse(old.path("endsAt").asText());
             if(!Set.of("succeeded","scheduled").contains(old.path("status").asText())||!old.path("supersededAt").isNull()||now().isBefore(oldStart)||!now().isBefore(oldEnd))throw invalid("An active purchase is required");
-            if(jdbc.queryForObject("SELECT count(*) FROM membership_purchases WHERE replaces_id=? AND status IN ('pending','scheduled')",Integer.class,request.replacesId())>0)throw new AccountFailure(409,"CHANGE_ALREADY_SCHEDULED","An existing change is already scheduled");
+            if(store.replacementsScheduled(request.replacesId())>0)throw new AccountFailure(409,"CHANGE_ALREADY_SCHEDULED","An existing change is already scheduled");
             if(old.path("planId").asText().equals(request.planId())){starts=oldEnd;ends=end(starts,plan.path("duration").path("kind").asText(),plan.path("duration").path("count").asInt());}
             else {
             if(!YEARLY.contains(old.path("planId").asText())||!YEARLY.contains(request.planId())||!old.path("supersededAt").isNull()||now().isBefore(oldStart)||!now().isBefore(oldEnd)||!Set.of("succeeded","scheduled").contains(old.path("status").asText()))throw invalid("An active yearly plan is required");
@@ -322,11 +316,11 @@ public class MembershipService {
      */
     public PendingRequest pendingRequest(UUID account){
         if(!ownerApproval)return null;
-        var ids=jdbc.queryForList("SELECT id FROM membership_purchases WHERE account_id=? AND status='pending' AND provider_status=? AND superseded_at IS NULL ORDER BY created_at,id LIMIT 1",UUID.class,account,OwnerApprovalPaymentGateway.AWAITING);
-        if(ids.isEmpty())return null;
-        UUID id=ids.getFirst();
-        var p=purchase(account,id,false);
-        Timestamp requested=jdbc.queryForObject("SELECT created_at FROM membership_purchases WHERE id=?",Timestamp.class,id);
+        var row=store.pendingRequest(account,OwnerApprovalPaymentGateway.AWAITING);
+        if(row==null)return null;
+        UUID id=row.id();
+        var p=purchase(account,id);
+        Instant requested=row.createdAt();
         var old=replaced(account,p);
         String kind=requestKind(old,p);
         var body=json.createObjectNode().put("purchaseId",id.toString()).put("kind",kind);
@@ -334,12 +328,12 @@ public class MembershipService {
         body.putObject("toPlan").put("code",p.path("planId").asText()).put("name",p.path("plan").path("name").asText());
         body.put("priceCents",p.path("pricePaidCents").asInt()).put("currency","USD");
         if(kind.equals("upgrade"))body.put("priceDifferenceCents",p.path("plan").path("priceCents").asInt()-old.path("plan").path("priceCents").asInt());
-        body.put("startsAt",p.path("startsAt").asText()).put("endsAt",p.path("endsAt").asText()).put("requestedAt",requested.toInstant().toString());
+        body.put("startsAt",p.path("startsAt").asText()).put("endsAt",p.path("endsAt").asText()).put("requestedAt",requested.toString());
         return new PendingRequest(body,requestedBy(id));
     }
     /** The purchase a request replaces, or null for a new plan. */
     private ObjectNode replaced(UUID account,ObjectNode p){
-        return p.path("replacesId").isNull()?null:purchase(account,UUID.fromString(p.path("replacesId").asText()),false);
+        return p.path("replacesId").isNull()?null:purchase(account,UUID.fromString(p.path("replacesId").asText()));
     }
     /** new, renewal (same plan), upgrade (more catalogs) or change. */
     private String requestKind(ObjectNode old,ObjectNode p){
@@ -347,10 +341,7 @@ public class MembershipService {
             :upgrade(catalogs(old.path("plan")),catalogs(p.path("plan")))?"upgrade":"change";
     }
     /** Who sent a DEV request: the gate holder its purchase-created audit row names, or null when unknown. */
-    private UUID requestedBy(UUID purchase){
-        return jdbc.queryForList("SELECT detail->>'requestedBy' FROM membership_audit WHERE subject_id=? AND action='purchase-created'",String.class,purchase.toString())
-            .stream().filter(Objects::nonNull).findFirst().map(UUID::fromString).orElse(null);
-    }
+    private UUID requestedBy(UUID purchase){return store.requestedBy(purchase);}
     /**
      * An approved DEV purchase request: what it bought ({@code kind} new, renewal, upgrade or change; the plan), who sent
      * it ({@code requestedBy}, null when unknown), who decided ({@code approvedBy}, the purchase-approved audit row's
@@ -365,17 +356,12 @@ public class MembershipService {
      */
     public ApprovedRequest approvedRequest(UUID account){
         if(!ownerApproval)return null;
-        var rows=jdbc.query("""
-                SELECT p.id,a.actor_id,a.recorded_at FROM membership_audit a JOIN membership_purchases p ON a.subject_id=p.id::text
-                WHERE p.account_id=? AND a.action='purchase-approved' AND p.status IN ('succeeded','scheduled')
-                  AND a.recorded_at>COALESCE((SELECT max(r.recorded_at) FROM test_account_resets r WHERE r.account_id=p.account_id),'-infinity'::timestamptz)
-                ORDER BY a.recorded_at DESC,a.id DESC LIMIT 1
-                """,(r,n)->new Object[]{r.getObject(1,UUID.class),r.getObject(2,UUID.class),r.getTimestamp(3).toInstant()},account);
-        if(rows.isEmpty())return null;
-        UUID id=(UUID)rows.getFirst()[0];
-        var p=purchase(account,id,false);
+        var approval=store.approvedRequest(account);
+        if(approval==null)return null;
+        UUID id=approval.purchaseId();
+        var p=purchase(account,id);
         return new ApprovedRequest(id,requestKind(replaced(account,p),p),p.path("planId").asText(),p.path("plan").path("name").asText(),
-            requestedBy(id),(UUID)rows.getFirst()[1],(Instant)rows.getFirst()[2]);
+            requestedBy(id),approval.approvedBy(),approval.approvedAt());
     }
     /**
      * DLV-969 (owner, 2026-11-04): the owner or an admin approves or declines a DEV purchase request. {@code role} is
@@ -395,7 +381,7 @@ public class MembershipService {
             if(id==null||!Set.of("approve","decline").contains(String.valueOf(decision)))
                 throw new AccountFailure(422,"PURCHASE_DECISION_INVALID","Give the purchaseId and the decision approve or decline.");
             acquireSlot("purchase.decision",who,null);
-            try{decided=tx.execute(s->decideWithin(actor,id,decision,mayDecideFor));}
+            try{decided=store.transact(actor.accountId(),work->decideWithin(work,actor,id,decision,mayDecideFor));}
             finally{paymentSlot.release();}
         }catch(AccountFailure refused){
             Events.refused(Events.PAYMENT,"purchase.decision",refused.code()).addKeyValue("account.id",who).addKeyValue("actor.role",role)
@@ -415,15 +401,13 @@ public class MembershipService {
         return answer;
     }
     private static AccountFailure forbiddenDecision(){return new AccountFailure(403,"PURCHASE_APPROVAL_FORBIDDEN","Only the owner or an admin can approve purchase requests.");}
-    private Decided decideWithin(AccountPrincipal actor,UUID id,String decision,java.util.function.Predicate<UUID> mayDecideFor){
-        jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor.accountId().toString());
-        var accounts=jdbc.queryForList("SELECT account_id FROM membership_purchases WHERE id=?",UUID.class,id);
-        if(accounts.isEmpty())throw new AccountFailure(404,"PURCHASE_NOT_FOUND","Purchase not found");
-        UUID target=accounts.getFirst();
+    private Decided decideWithin(MembershipStore.Work work,AccountPrincipal actor,UUID id,String decision,java.util.function.Predicate<UUID> mayDecideFor){
+        UUID target=work.purchaseAccount(id);
+        if(target==null)throw purchaseNotFound();
         if(mayDecideFor==null||!mayDecideFor.test(target))throw forbiddenDecision();
-        accountLock(target);
-        var p=purchase(target,id,true);
-        var prior=jdbc.queryForList("SELECT action FROM membership_audit WHERE subject_id=? AND action IN ('purchase-approved','purchase-declined')",String.class,id.toString());
+        work.lockAccount(target);
+        var p=purchase(work,target,id,true);
+        var prior=work.decisions(id);
         if(!prior.isEmpty()){
             if(!prior.getFirst().equals("purchase-"+(decision.equals("approve")?"approved":"declined")))
                 throw new AccountFailure(409,"PURCHASE_REQUEST_DECIDED","This request was already decided.");
@@ -433,14 +417,14 @@ public class MembershipService {
             throw new AccountFailure(409,"PURCHASE_NOT_A_REQUEST","This purchase is not waiting for a decision.");
         var detail=json.createObjectNode().put("planId",p.path("planId").asText()).put("pricePaidCents",p.path("pricePaidCents").asInt());
         if(decision.equals("decline")){
-            jdbc.update("UPDATE membership_purchases SET status='failed',provider_status=?,updated_at=now() WHERE id=?",OwnerApprovalPaymentGateway.DECLINED,id);
-            audit(actor.accountId(),"purchase-declined",id.toString(),detail);
-            var finished=purchase(target,id,false);finished.remove("fingerprint");return new Decided(target,finished,false,false);
+            work.decline(id,OwnerApprovalPaymentGateway.DECLINED);
+            work.audit(actor.accountId(),"purchase-declined",id.toString(),detail);
+            var finished=purchase(work,target,id,false);finished.remove("fingerprint");return new Decided(target,finished,false,false);
         }
         // The account must still be where the request found it: not reset since, and a replaced purchase still active.
         boolean stale=!p.path("supersededAt").isNull();
         if(!stale&&!p.path("replacesId").isNull()){
-            var old=purchase(target,UUID.fromString(p.path("replacesId").asText()),true);
+            var old=purchase(work,target,UUID.fromString(p.path("replacesId").asText()),true);
             stale=!Set.of("succeeded","scheduled").contains(old.path("status").asText())||!old.path("supersededAt").isNull()||!now().isBefore(Instant.parse(old.path("endsAt").asText()));
         }
         if(stale)throw new AccountFailure(409,"PURCHASE_REQUEST_STALE","The test account changed after this request. Decline it and send a new one.");
@@ -449,10 +433,10 @@ public class MembershipService {
         catch(PaymentGateway.Failure failure){throw new AccountFailure(503,"PAYMENT_UNAVAILABLE","The mock payment did not complete. Approve again.");}
         if(!Set.of("succeeded","requires_payment_method").contains(result.status()))
             throw new AccountFailure(503,"PAYMENT_UNAVAILABLE","The mock payment did not complete. Approve again.");
-        jdbc.update("INSERT INTO membership_payment_attempts VALUES (?,?,?,NULL,now())",UUID.randomUUID(),id,result.status());
-        boolean settled=apply(actor,target,id,p,result);
-        audit(actor.accountId(),"purchase-approved",id.toString(),detail);
-        var finished=purchase(target,id,false);finished.remove("fingerprint");return new Decided(target,finished,false,settled);
+        work.recordAttempt(id,result.status(),null);
+        boolean settled=apply(work,actor,target,id,p,result);
+        work.audit(actor.accountId(),"purchase-approved",id.toString(),detail);
+        var finished=purchase(work,target,id,false);finished.remove("fingerprint");return new Decided(target,finished,false,settled);
     }
     public ObjectNode startSale(AccountPrincipal actor,Sale sale) {
         try {
@@ -471,11 +455,11 @@ public class MembershipService {
         staff.requireOwner(actor);
         if(sale==null||!Set.of("holiday","spring","graduation","engineers-day").contains(sale.template())||sale.greeting()==null||sale.greeting().isBlank()||sale.greeting().length()>500||sale.startsAt()==null||sale.endsAt()==null||!sale.endsAt().isAfter(sale.startsAt())||!sale.endsAt().isAfter(now())||sale.planIds()==null||sale.planIds().isEmpty()||new HashSet<>(sale.planIds()).size()!=sale.planIds().size())throw invalid("Invalid sale");
         for(String id:sale.planIds())if(!definition(id).path("group").asText().equals("promo"))throw invalid("Only promo plans belong to a sale");
-        return tx.execute(s->{jdbc.execute("LOCK TABLE membership_sales IN SHARE ROW EXCLUSIVE MODE");if(jdbc.queryForObject("SELECT count(*) FROM membership_sales WHERE stopped_at IS NULL AND starts_at<? AND ends_at>?",Integer.class,ts(sale.endsAt()),ts(sale.startsAt()))>0)throw new AccountFailure(409,"SALE_OVERLAP","A sale already covers this period");UUID id=UUID.randomUUID();jdbc.update("INSERT INTO membership_sales(id,template,greeting,starts_at,ends_at,plan_ids,created_by) VALUES (?,?,?,?,?,?::jsonb,?)",id,sale.template(),sale.greeting(),ts(sale.startsAt()),ts(sale.endsAt()),json.writeValueAsString(sale.planIds()),actor.accountId());var receipt=json.createObjectNode().put("id",id.toString());audit(actor.accountId(),"sale-started",id.toString(),receipt);return receipt;});
+        UUID id=store.startSale(actor.accountId(),sale);return json.createObjectNode().put("id",id.toString());
     }
     public void stopSale(AccountPrincipal actor,UUID id){
         try {
-            staff.requireOwner(actor);tx.executeWithoutResult(s->{if(jdbc.update("UPDATE membership_sales SET stopped_at=COALESCE(stopped_at,?) WHERE id=?",ts(now()),id)!=1)throw new AccountFailure(404,"SALE_NOT_FOUND","Sale not found");audit(actor.accountId(),"sale-stopped",id.toString(),json.createObjectNode());});
+            staff.requireOwner(actor);store.stopSale(actor.accountId(),id,now());
         } catch(AccountFailure refused) {
             Events.refused(Events.PAYMENT,"sale.stop",refused.code()).addKeyValue("account.id",actor==null?null:actor.accountId()).addKeyValue("target.id",id)
                 .log("Stopping sale {} refused: {}",id,refused.code());
@@ -486,8 +470,8 @@ public class MembershipService {
     public ObjectNode price(AccountPrincipal actor,String id,int price){
         try {
             staff.requireOwner(actor);if(price<1||price>10000000||id.equals("free"))throw invalid("Invalid price");
-            int[] before={0};
-            var p=tx.execute(s->{before[0]=definition(id).path("priceCents").asInt();jdbc.update("UPDATE membership_plans SET price_cents=?,updated_at=now() WHERE id=?",price,id);var changed=definition(id);audit(actor.accountId(),"price-changed",id,changed);return changed;});
+            var change=store.changePrice(actor.accountId(),id,price);int[] before={change.before()};
+            var p=change.changed();
             Events.success(Events.PAYMENT,"plan.price-changed").addKeyValue("account.id",actor.accountId()).addKeyValue("plan.code",planCode(id))
                 .addKeyValue("price.cents",price).addKeyValue("price.before",before[0])
                 .log("Owner changed the price of plan {} from {} to {} cents",planCode(id),before[0],price);

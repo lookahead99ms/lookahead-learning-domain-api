@@ -20,7 +20,7 @@ import static org.mockito.Mockito.*;
 class AccountAdmissionServiceTest {
     final JdbcTemplate jdbc=mock(JdbcTemplate.class);
     final StaffAccessService access=mock(StaffAccessService.class);
-    final StaffAccessRepository staff=mock(StaffAccessRepository.class);
+    final StaffAccessRepository staff=mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
     final AccountAdmissionService service=new AccountAdmissionService(jdbc,access,staff,new ObjectMapper());
     final AccountPrincipal owner=new AccountPrincipal(UUID.randomUUID(),"owner","Owner",true,true);
     final UUID waiting=UUID.randomUUID();

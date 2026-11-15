@@ -9,29 +9,30 @@ import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionTemplate;
 
 /** Owner maintenance of real accounts. Identity disables Local sign-in before data erasure. */
 @Service
 public class RealAccountMaintenance {
     public record Confirmation(String confirmation) {}
-    private final JdbcTemplate jdbc;
+    private final AccountMaintenanceStore store;
     private final StaffAccessService staff;
     private final AccountDirectory directory;
     private final TestAccountPolicy localPolicy;
     private final TestIdentityOperator identity;
-    private final TransactionTemplate transactions;
 
     public RealAccountMaintenance(JdbcTemplate jdbc, StaffAccessService staff, AccountDirectory directory,
             TestAccountPolicy localPolicy, TestIdentityOperator identity, PlatformTransactionManager manager) {
-        this.jdbc=jdbc;this.staff=staff;this.directory=directory;this.localPolicy=localPolicy;
-        this.identity=identity;this.transactions=new TransactionTemplate(manager);
+        this(new JdbcAccountMaintenanceStore(jdbc, manager), staff, directory, localPolicy, identity);
+    }
+    /** DLV-970: the store (PostgreSQL or DynamoDB) is selected by {@code app.persistence.store}. */
+    @org.springframework.beans.factory.annotation.Autowired
+    public RealAccountMaintenance(AccountMaintenanceStore store, StaffAccessService staff, AccountDirectory directory,
+            TestAccountPolicy localPolicy, TestIdentityOperator identity) {
+        this.store=store;this.staff=staff;this.directory=directory;this.localPolicy=localPolicy;this.identity=identity;
     }
 
-    @Transactional
     public void downgrade(AccountPrincipal actor, UUID id, Confirmation request) {
-        try { downgradeChecked(actor, id, request); }
+        try { store.transaction(() -> downgradeChecked(actor, id, request)); }
         catch (AccountFailure refused) { throw refusal("downgrade", actor, id, refused); }
         Events.afterCommit(() -> Events.success(Events.EVENT, "account.downgrade").addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", id)
             .log("Owner downgraded account {} to a free learner: roles, course grants and memberships removed", id));
@@ -56,13 +57,9 @@ public class RealAccountMaintenance {
         requireOther(actor,id);
         if(request==null||!"DOWNGRADE".equals(request.confirmation()))throw confirmation();
         directory.byId(id);
-        jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT DO NOTHING",id);
+        store.ensureSubject(id);
         requireReal(id);
-        jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor.accountId().toString());
-        jdbc.update("UPDATE staff_access SET roles='[]',topic_grants='[]',full_curriculum=false,revision=revision+1,updated_at=clock_timestamp() WHERE account_id=? AND (roles<>'[]'::jsonb OR topic_grants<>'[]'::jsonb OR full_curriculum)",id);
-        jdbc.update("DELETE FROM account_grants WHERE account_id=?",id);
-        jdbc.update("UPDATE membership_purchases SET superseded_at=COALESCE(superseded_at,now()),updated_at=now() WHERE account_id=? AND superseded_at IS NULL",id);
-        jdbc.update("INSERT INTO real_account_maintenance(id,account_id,actor_id,action) VALUES (?,?,?,'downgrade')",UUID.randomUUID(),id,actor.accountId());
+        store.downgrade(actor.accountId(),id);
     }
 
     private void deleteChecked(AccountPrincipal actor, UUID id, Confirmation request) {
@@ -70,48 +67,36 @@ public class RealAccountMaintenance {
         staff.requireOwner(actor);
         requireOther(actor,id);
         if(request==null||!"DELETE".equals(request.confirmation()))throw confirmation();
-        Boolean alreadyDeleted=jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM real_account_maintenance WHERE account_id=? AND action='delete')",Boolean.class,id);
-        if(Boolean.TRUE.equals(alreadyDeleted)){
+        if(store.alreadyDeleted(id)){
             Events.success(Events.EVENT,"account.delete-learner").addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",id).addKeyValue("repeated",true)
                 .log("Account {} was already deleted; nothing to do",id);
             return;
         }
-        if(!Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM platform_subjects WHERE id=?)",Boolean.class,id))) {
+        if(!store.subjectExists(id)) {
             directory.byId(id);
-            jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT DO NOTHING",id);
+            store.ensureSubject(id);
         }
-        transactions.executeWithoutResult(status -> requireFreeLearner(id));
+        store.transaction(() -> requireFreeLearner(id));
         identity.disableReal(id);
-        transactions.executeWithoutResult(status -> {
-            if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM real_account_maintenance WHERE account_id=? AND action='delete')",Boolean.class,id)))return;
+        store.transaction(() -> {
+            if(store.alreadyDeleted(id))return;
             requireFreeLearner(id);
-            jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor.accountId().toString());
-            jdbc.update("DELETE FROM free_plan_creations WHERE account_id=?",id);
-            jdbc.update("DELETE FROM free_plan_deletions WHERE account_id=?",id);
-            jdbc.update("DELETE FROM mutation_receipts WHERE account_id=?",id);
-            jdbc.update("DELETE FROM plans WHERE account_id=?",id);
-            jdbc.update("DELETE FROM account_grants WHERE account_id=?",id);
-            jdbc.update("DELETE FROM support_receipts WHERE account_id=?",id);
-            jdbc.update("INSERT INTO real_account_maintenance(id,account_id,actor_id,action) VALUES (?,?,?,'delete')",UUID.randomUUID(),id,actor.accountId());
+            store.deleteLearner(actor.accountId(),id);
             Events.afterCommit(()->Events.success(Events.EVENT,"account.delete-learner").addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",id)
                 .log("Owner deleted learner account {}: sign-in disabled in Identity, plans, grants and receipts erased",id));
         });
     }
 
     private void requireFreeLearner(UUID id) {
-        var rows=jdbc.queryForList("SELECT id FROM platform_subjects WHERE id=? FOR UPDATE",UUID.class,id);
-        if(rows.isEmpty())throw new AccountFailure(404,"ACCOUNT_NOT_FOUND","Account not found.");
+        if(!store.lockSubject(id))throw new AccountFailure(404,"ACCOUNT_NOT_FOUND","Account not found.");
         requireReal(id);
-        Boolean privileged=jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM staff_access WHERE account_id=? AND (roles<>'[]'::jsonb OR topic_grants<>'[]'::jsonb OR full_curriculum))",Boolean.class,id);
-        Boolean grants=jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM account_grants WHERE account_id=?)",Boolean.class,id);
-        Boolean purchases=jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM membership_purchases WHERE account_id=? AND superseded_at IS NULL)",Boolean.class,id);
-        if(Boolean.TRUE.equals(privileged)||Boolean.TRUE.equals(grants)||Boolean.TRUE.equals(purchases))
+        if(store.privileged(id)||store.grants(id)||store.openPurchases(id))
             throw new AccountFailure(409,"DOWNGRADE_REQUIRED","Downgrade access to a free learner before deleting this account.");
     }
     private void requireReal(UUID id) {
-        if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM test_account_registry WHERE account_id=?)",Boolean.class,id)))
+        if(store.testAccount(id))
             throw new AccountFailure(403,"TEST_ACCOUNT_ROUTE_REQUIRED","Use the Test accounts page for managed accounts.");
-        if(Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM cloud_accounts WHERE account_id=? AND author_access)",Boolean.class,id)))
+        if(store.author(id))
             throw new AccountFailure(403,"OWNER_ACCOUNT_PROTECTED","An author account cannot be changed here.");
     }
     private static void requireOther(AccountPrincipal actor, UUID id) {

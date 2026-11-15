@@ -1,7 +1,6 @@
 package com.lookahead.domain.access;
 
 import com.lookahead.domain.Events;
-import com.lookahead.domain.cloud.CloudIdentities;
 import com.lookahead.domain.cloud.CognitoSignInAccounts;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.security.AccountPrincipal;
@@ -11,7 +10,6 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * DLV-969 (owner decision 2026-11-03): the owner disables, enables and deletes DEV sign-in accounts from People and
@@ -27,18 +25,22 @@ public class AccountRemovalService {
     public record Confirmation(String confirmation) {}
     public record Result(UUID accountId, String state) {}
     /** {@code usernames} (DLV-969 S36): every sign-in pool user of the account, oldest first; the pool is told once per user. */
-    private record Target(String issuer, String subject, String username, boolean admitted, boolean author, String state, List<String> usernames) {}
+    public record Target(String issuer, String subject, String username, boolean admitted, boolean author, String state, List<String> usernames) {}
     /** {@code changed}: the database row changed now; false when an earlier call already made the change. */
-    private record Changed(Target target, boolean changed) {}
+    public record Changed(Target target, boolean changed) {}
     static final String POOL_UNAVAILABLE = "SIGN_IN_PROVIDER_UNAVAILABLE";
-    private final JdbcTemplate jdbc;
+    private final AccountRemovalStore store;
     private final StaffAccessService staff;
     private final CognitoSignInAccounts signIns;
-    private final TransactionTemplate transactions;
 
     public AccountRemovalService(JdbcTemplate jdbc, StaffAccessService staff, ObjectProvider<CognitoSignInAccounts> signIns,
             PlatformTransactionManager manager) {
-        this.jdbc = jdbc; this.staff = staff; this.signIns = signIns.getIfAvailable(); this.transactions = new TransactionTemplate(manager);
+        this(new JdbcAccountRemovalStore(jdbc, manager), staff, signIns);
+    }
+    /** DLV-970: the store (PostgreSQL or DynamoDB) is selected by {@code app.persistence.store}. */
+    @org.springframework.beans.factory.annotation.Autowired
+    public AccountRemovalService(AccountRemovalStore store, StaffAccessService staff, ObjectProvider<CognitoSignInAccounts> signIns) {
+        this.store = store; this.staff = staff; this.signIns = signIns.getIfAvailable();
     }
 
     /** Directory flags: which of the three actions apply to this account for the owner. */
@@ -47,10 +49,9 @@ public class AccountRemovalService {
     }
     public Options options(UUID self, UUID id, boolean test) {
         if (signIns == null || test || id.equals(self)) return Options.NONE;
-        var rows = jdbc.query("SELECT a.author_access,a.admitted,s.state FROM cloud_accounts a LEFT JOIN cloud_account_states s USING(account_id) WHERE a.account_id=?",
-            (r, i) -> new Object[]{r.getBoolean(1), r.getBoolean(2), r.getString(3)}, id);
-        if (rows.isEmpty() || (Boolean) rows.getFirst()[0] || !(Boolean) rows.getFirst()[1]) return Options.NONE;
-        String state = (String) rows.getFirst()[2];
+        var row = store.options(id);
+        if (row == null || row.author() || !row.admitted()) return Options.NONE;
+        String state = row.state();
         if ("removed".equals(state)) return Options.NONE;
         boolean disabled = "disabled".equals(state);
         return new Options(disabled ? "disabled" : "active", !disabled, disabled, true);
@@ -74,15 +75,9 @@ public class AccountRemovalService {
     private Result disableChecked(AccountPrincipal actor, UUID id, Confirmation request) {
         staff.requireOwner(actor);
         confirm(request, "DISABLE");
-        var target = change(actor, id, "disable", t -> {
-            if ("removed".equals(t.state())) throw removed();
-            if (t.state() == null) {
-                jdbc.update("INSERT INTO cloud_account_states(account_id,state,changed_by) VALUES (?,'disabled',?)", id, actor.accountId());
-                revokeSignIns(id);
-                return true;
-            }
-            return false;
-        });
+        if (id == null || id.equals(actor.accountId())) throw new AccountFailure(403, "OWNER_ACCOUNT_PROTECTED", "The owner account cannot be changed here.");
+        if (signIns == null) throw notSignIn();
+        var target = store.disable(actor.accountId(), id);
         pool("disable", actor, id, target, () -> { for (String username : target.target().usernames()) signIns.disable(username); });
         done("disable", actor, id, target, "Owner disabled account {}: no sign-in at all until Enable; its sign-ins ended and the sign-in pool confirmed for {} pool user(s)",
             "Account {} was already disabled; the sign-in pool call was repeated and confirmed for {} pool user(s)");
@@ -90,10 +85,10 @@ public class AccountRemovalService {
     }
 
     private Result enableChecked(AccountPrincipal actor, UUID id) {
-        var target = change(actor, id, "enable", t -> {
-            if ("removed".equals(t.state())) throw removed();
-            return jdbc.update("DELETE FROM cloud_account_states WHERE account_id=? AND state='disabled'", id) == 1;
-        });
+        staff.requireOwner(actor);
+        if (id == null || id.equals(actor.accountId())) throw new AccountFailure(403, "OWNER_ACCOUNT_PROTECTED", "The owner account cannot be changed here.");
+        if (signIns == null) throw notSignIn();
+        var target = store.enable(actor.accountId(), id);
         pool("enable", actor, id, target, () -> { for (String username : target.target().usernames()) signIns.enable(username); });
         done("enable", actor, id, target, "Owner enabled account {}: it can sign in again and the sign-in pool confirmed for {} pool user(s)",
             "Account {} was already enabled; the sign-in pool call was repeated and confirmed for {} pool user(s)");
@@ -103,24 +98,9 @@ public class AccountRemovalService {
     private Result removeChecked(AccountPrincipal actor, UUID id, Confirmation request) {
         staff.requireOwner(actor);
         confirm(request, "DELETE");
-        var target = change(actor, id, "remove", t -> {
-            if ("removed".equals(t.state())) return false;
-            if (!t.admitted()) {
-                // DLV-971: a waiting row has no learning data and no permanent record to keep; it goes the way an expired
-                // request goes, so the same person signing in again appears as a new request.
-                jdbc.update("DELETE FROM cloud_account_states WHERE account_id=?", id);
-                revokeSignIns(id);
-                com.lookahead.domain.cloud.CloudAdmissionCleanup.deleteWaiting(jdbc, id);
-                return true;
-            }
-            jdbc.update("""
-                INSERT INTO cloud_account_states(account_id,state,changed_by) VALUES (?,'removed',?)
-                ON CONFLICT (account_id) DO UPDATE SET state='removed',changed_at=clock_timestamp(),changed_by=EXCLUDED.changed_by
-                """, id, actor.accountId());
-            revokeSignIns(id);
-            erase(actor.accountId(), id);
-            return true;
-        });
+        if (id == null || id.equals(actor.accountId())) throw new AccountFailure(403, "OWNER_ACCOUNT_PROTECTED", "The owner account cannot be changed here.");
+        if (signIns == null) throw notSignIn();
+        var target = store.remove(actor.accountId(), id);
         pool("delete", actor, id, target, () -> { for (String username : target.target().usernames()) signIns.remove(username); });
         done("delete", actor, id, target, "Owner deleted account {}: learning data erased, sign-ins ended and {} sign-in pool user(s) deleted",
             "Account {} was already deleted; the sign-in pool call was repeated and confirmed for {} pool user(s)");
@@ -156,65 +136,24 @@ public class AccountRemovalService {
         return refused;
     }
 
-    /** Checks, then one transaction under the account's row lock; an event is recorded only when something changed. */
-    private Changed change(AccountPrincipal actor, UUID id, String action, java.util.function.Function<Target, Boolean> apply) {
-        staff.requireOwner(actor);
-        if (id == null || id.equals(actor.accountId())) throw new AccountFailure(403, "OWNER_ACCOUNT_PROTECTED", "The owner account cannot be changed here.");
-        if (signIns == null) throw notSignIn();
-        return transactions.execute(status -> {
-            var rows = jdbc.query("""
-                SELECT a.issuer,a.subject,a.username,a.admitted,a.author_access,s.state
-                FROM cloud_accounts a LEFT JOIN cloud_account_states s USING(account_id) WHERE a.account_id=? FOR UPDATE OF a
-                """, (r, i) -> new Target(r.getString(1), r.getString(2), r.getString(3), r.getBoolean(4), r.getBoolean(5), r.getString(6), List.of()), id);
-            // DLV-971 (owner, 2026-11-06): a waiting row (not admitted) can be disabled or deleted too: Reject on Waiting for access.
-            if (rows.isEmpty()) throw notSignIn();
-            var row = rows.getFirst();
-            // DLV-969 S36: the state again, in a statement of its own under the lock: the locking statement's join keeps
-            // its starting snapshot, so a Disable, Delete or merge committed while it waited would go unseen (and its
-            // insert would then fail as a duplicate, a 503).
-            String state = jdbc.queryForList("SELECT state FROM cloud_account_states WHERE account_id=?", String.class, id).stream().findFirst().orElse(null);
-            var target = new Target(row.issuer(), row.subject(), row.username(), row.admitted(), row.author(), state,
-                CloudIdentities.usernames(jdbc, id, row.username()));
-            if (target.author()) throw new AccountFailure(403, "OWNER_ACCOUNT_PROTECTED", "An author account cannot be changed here.");
-            if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM test_account_registry WHERE account_id=?)", Boolean.class, id)))
-                throw new AccountFailure(403, "TEST_ACCOUNT_ROUTE_REQUIRED", "Use the Test accounts page for managed accounts.");
-            boolean changed = apply.apply(target);
-            if (changed)
-                jdbc.update("INSERT INTO cloud_admission_events(id,account_id,issuer,subject,actor_id,action) VALUES (?,?,?,?,?,?)",
-                    UUID.randomUUID(), id, target.issuer(), target.subject(), actor.accountId(), action);
-            return new Changed(target, changed);
-        });
-    }
-
     /** Ends every sign-in and pending sign-in choice of the account; in the caller's transaction (also the S36 merge). */
-    public void revokeSignIns(UUID id) {
-        jdbc.update("UPDATE cloud_sign_ins SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE account_id=?", id);
-        jdbc.update("UPDATE cloud_sign_in_challenges SET cancelled=true WHERE account_id=?", id);
-    }
+    public void revokeSignIns(UUID id) { store.revokeSignIns(id); }
 
     /**
      * Roles, grants, plans, receipts and profile settings; purchase history stays for the audit. The one deletion of an
      * account's data: Delete here and the DLV-969 S36 merge (the account not kept) both use it, inside the caller's
      * transaction and after the caller has locked the account row.
      */
-    public void erase(UUID actor, UUID id) {
-        jdbc.query("SELECT set_config('lookahead.actor_id',?,true)", rs -> {}, actor.toString());
-        jdbc.update("UPDATE staff_access SET roles='[]',topic_grants='[]',full_curriculum=false,revision=revision+1,updated_at=clock_timestamp() WHERE account_id=? AND (roles<>'[]'::jsonb OR topic_grants<>'[]'::jsonb OR full_curriculum)", id);
-        jdbc.update("UPDATE membership_purchases SET superseded_at=COALESCE(superseded_at,now()),updated_at=now() WHERE account_id=? AND superseded_at IS NULL", id);
-        // The free-plan allowance rows stay: the runtime may not delete them, and a returning person has a new account id.
-        for (String table : new String[]{"account_grants", "mutation_receipts", "plans", "support_receipts",
-                "cloud_account_preferences", "cloud_account_profile_links"})
-            jdbc.update("DELETE FROM " + table + " WHERE account_id=?", id);
-    }
+    public void erase(UUID actor, UUID id) { store.erase(actor, id); }
 
     private static void confirm(Confirmation request, String word) {
         if (request == null || !word.equals(request.confirmation()))
             throw new AccountFailure(422, "ACCOUNT_CONFIRMATION_REQUIRED", "Type the required confirmation word.");
     }
-    private static AccountFailure notSignIn() {
+    static AccountFailure notSignIn() {
         return new AccountFailure(404, "SIGN_IN_ACCOUNT_NOT_FOUND", "No DEV sign-in account with that id can be disabled or deleted.");
     }
-    private static AccountFailure removed() {
+    static AccountFailure removed() {
         return new AccountFailure(409, "ACCOUNT_REMOVED", "This account was deleted.");
     }
 }

@@ -11,7 +11,6 @@ import java.util.Set;
 import java.util.UUID;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import static com.lookahead.domain.access.StaffAccessRepository.Assignment;
 
 @Service
@@ -58,10 +57,9 @@ public class StaffAccessService {
     }
     public Set<String> catalog(AccountPrincipal actor) { requireAccessReader(actor);return catalog.allTopicIds(); }
 
-    @Transactional
     public Assignment save(AccountPrincipal actor, Change change) {
         requireOwner(actor);
-        try { return saveChecked(actor, change); }
+        try { return repository.transaction(() -> saveChecked(actor, change)); }
         catch(AccountFailure refused) {
             Events.refused(Events.EVENT,"access.save",refused.code()).addKeyValue("account.id",actor.accountId())
                 .addKeyValue("target.id",change==null?null:change.accountId())
@@ -82,10 +80,8 @@ public class StaffAccessService {
         // A saved assignment cannot be moved to a different person.
         if(old!=null && (!java.util.Objects.equals(old.accountId(),change.accountId())||!java.util.Objects.equals(old.pendingEmail(),email)))throw invalid();
         var next=new Assignment(change.id(),change.accountId(),email,Set.copyOf(change.roles()),Set.copyOf(change.topicGrants()),change.fullCurriculum(),change.revision()+1);
-        repository.mutationActor(actor.accountId());
-        try { if(old==null)repository.insert(next);else repository.update(next); }
-        catch(DuplicateKeyException duplicate){throw conflict();}
-        repository.event(actor.accountId(),"assign",old,next);
+        try { repository.save(actor.accountId(),"assign",old,next); }
+        catch(DuplicateKeyException|com.lookahead.domain.persistence.dynamodb.DynamoWrites.Conflict duplicate){throw conflict();}
         Set<String> before=old==null?Set.of():old.roles();
         Events.afterCommit(()->Events.success(Events.EVENT,next.accountId()==null?"access.invitation-saved":"access.saved")
             .addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",next.accountId()==null?next.id():next.accountId())
@@ -97,11 +93,10 @@ public class StaffAccessService {
     }
 
     /** Only an authoritative provider-verified address may claim an owner-created invitation. */
-    @Transactional
     public void claimVerified(AccountPrincipal actor, String verifiedEmail) {
         requireIdentity(actor);
         if(verifiedEmail==null||owner.allowed(actor))return;
-        claim(actor.accountId(),normalizeEmail(verifiedEmail),true);
+        repository.transaction(()->claim(actor.accountId(),normalizeEmail(verifiedEmail),true));
     }
     /**
      * DLV-971 (owner, 2026-11-07): prepared access by email is a pass through the DEV gate. The sign-in registry calls
@@ -118,8 +113,7 @@ public class StaffAccessService {
         if(pending==null)return null;
         if(repository.forAccount(accountId)!=null){if(conflictWhenAssigned)throw conflict();return null;}
         var next=new Assignment(pending.id(),accountId,null,pending.roles(),pending.topicGrants(),pending.fullCurriculum(),pending.revision()+1);
-        repository.mutationActor(accountId);
-        repository.update(next);repository.event(accountId,"claim",pending,next);
+        repository.save(accountId,"claim",pending,next);
         Events.afterCommit(()->Events.success(Events.EVENT,"access.invitation-claimed").addKeyValue("account.id",accountId)
             .addKeyValue("target.id",pending.id()).addKeyValue("roles",new java.util.TreeSet<>(next.roles()))
             .log("Account {} claimed pending access invitation {}: roles {}",accountId,pending.id(),new java.util.TreeSet<>(next.roles())));

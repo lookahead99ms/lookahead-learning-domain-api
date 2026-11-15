@@ -1,6 +1,7 @@
 package com.lookahead.domain.cloud;
 
 import com.lookahead.domain.access.AccountRemovalService;
+import com.lookahead.domain.access.JdbcStaffAccessRepository;
 import com.lookahead.domain.access.StaffAccessRepository;
 import com.lookahead.domain.access.StaffAccessService;
 import com.lookahead.domain.testaccounts.TestAccountRoster;
@@ -61,15 +62,15 @@ class CloudMergeDatabaseTest {
     @AfterAll void cleanup(){if(jdbc!=null)jdbc.execute("DROP SCHEMA "+schema+" CASCADE");}
     @BeforeEach void fresh(){outbox.clear();pool=mock(CognitoSignInAccounts.class);}
 
-    CloudSignInRegistry registry(){return new CloudSignInRegistry(jdbc,new DataSourceTransactionManager(source));}
-    StaffAccessService staff(){return new StaffAccessService(new StaffAccessRepository(jdbc,new ObjectMapper()),new LocalAuthorAccess(new MockEnvironment().withProperty("app.deployment-environment","dev")),mock(SnapshotValidator.class));}
+    CloudSignInRegistry registry(){return new JdbcCloudSignInRegistry(jdbc,new DataSourceTransactionManager(source));}
+    StaffAccessService staff(){return new StaffAccessService(new JdbcStaffAccessRepository(jdbc,new ObjectMapper()),new LocalAuthorAccess(new MockEnvironment().withProperty("app.deployment-environment","dev")),mock(SnapshotValidator.class));}
     AccountRemovalService removal(){
         var beans=new StaticListableBeanFactory();beans.addBean("cognitoSignInAccounts",pool);
         return new AccountRemovalService(jdbc,staff(),beans.getBeanProvider(CognitoSignInAccounts.class),new DataSourceTransactionManager(source));
     }
-    CloudMergeService merges(){return new CloudMergeService(jdbc,new DataSourceTransactionManager(source),removal(),fake,"https://dev.devlookahead.com/");}
+    CloudMergeService merges(){return new JdbcCloudMergeService(jdbc,new DataSourceTransactionManager(source),removal(),fake,"https://dev.devlookahead.com/");}
     com.lookahead.domain.access.AccountAdmissionService admission(){
-        return new com.lookahead.domain.access.AccountAdmissionService(jdbc,staff(),new StaffAccessRepository(jdbc,new ObjectMapper()),new ObjectMapper());
+        return new com.lookahead.domain.access.AccountAdmissionService(jdbc,staff(),new JdbcStaffAccessRepository(jdbc,new ObjectMapper()),new ObjectMapper());
     }
     /**
      * Runs {@code call} while another transaction holds {@code account}'s row lock and has written a V18 state for it,
@@ -231,9 +232,9 @@ class CloudMergeDatabaseTest {
 
     @Test void anEmailOutageStillAnswersAndCostsOneSend(){
         var people=duplicates("outage");
-        var staff=new StaffAccessService(new StaffAccessRepository(jdbc,new ObjectMapper()),new LocalAuthorAccess(new MockEnvironment().withProperty("app.deployment-environment","dev")),mock(SnapshotValidator.class));
+        var staff=new StaffAccessService(new JdbcStaffAccessRepository(jdbc,new ObjectMapper()),new LocalAuthorAccess(new MockEnvironment().withProperty("app.deployment-environment","dev")),mock(SnapshotValidator.class));
         var removal=new AccountRemovalService(jdbc,staff,new StaticListableBeanFactory().getBeanProvider(CognitoSignInAccounts.class),new DataSourceTransactionManager(source));
-        var down=new CloudMergeService(jdbc,new DataSourceTransactionManager(source),removal,(to,subject,body)->{throw new IllegalStateException("SES down");},"https://dev.devlookahead.com");
+        var down=new JdbcCloudMergeService(jdbc,new DataSourceTransactionManager(source),removal,(to,subject,body)->{throw new IllegalStateException("SES down");},"https://dev.devlookahead.com");
         try(var log=com.lookahead.domain.LogCapture.start()){
             assertThatCode(()->down.request(people.get(0).session())).doesNotThrowAnyException();
             // DLV-969 log: the link exists but no email went out; exception type only, never its message.

@@ -20,6 +20,8 @@ import java.util.Set;
 @Configuration
 @Profile("accounts")
 @EnableTransactionManagement
+// DLV-970: PostgreSQL is the default store; with app.persistence.store=dynamodb none of these beans exist.
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = com.lookahead.domain.persistence.PersistenceStore.PROPERTY, havingValue = "postgresql", matchIfMissing = true)
 public class AccountDatabaseConfiguration {
     /** Hikari runs this on each new physical connection before lending it to application code. */
     static final String CONNECTION_GUARD_SQL = """

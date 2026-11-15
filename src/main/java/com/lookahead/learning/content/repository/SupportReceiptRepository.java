@@ -13,6 +13,8 @@ import java.util.UUID;
 
 @Repository
 @Profile("accounts")
+// DLV-970: the PostgreSQL implementation, unchanged; DynamoSupportReceiptRepository serves app.persistence.store=dynamodb.
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = com.lookahead.domain.persistence.PersistenceStore.PROPERTY, havingValue = "postgresql", matchIfMissing = true)
 public class SupportReceiptRepository implements SupportReceiptStore {
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transaction;

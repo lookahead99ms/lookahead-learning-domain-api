@@ -15,7 +15,7 @@ import static org.mockito.Mockito.*;
 class CloudDomainTokenConverterTest {
     final CognitoFixture fixture=new CognitoFixture();
     final CognitoTokenVerifier verifier=new CognitoTokenVerifier(CognitoTokenVerifierTest.SETTINGS,fixture.client);
-    final CloudSignInRegistry registry=mock(CloudSignInRegistry.class);
+    final CloudSignInRegistry registry=mock(CloudSignInRegistry.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
     final MockHttpServletRequest request=new MockHttpServletRequest();
     final CloudDomainTokenConverter converter=new CloudDomainTokenConverter(verifier,registry,request);
     Jwt apiToken(){return Jwt.withTokenValue("synthetic-access-token").header("alg","RS256").issuer(CognitoTokenVerifierTest.SETTINGS.issuer()).subject("synthetic-provider-subject")

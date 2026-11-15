@@ -17,9 +17,12 @@ public class AccountDirectory {
     public record Account(UUID accountId, String username, String displayName, String email) {}
     private final IdentitySettings identity;
     private final RestClient http;
-    private final JdbcTemplate jdbc;
-    public AccountDirectory(ObjectProvider<IdentitySettings> settings, JdbcTemplate jdbc) {
-        this.identity=settings.getIfAvailable();this.jdbc=jdbc;
+    private final AccountDirectoryStore store;
+    public AccountDirectory(ObjectProvider<IdentitySettings> settings, JdbcTemplate jdbc) { this(settings, new JdbcAccountDirectoryStore(jdbc)); }
+    /** DLV-970: the store (PostgreSQL or DynamoDB) is selected by {@code app.persistence.store}. */
+    @org.springframework.beans.factory.annotation.Autowired
+    public AccountDirectory(ObjectProvider<IdentitySettings> settings, AccountDirectoryStore store) {
+        this.identity=settings.getIfAvailable();this.store=store;
         if(identity==null){http=null;return;}
         var client=HttpClient.newBuilder().connectTimeout(identity.connectTimeout()).followRedirects(HttpClient.Redirect.NEVER).build();
         var factory=new JdkClientHttpRequestFactory(client);factory.setReadTimeout(identity.readTimeout());
@@ -33,14 +36,7 @@ public class AccountDirectory {
         if(identity==null) {
             // DLV-969: disabled accounts stay listed (the owner can enable them); deleted ones are gone. The owner sees
             // the provider-verified email (a Google account's Gmail).
-            var rows=jdbc.query("""
-                SELECT account_id,username,display_name,verified_email FROM cloud_accounts a WHERE admitted AND enabled
-                AND NOT EXISTS(SELECT 1 FROM cloud_account_states s WHERE s.account_id=a.account_id AND s.state='removed')
-                AND (?='' OR position(? in lower(username))>0 OR position(? in lower(display_name))>0
-                  OR position(? in lower(coalesce(verified_email,'')))>0)
-                ORDER BY lower(username),account_id LIMIT 51 OFFSET ?
-                """,(r,i)->new Account(r.getObject(1,UUID.class),r.getString(2),r.getString(3),r.getString(4)),term,term,term,term,page*50);
-            return new Page(java.util.List.copyOf(rows.subList(0,Math.min(50,rows.size()))),page,rows.size()>50);
+            return store.list(term,page);
         }
         long started=Events.started();int[] status={0};
         try {
@@ -76,12 +72,7 @@ public class AccountDirectory {
         if(identity==null) {
             // Cloud identities already admitted by the provider mapping; no email-based linking. DLV-969 S36: any Cognito
             // username of the account (V19 cloud_identities), or its own username for a row without identity rows.
-            var rows=jdbc.query("""
-                SELECT account_id,username,display_name FROM cloud_accounts a WHERE admitted AND enabled
-                AND (lower(username)=? OR EXISTS(SELECT 1 FROM cloud_identities i WHERE i.account_id=a.account_id AND lower(i.username)=?))
-                AND NOT EXISTS(SELECT 1 FROM cloud_account_states s WHERE s.account_id=a.account_id AND s.state='removed') LIMIT 2
-                """,(r,i)->new Account(r.getObject(1,UUID.class),r.getString(2),r.getString(3),null),query,query);
-            if(rows.size()!=1)throw missing();return rows.getFirst();
+            return store.lookup(query);
         }
         long started=Events.started();int[] status={0};
         try {
@@ -95,7 +86,7 @@ public class AccountDirectory {
                     if(bytes.length>4096)throw unavailable();
                     var account=new tools.jackson.databind.ObjectMapper().readValue(bytes,Account.class);
                     if(account.accountId()==null||account.username()==null||account.displayName()==null)throw unavailable();
-                    jdbc.update("INSERT INTO platform_subjects(id) VALUES(?) ON CONFLICT (id) DO NOTHING",account.accountId());
+                    store.ensureSubject(account.accountId());
                     return account;
                 }));
         } catch(AccountFailure expected){throw refused("LookupAccount",started,status[0],expected);}catch(RuntimeException failure){throw failed("LookupAccount",started,status[0],failure);}
@@ -103,10 +94,7 @@ public class AccountDirectory {
     public Account byId(UUID id) {
         if (id == null) throw invalid();
         if (identity == null) {
-            var rows=jdbc.query("SELECT account_id,username,display_name FROM cloud_accounts WHERE account_id=? AND admitted AND enabled",
-                (r,i)->new Account(r.getObject(1,UUID.class),r.getString(2),r.getString(3),null),id);
-            if (rows.isEmpty()) throw missing();
-            return rows.getFirst();
+            return store.byId(id);
         }
         long started=Events.started();int[] status={0};
         try {
@@ -125,6 +113,6 @@ public class AccountDirectory {
         } catch(AccountFailure expected){throw refused("GetAccount",started,status[0],expected);}catch(RuntimeException failure){throw failed("GetAccount",started,status[0],failure);}
     }
     private static AccountFailure invalid(){return new AccountFailure(422,"INVALID_ACCOUNT_LOOKUP","Enter an exact email or username.");}
-    private static AccountFailure missing(){return new AccountFailure(404,"ACCOUNT_NOT_FOUND","No eligible existing account matched. You can prepare a pending email assignment.");}
+    static AccountFailure missing(){return new AccountFailure(404,"ACCOUNT_NOT_FOUND","No eligible existing account matched. You can prepare a pending email assignment.");}
     private static AccountFailure unavailable(){return new AccountFailure(503,"ACCOUNT_LOOKUP_UNAVAILABLE","Account lookup is unavailable. Retry later.");}
 }

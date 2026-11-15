@@ -3,7 +3,6 @@ package com.lookahead.domain.testaccounts;
 import com.lookahead.domain.access.StaffAliases;
 import com.lookahead.domain.membership.MembershipService;
 import java.util.UUID;
-import org.springframework.jdbc.core.JdbcTemplate;
 import tools.jackson.databind.node.JsonNodeFactory;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -16,12 +15,12 @@ import tools.jackson.databind.node.ObjectNode;
  */
 final class UpgradeMarkers {
     private static final JsonNodeFactory NODES = JsonNodeFactory.instance;
-    private final JdbcTemplate jdbc;
+    private final TestAccountStore store;
     private final MembershipService memberships;
     private final StaffAliases aliases;
 
-    UpgradeMarkers(JdbcTemplate jdbc, MembershipService memberships, StaffAliases aliases) {
-        this.jdbc = jdbc; this.memberships = memberships; this.aliases = aliases;
+    UpgradeMarkers(TestAccountStore store, MembershipService memberships, StaffAliases aliases) {
+        this.store = store; this.memberships = memberships; this.aliases = aliases;
     }
 
     /** The account's marker, or null: nothing approved since its latest Reset, or no DEV purchase requests. */
@@ -56,7 +55,7 @@ final class UpgradeMarkers {
     private ObjectNode person(UUID person, UUID viewer, boolean named) {
         var node = NODES.objectNode().put("self", person != null && person.equals(viewer)).put("label", label(person));
         if (named && person != null)
-            node.put("name", jdbc.queryForList("SELECT display_name FROM cloud_accounts WHERE account_id=?", String.class, person).stream().findFirst().orElse(null));
+            node.put("name", store.displayName(person));
         return node;
     }
 }

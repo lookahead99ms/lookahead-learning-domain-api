@@ -1,7 +1,7 @@
 package com.lookahead.learning.content.config;
 
 import com.lookahead.domain.DomainApiMigration;
-import com.lookahead.domain.testaccounts.AccountDataErasure;
+import com.lookahead.domain.testaccounts.JdbcAccountDataErasure;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -96,7 +96,7 @@ class AuditRetentionDatabaseTest {
         jdbc.update("INSERT INTO account_grants(account_id,topic_id) VALUES (?,'learn:test')", account);
         var auditBefore = jdbc.queryForList("SELECT * FROM membership_audit ORDER BY id");
         flyway("15").migrate();
-        var cleanup = new AccountDataErasure(jdbc);
+        var cleanup = new JdbcAccountDataErasure(jdbc);
         // No audit DELETE is attempted: the restricted runtime has no such permission.
         asApp(() -> cleanup.erase(account, false));
         asApp(() -> cleanup.erase(account, false));
@@ -117,7 +117,7 @@ class AuditRetentionDatabaseTest {
         UUID purchase = purchase(account, null); purchase(other, purchase);
         jdbc.update("INSERT INTO account_grants(account_id,topic_id) VALUES (?,'learn:test')", account);
         flyway("15").migrate();
-        assertThatThrownBy(() -> asApp(() -> new AccountDataErasure(jdbc).erase(account, false)))
+        assertThatThrownBy(() -> asApp(() -> new JdbcAccountDataErasure(jdbc).erase(account, false)))
                 .hasMessageContaining("foreign key constraint");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM account_grants WHERE account_id=?", Integer.class, account)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM membership_audit", Integer.class)).isEqualTo(2);
