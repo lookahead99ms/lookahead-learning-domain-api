@@ -99,8 +99,14 @@ public class DynamoAuthorReviewStore implements AuthorReviewStore {
             if (!receipt.isEmpty()) return replay(actorId, receipt, hash);
             var head = get(tables.userAccountDetailsTableName(), account(actorId), headSk(artifactId));
             UUID expected = head.isEmpty() ? null : stringOrNull(head, "latestEventId") == null ? null : uuid(head, "latestEventId");
-            if (!Objects.equals(expected, normalized.supersedesEventId()))
+            if (!Objects.equals(expected, normalized.supersedesEventId())) {
+                // Separate consistent reads are not a snapshot: a duplicate may have committed
+                // its receipt and this head after our first receipt read. Reconcile that receipt
+                // before rejecting supersession, preserving replay and changed-payload semantics.
+                receipt = get(tables.userAccountDetailsTableName(), account(actorId), receiptSk(key));
+                if (!receipt.isEmpty()) return replay(actorId, receipt, hash);
                 throw new AccountFailure(409, "REVIEW_SUPERSESSION_CONFLICT", "Reload review history before changing the decision");
+            }
             long sequence = (head.isEmpty() ? 0 : number(head, "sequence")) + 1;
             UUID eventId = UUID.randomUUID();
             Instant recordedAt = clock.instant();

@@ -21,6 +21,13 @@ summary describe the library layer (2026-11-02 to 2026-11-04) and remain accurat
 | Sweeps | `MaintenanceJobs` | — | `RegisteredMaintenanceJobs`: `study-plan-documents`, `retired-study-plan-documents`, `plan-purge`, `account-erasure` (queue `WORK#ACCOUNT-ERASURE#00`) | — |
 | HTTP mapping | `AccountErrorHandler`, `DomainStorageFailureFilter` | `DataAccessException` → 503 | `DynamoWrites.Unavailable` and SDK failures → 503 `ACCOUNT_STORAGE_UNAVAILABLE`; `DynamoWrites.Conflict` → 409 `REVISION_CONFLICT` | — |
 
+Author review submission reads the idempotency receipt before the artifact head.
+Because two strongly consistent reads are not one snapshot, a conflicting head
+triggers a fresh receipt read before rejection. A duplicate committed between reads
+replays the original event; a changed payload is an idempotency conflict; a stale
+decision without a matching receipt remains a supersession conflict. The atomic
+head/receipt/event write and existing revision guards are unchanged.
+
 Cross-area reads and writes go through small interfaces (`AccountGrantsLookup`, `AccountIdentityLookup`,
 `AccountRecordsMaintenance`, `MembershipTopicSource`, `MembershipFacts`, `MembershipErasure`,
 `TestAccountRegistryLookup`, `LearningDataErasure`, `PlanErasure`, `PlanActivityLookup`, `PlanMaintenanceJobs`),

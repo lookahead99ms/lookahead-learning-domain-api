@@ -10,8 +10,13 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.mockito.MockMakers;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
@@ -20,6 +25,9 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 import static com.lookahead.domain.review.ReviewModels.*;
 import static org.assertj.core.api.Assertions.*;
+import static org.mockito.AdditionalAnswers.delegatesTo;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
 
 /** DLV-970: the author review contract of AuthorReviewDatabaseTest, on DynamoDB Local. Every actor is a fresh ACCOUNT#id / META item. */
 @EnabledIfEnvironmentVariable(named = "DLV970_DYNAMODB_TEST_ENDPOINT", matches = ".+")
@@ -120,7 +128,7 @@ class DynamoAuthorReviewDatabaseTest {
                 .key(DynamoItems.key(DynamoItems.account(stranger), DynamoAuthorReviewStore.headSk("study-plan-review"))).build()).item()).isEmpty();
     }
 
-    @Test void concurrentDuplicateReturnsOneEventAcrossStoreInstances() throws Exception {
+    @RepeatedTest(10) void concurrentDuplicateReturnsOneEventAcrossStoreInstances() throws Exception {
         var actor = actor(); var key = UUID.randomUUID(); var request = submission(Decision.APPROVE, "", null);
         try (var executor = Executors.newFixedThreadPool(2)) {
             var start = new CountDownLatch(1); var calls = new ArrayList<Future<Receipt>>();
@@ -130,6 +138,50 @@ class DynamoAuthorReviewDatabaseTest {
         }
         assertThat(store().latest(actor, "study-plan-review", 50)).hasSize(1);
         assertThat(audits(actor)).isEqualTo(2);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false,false", "false,true", "true,false", "true,true"})
+    void commitBetweenReceiptAndHeadReadsPreservesIdempotency(boolean successor, boolean changedPayload) {
+        var actor = actor(); var key = UUID.randomUUID();
+        UUID prior = successor
+                ? submit(actor, UUID.randomUUID(), submission(Decision.DECLINE, "Explain recovery", null)).event().eventId()
+                : null;
+        var original = submission(Decision.APPROVE, "Reviewed", prior);
+        var retry = changedPayload ? submission(Decision.NEED_MORE, "Different payload", prior) : original;
+        var injectCommit = new AtomicBoolean(true);
+        var winner = new AtomicReference<Receipt>();
+        var racingClient = mock(DynamoDbClient.class,
+                withSettings().mockMaker(MockMakers.PROXY).defaultAnswer(delegatesTo(client)));
+        doAnswer(invocation -> {
+            GetItemRequest read = invocation.getArgument(0);
+            var observed = client.getItem(read);
+            if (read.tableName().equals(TABLES.userAccountDetailsTableName())
+                    && read.key().equals(DynamoItems.key(DynamoItems.account(actor), DynamoAuthorReviewStore.receiptSk(key)))
+                    && injectCommit.compareAndSet(true, false)) {
+                assertThat(read.consistentRead()).isTrue();
+                assertThat(observed.item()).isEmpty();
+                // Commit the other store's real transaction after this read observed absence,
+                // but before the losing request can read the now-advanced artifact head.
+                winner.set(submit(actor, key, original));
+            }
+            return observed;
+        }).when(racingClient).getItem(any(GetItemRequest.class));
+        var losingStore = new DynamoAuthorReviewStore(racingClient, TABLES, clock);
+        if (changedPayload) {
+            assertThatThrownBy(() -> losingStore.submit(actor, artifact.artifactId(), key, hash(retry), artifact, retry))
+                    .isInstanceOf(AccountFailure.class).extracting("code").isEqualTo("REVIEW_IDEMPOTENCY_CONFLICT");
+        } else {
+            var replay = losingStore.submit(actor, artifact.artifactId(), key, hash(retry), artifact, retry);
+            assertThat(replay.replayed()).isTrue();
+            assertThat(replay.event()).isEqualTo(winner.get().event());
+        }
+        assertThat(winner.get()).isNotNull();
+        assertThat(winner.get().replayed()).isFalse();
+        assertThat(store().latest(actor, artifact.artifactId(), 1)).containsExactly(winner.get().event());
+        assertThat(store().latest(actor, artifact.artifactId(), 50)).hasSize(successor ? 2 : 1);
+        assertThat(audits(actor)).isEqualTo(successor ? 4 : 2);
+        verify(racingClient, never()).executeTransaction(any(ExecuteTransactionRequest.class));
     }
 
     @Test void concurrentDifferentFirstDecisionsAllowOnlyOneInitialEvent() throws Exception {

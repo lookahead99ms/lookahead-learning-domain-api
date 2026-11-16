@@ -1,6 +1,6 @@
 # Author Preview review records — DLV-921
 
-This local candidate records a version-bound author decision in Domain PostgreSQL. A record means **pending Main reconciliation**; it does not approve a merge, change ticket status, update delivery JSON, edit a source file or mutate learner plans. No Git/GitHub credentials or runtime file-write endpoint exists.
+This local candidate records a version-bound author decision in the configured Domain store (PostgreSQL or DynamoDB). A record means **pending Main reconciliation**; it does not approve a merge, change ticket status, update delivery JSON, edit a source file or mutate learner plans. No Git/GitHub credentials or runtime file-write endpoint exists.
 
 ## Trust and configuration
 
@@ -21,7 +21,11 @@ Set `LOOKAHEAD_AUTHOR_REVIEW_MANIFEST` to an absolute, read-only mounted JSON fi
 
 This example hash is synthetic. The operator must hash the canonical review **source bytes** with SHA-256, review the ticket/version binding, and provide the real approved manifest privately. The generated HTML can have a different hash. The service does not read arbitrary browser-supplied paths or hash an arbitrary URL. Empty configuration exposes no artifacts; malformed configured manifests stop startup. Manifest changes require a controlled application restart. Coordinate the same manifest on every instance before admitting writes; rolling instances with differing manifests are not an approved publication procedure.
 
-Ensure the reviewed schema target includes Domain migration V2 before candidate startup, using Infra Flyway Utils and its explicit expected/target versions. The old `com.lookahead.domain.DomainApiMigration` executable entrypoint is retired; migration sources and shared validation helpers remain Domain-owned. Runtime receives only SELECT/INSERT on `author_review_events`; UPDATE/DELETE/TRUNCATE are denied, and a database trigger rejects row updates/deletes even by the table owner. Readiness verifies the new schema and runtime privileges. Events retain an actor subject reference without profile/email data. Account-deletion/retention policy must handle these audit references explicitly; no automatic deletion policy is introduced.
+For PostgreSQL, ensure the reviewed schema target includes Domain migration V2 before candidate startup, using Infra Flyway Utils and its explicit expected/target versions. The old `com.lookahead.domain.DomainApiMigration` executable entrypoint is retired; migration sources and shared validation helpers remain Domain-owned. Runtime receives only SELECT/INSERT on `author_review_events`; UPDATE/DELETE/TRUNCATE are denied, and a database trigger rejects row updates/deletes even by the table owner. Readiness verifies the new schema and runtime privileges. Events retain an actor subject reference without profile/email data. Account-deletion/retention policy must handle these audit references explicitly; no automatic deletion policy is introduced.
+
+For DynamoDB, follow the [store configuration and data preparation guide](dynamodb-runtime.md).
+The review head, idempotency receipt, event and lookup are committed together; existing
+review events are never updated or deleted by this store.
 
 ## HTTP contract
 
@@ -48,7 +52,7 @@ Every success is `{ "data": ..., "timestamp": "..." }` and all responses are `Ca
 
 Decisions are `APPROVE`, `DECLINE`, `NEED_MORE`. Comments are trimmed plain text up to 2,000 Unicode code points; DECLINE and NEED_MORE require an explanation. HTML/control characters are rejected (newline/tab allowed). POST bodies are bounded to 16 KiB. Extra request fields are rejected, including actor/time/event ID. `supersedesEventId` is omitted/null only for the first decision; later decisions must reference the newest own event for the artifact. Previous decisions remain readable.
 
-A receipt contains `{event, replayed, reconciliationStatus: "PENDING_MAIN_RECONCILIATION"}`. Event fields are `eventId`, `artifactId`, `artifactVersion`, `contentHash`, `ticketId`, `decision`, `comment`, `actorId`, `recordedAt`, `idempotencyKey`, `supersedesEventId`. Actor derives from authenticated identity; timestamp derives from PostgreSQL. An internal monotonic sequence orders events, so wall-clock corrections cannot reverse supersession or pagination. Preserve the UUID key and exact submission through uncertain failures. Same key/payload returns the original event without a duplicate; changed payload conflicts. Account-row serialization and database uniqueness protect concurrent submissions across API instances. A manifest that has changed rejects stale version/hash/ticket, even on an old retry: reload and reconcile history instead of silently applying a decision to new content.
+A receipt contains `{event, replayed, reconciliationStatus: "PENDING_MAIN_RECONCILIATION"}`. Event fields are `eventId`, `artifactId`, `artifactVersion`, `contentHash`, `ticketId`, `decision`, `comment`, `actorId`, `recordedAt`, `idempotencyKey`, `supersedesEventId`. Actor derives from authenticated identity; timestamp derives from PostgreSQL or the Domain clock for DynamoDB. An internal monotonic sequence orders events, so wall-clock corrections cannot reverse supersession or pagination. Preserve the UUID key and exact submission through uncertain failures. Same key/payload returns the original event without a duplicate; changed payload conflicts. PostgreSQL account-row serialization and database uniqueness protect concurrent submissions across API instances. DynamoDB atomically writes the review head, key receipt and immutable audit event; a conditional head revision protects supersession. Separate strongly consistent reads are not a shared snapshot: if the head has advanced after a receipt miss, the store rereads the receipt before returning a supersession conflict. A matching concurrent duplicate therefore replays its committed event, a changed payload with that key returns `REVIEW_IDEMPOTENCY_CONFLICT`, and a stale decision with a different key still returns `REVIEW_SUPERSESSION_CONFLICT`. A manifest that has changed rejects stale version/hash/ticket, even on an old retry: reload and reconcile history instead of silently applying a decision to new content.
 
 | HTTP | Code / condition |
 | --- | --- |
@@ -64,6 +68,13 @@ A receipt contains `{event, replayed, reconciliationStatus: "PENDING_MAIN_RECONC
 Domain errors are flat `{status,code,message,path,timestamp}`. Gateway/security-layer errors can use their existing reduced envelope; clients should route by status/code. Never render comments as HTML.
 
 ## Verification and learning contribution
+
+With `DLV970_DYNAMODB_TEST_ENDPOINT` pointing at a disposable loopback DynamoDB Local
+fixture, `DynamoAuthorReviewDatabaseTest` verifies the same replay/supersession rules.
+Its deterministic interleaving cases commit a competing real transaction between the
+receipt and head reads, for first decisions and successors, with identical and changed
+payloads. The original two-thread duplicate test runs ten repetitions. These tests do not use AWS.
+
 
 `./mvnw -o test` runs the source suite; database tests explicitly skip unless `DLV921_DATABASE_URL` and `DLV921_DATABASE_PASSWORD_FILE` identify the disposable PostgreSQL fixture. The fixture creates/drops a unique schema; never point it at production. `AuthorReviewDatabaseTest` covers the unmodified migration, runtime database permissions, append-only triggers, actor isolation, version binding, monotonic ordering, supersession, concurrent idempotency and rollback/retry. Its HTTP fixture uses the production Domain security/capability checks with synthetic Identity verification and proves readback after Spring application-context shutdown/restart. This is not a process/container restart, actual Identity/Gateway integration or backup/restore proof; Infra owns those cross-service gates. Gateway owns actual browser-session CSRF tests. These checks do not establish production authorization or audit retention readiness.
 

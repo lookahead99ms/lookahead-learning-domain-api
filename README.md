@@ -341,7 +341,7 @@ this repository and these two tests as consumers; Content compares nothing with 
 
 ## Author review decisions
 
-The local DLV-921 candidate records immutable, version-bound author review events. See [API, manifest configuration, migration and verification](docs/author-review-api.md) and [OpenAPI source](docs/author-review-openapi.json). Recording a decision does not update delivery status or Git.
+The local DLV-921 candidate records immutable, version-bound author review events. Identical concurrent retries return the original receipt in either configured store; changed payloads and stale decisions retain their distinct conflict codes. See [API, manifest configuration, migration and verification](docs/author-review-api.md) and [OpenAPI source](docs/author-review-openapi.json). Recording a decision does not update delivery status or Git.
 
 ### Study-plan naming
 
