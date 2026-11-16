@@ -76,6 +76,10 @@
           }
         },
         {
+          "name": "Test Maven bootstrap retry, fallback and checksum protection",
+          "run": "python3 -m unittest discover -s tools/build -p 'test_*.py'"
+        },
+        {
           "name": "Test security gates with clean, finding and incomplete fixtures",
           "run": "python3 -m unittest discover -s tools/security -p 'test_*.py'"
         },

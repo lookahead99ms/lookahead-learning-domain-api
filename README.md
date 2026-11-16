@@ -70,6 +70,12 @@ dependencies come from Maven Central. No sibling repository, private curriculum,
 Toolkit library or preinstalled local artifact is needed to build and test.
 On Unix, install `unzip` so the wrapper uses the checksum-pinned ZIP distribution.
 The application Dockerfile supplies it in the build stage.
+On Unix, a fresh wrapper download tries `wget` up to three times, then `curl`
+up to three times when available, with timeouts and a two-second retry delay.
+The pinned SHA-256 is still required before extraction; checksum failures and
+Maven build failures are not retried. To diagnose a download failure, run
+`MVNW_VERBOSE=true ./mvnw --version`. Offline bootstrap regression checks run with
+`python3 -m unittest discover -s tools/build -p 'test_*.py'`.
 The Boot parent still owns the dependency baseline; temporary Jackson 2/3 patch
 BOM overrides are documented in [Security CI](docs/security-ci.md).
 The executable service artifact is `target/lookahead-domain-api-<version>.jar`;
