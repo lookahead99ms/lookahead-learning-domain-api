@@ -162,8 +162,10 @@ public class DevTestSessions {
      */
     private String holderRole(String subject) { return holderOf(subject).role(); }
     private Holder holderOf(String subject) {
-        if (subject == null || subject.isBlank() || subject.length() > 256) return NOBODY;
-        var holder = store.holder(issuer, subject);
+        // The subject is normalised, not branched on: an empty or oversized one is simply asked of nobody, and the store's
+        // answer (null for an unknown subject) decides, so no caller-controlled condition guards the role read.
+        String key = subject == null ? "" : subject.strip();
+        var holder = key.isEmpty() || key.length() > 256 ? null : store.holder(issuer, key);
         if (holder == null) return NOBODY;
         boolean owner = holder.authorAccess();
         UUID account = holder.accountId();

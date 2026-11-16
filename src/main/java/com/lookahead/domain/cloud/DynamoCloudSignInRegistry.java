@@ -52,7 +52,7 @@ public final class DynamoCloudSignInRegistry extends CloudSignInRegistry {
 
     @Override public Admission admit(CognitoIdentity identity, String proof) {
         String binding = binding(proof), family = family(identity);
-        Admission admission = locked(identity, false, true, account -> merge(identity, admitted(identity, binding, family, account)));
+        Admission admission = lockedFirstContact(identity, account -> merge(identity, admitted(identity, binding, family, account)));
         if (admission.signInId() != null) Events.success(Events.EVENT, "sign-in.admitted").addKeyValue("account.id", admission.accountId()).addKeyValue("target.id", admission.signInId())
             .addKeyValue("merge.available", admission.mergeAvailable())
             .log(admission.mergeAvailable() ? "Sign-in {} admitted for account {}; other accounts share its verified email, so the merge is offered" : "Sign-in {} admitted for account {}",
@@ -221,7 +221,7 @@ public final class DynamoCloudSignInRegistry extends CloudSignInRegistry {
         finishCredentialChange(identity, true);
         Events.success(Events.EVENT, "password.change").addKeyValue("account.id", account).log("Password changed for account {}; every sign-in of the account was ended", account);
     }
-    private void finishCredentialChange(CognitoIdentity identity, boolean revoke) { locked(identity, true, false, a -> {
+    private void finishCredentialChange(CognitoIdentity identity, boolean revoke) { locked(identity, true, a -> {
         var tx = accounts.transaction();
         var changes = new HashMap<String, AttributeValue>(Map.of("credentialChangePending", bool(false)));
         if (revoke) {
@@ -247,11 +247,12 @@ public final class DynamoCloudSignInRegistry extends CloudSignInRegistry {
         return result;
     }
     private Challenge challenge(Account a, CognitoIdentity identity, String proof, String token) {
+        long generation = a.control.authGeneration(); String family = family(identity), binding = binding(proof);
         if (token == null || !token.matches("[A-Za-z0-9_-]{43}")) throw invalid();
         var item = get(client, table, account(a.id), challengeSk(digest(token)));
         if (item.isEmpty()) throw invalid(); Challenge c = challenge(item);
         // A challenge issued under an earlier sign-in generation (Disable, Delete, a merge, "end other sign-ins") is dead with it, as the SQL cancels them.
-        if (c.cancelled || c.generation != a.control.authGeneration() || !c.expires.isAfter(now()) || !c.family.equals(family(identity)) || !c.binding.equals(binding(proof))) throw invalid(); return c;
+        if (c.cancelled || c.generation != generation || !c.expires.isAfter(now()) || !c.family.equals(family) || !c.binding.equals(binding)) throw invalid(); return c;
     }
     private List<Challenge> challenges(UUID owner) { return query(client, table, account(owner), "CHALLENGE#").stream().map(DynamoCloudSignInRegistry::challenge).toList(); }
     private static Challenge challenge(Map<String, AttributeValue> item) {
@@ -287,26 +288,45 @@ public final class DynamoCloudSignInRegistry extends CloudSignInRegistry {
 
     // ---- the account behind an identity ---------------------------------------------------------------------------
 
-    private <T> T locked(CognitoIdentity identity, Function<Account, T> action) { return locked(identity, false, false, action); }
-    /**
-     * firstContact (sign-in admission only): an unknown identity is linked to the one account with its verified email, or
-     * recorded as a new waiting account, and an unadmitted account is refreshed from the provider claims; all commit
-     * before the 403 is thrown. A lost revision race is re-read and retried; the last conflict surfaces as it is.
-     */
-    private <T> T locked(CognitoIdentity identity, boolean allowCredentialChange, boolean firstContact, Function<Account, T> action) {
+    /** Every call after admission; a lost revision race is re-read and retried, the last conflict surfaces as it is. */
+    private <T> T locked(CognitoIdentity identity, Function<Account, T> action) { return locked(identity, false, action); }
+    private <T> T locked(CognitoIdentity identity, boolean allowCredentialChange, Function<Account, T> action) {
         DynamoWrites.Conflict last = null;
-        for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
-            try { return attempt(identity, allowCredentialChange, firstContact, action); }
+        for (int round = 0; round < ATTEMPTS; round++) {
+            try { return attemptKnown(identity, allowCredentialChange, action); }
             catch (DynamoWrites.Conflict conflict) { last = conflict; }
         }
         throw last;
     }
-    private <T> T attempt(CognitoIdentity identity, boolean allowCredentialChange, boolean firstContact, Function<Account, T> action) {
+    /**
+     * Sign-in admission only: an unknown identity is linked to the one account with its verified email, or recorded as a
+     * new waiting account, and an unadmitted account is refreshed from the provider claims; all commit before the 403 is
+     * thrown. Its own loop and its own attempt, so that no read handler's call graph reaches the first-contact writes.
+     */
+    private <T> T lockedFirstContact(CognitoIdentity identity, Function<Account, T> action) {
+        DynamoWrites.Conflict last = null;
+        for (int round = 0; round < ATTEMPTS; round++) {
+            try { return attemptFirstContact(identity, action); }
+            catch (DynamoWrites.Conflict conflict) { last = conflict; }
+        }
+        throw last;
+    }
+    /** Every call after admission: the identity must already be bound to an admitted, enabled account. */
+    private <T> T attemptKnown(CognitoIdentity identity, boolean allowCredentialChange, Function<Account, T> action) {
+        var binding = accounts.binding(identity.issuer(), identity.subject());
+        if (binding.isEmpty()) throw admissionRequired();
+        UUID id = DynamoItems.uuid(binding, "accountId"); String provider = DynamoItems.string(binding, "provider");
+        Control row = accounts.control(id); if (row == null) throw denied();
+        requireEnabled(row);
+        if (!row.admitted()) throw denied();
+        requireCredentialsSettled(row, allowCredentialChange);
+        return action.apply(new Account(row.id(), row.username(), row.displayName(), row.author(), provider, row));
+    }
+    private <T> T attemptFirstContact(CognitoIdentity identity, Function<Account, T> action) {
         Instant now = now();
         var binding = accounts.binding(identity.issuer(), identity.subject());
         Control row; boolean linked = false; String provider;
         if (binding.isEmpty()) {
-            if (!firstContact) throw admissionRequired();
             var linking = link(identity, now);
             provider = CloudIdentities.provider(identity.issuer(), identity.username());
             if (linking.linked == null) {
@@ -319,22 +339,26 @@ public final class DynamoCloudSignInRegistry extends CloudSignInRegistry {
             UUID id = DynamoItems.uuid(binding, "accountId"); provider = DynamoItems.string(binding, "provider");
             row = accounts.control(id); if (row == null) throw denied();
         }
-        // DLV-969: an account the owner disabled or deleted has no sign-in, even before the pool is told.
-        if (!row.enabled() || !row.active()) {
-            String reason = row.removed() ? "ACCOUNT_REMOVED" : "ACCOUNT_DISABLED";
-            Events.refused(Events.EVENT, "sign-in.check", reason).addKeyValue("account.id", row.id()).log("Sign-in refused for account {}: {}", row.id(), reason.equals("ACCOUNT_REMOVED") ? "the owner deleted it" : "the owner disabled it");
-            throw denied();
-        }
+        requireEnabled(row);
         // DLV-969 S36: a sign-in just linked to a waiting account is "linked"; the owner still has to admit it.
-        if (!row.admitted()) { if (!firstContact) throw denied(); if (!linked) refresh(identity, row, binding, now); throw waiting(row.id(), linked ? "linked" : "refreshed"); }
-        if (firstContact && !linked) row = refreshEmail(identity, row, binding, now);
+        if (!row.admitted()) { if (!linked) refresh(identity, row, binding, now); throw waiting(row.id(), linked ? "linked" : "refreshed"); }
+        if (!linked) row = refreshEmail(identity, row, binding, now);
         // Owner identity (Protected Owner Identity, issuer/subject) decides author access; it is recorded on the control item at sign-in, never from a profile field.
-        if (firstContact && !row.author() && ownerIdentity(identity)) { var tx = accounts.transaction(); accounts.control(tx, row, Map.of("author", bool(true)), null); accounts.directory(tx, row, Map.of("author", bool(true))); tx.commit(); row = accounts.control(row.id()); }
-        if (!allowCredentialChange && row.credentialChangePending()) {
-            Events.refused(Events.EVENT, "sign-in.check", "CREDENTIAL_CHANGE_PENDING").addKeyValue("account.id", row.id()).log("Request refused for account {}: a password change is not confirmed yet (503)", row.id());
-            throw failure(503, "CREDENTIAL_CHANGE_PENDING");
-        }
+        if (!row.author() && ownerIdentity(identity)) { var tx = accounts.transaction(); accounts.control(tx, row, Map.of("author", bool(true)), null); accounts.directory(tx, row, Map.of("author", bool(true))); tx.commit(); row = accounts.control(row.id()); }
+        requireCredentialsSettled(row, false);
         return action.apply(new Account(row.id(), row.username(), row.displayName(), row.author(), provider, row));
+    }
+    /** DLV-969: an account the owner disabled or deleted has no sign-in, even before the pool is told. */
+    private static void requireEnabled(Control row) {
+        if (row.enabled() && row.active()) return;
+        String reason = row.removed() ? "ACCOUNT_REMOVED" : "ACCOUNT_DISABLED";
+        Events.refused(Events.EVENT, "sign-in.check", reason).addKeyValue("account.id", row.id()).log("Sign-in refused for account {}: {}", row.id(), reason.equals("ACCOUNT_REMOVED") ? "the owner deleted it" : "the owner disabled it");
+        throw denied();
+    }
+    private static void requireCredentialsSettled(Control row, boolean allowCredentialChange) {
+        if (allowCredentialChange || !row.credentialChangePending()) return;
+        Events.refused(Events.EVENT, "sign-in.check", "CREDENTIAL_CHANGE_PENDING").addKeyValue("account.id", row.id()).log("Request refused for account {}: a password change is not confirmed yet (503)", row.id());
+        throw failure(503, "CREDENTIAL_CHANGE_PENDING");
     }
     private boolean ownerIdentity(CognitoIdentity identity) { return owner.matchesVerifiedIdentity(identity.issuer(), identity.subject()); }
     private AccountFailure waiting(UUID id, String action) {

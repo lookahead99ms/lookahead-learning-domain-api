@@ -1,29 +1,4 @@
 {
   "version": 1,
-  "exceptions": [
-    {
-      "ruleId": "java/csrf-unprotected-request-type",
-      "file": "src/main/java/com/lookahead/domain/cloud/CloudSignInController.java",
-      "sourceSha256": "1cb1ff6ae822f4fc467a4446591f14c79655da49667a54140ad9e79eed80093f",
-      "expiresAt": "2026-12-15",
-      "ticket": "DLV-970",
-      "rationale": "The GET handlers (/inventory, /challenge, /profile) are authenticated by a Cognito bearer token plus the per-session proof header, never by a browser cookie, so a cross-site request cannot carry the credentials. The only write a read performs is the session lastActiveAt touch (DLV-970: one conditional DynamoDB statement, at most once a minute), which CodeQL reports as a state change on GET. Reviewed 2026-11-15; re-review when the handler or the touch changes."
-    },
-    {
-      "ruleId": "java/user-controlled-bypass",
-      "file": "src/main/java/com/lookahead/domain/cloud/DynamoCloudSignInRegistry.java",
-      "sourceSha256": "122b4c48ce5b29aefbcd5c649826899c130d17f62e06c730b8686c60f3b91a34",
-      "expiresAt": "2026-12-15",
-      "ticket": "DLV-970",
-      "rationale": "challenge(): the caller token selects the CHALLENGE# item by its SHA-256 digest and every property of the stored item (never of the request) is then checked: cancelled, sign-in generation, expiry, token family and proof binding; any mismatch throws. The user-controlled value only chooses which stored record is checked and cannot skip the check; the PostgreSQL registry selects by the same digest. Reviewed 2026-11-15."
-    },
-    {
-      "ruleId": "java/user-controlled-bypass",
-      "file": "src/main/java/com/lookahead/domain/testaccounts/DevTestSessions.java",
-      "sourceSha256": "e5efbb543075d51b71955ae2f2678446f587adddf31f54a664c563c8031589c2",
-      "expiresAt": "2026-12-15",
-      "ticket": "DLV-970",
-      "rationale": "holderOf(): the subject from the verified test-session token looks up the stored holder row; a missing row yields NOBODY (no role, no access) and an existing row role comes from the store, never from the request. The lookup narrows access and cannot widen it; Local and DEV test accounts only. Reviewed 2026-11-15."
-    }
-  ]
+  "exceptions": []
 }
