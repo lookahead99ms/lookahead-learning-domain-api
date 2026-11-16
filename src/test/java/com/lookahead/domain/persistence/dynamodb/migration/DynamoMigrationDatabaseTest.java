@@ -93,10 +93,16 @@ class DynamoMigrationDatabaseTest {
         return client.getItem(GetItemRequest.builder().tableName(table).consistentRead(true)
                 .key(Map.of("pk", s(DynamoMigrationLedger.PK), "sk", s(sk))).build()).item();
     }
+    /** The owner binding ({@code OWNER / ROOT}); other test classes seed it in the shared local store and never remove it. */
+    private static Map<String, AttributeValue> owner() {
+        return client.getItem(GetItemRequest.builder().tableName(TABLES.protectedOwnerIdentityTableName()).consistentRead(true)
+                .key(Map.of("pk", s("OWNER"), "sk", s("ROOT"))).build()).item();
+    }
     private static AttributeValue s(String value) { return AttributeValue.builder().s(value).build(); }
     private static AttributeValue n(String value) { return AttributeValue.builder().n(value).build(); }
 
     @Test void theRealCatalogMigratesAnEmptyStoreThenReplaysAndVerifiesAndReadinessFollowsTheWatermark() {
+        var ownerBefore = owner();
         var readiness = new DynamoReadiness(client, TABLES, DomainDynamoCatalog.catalog().requirement(), clock);
         assertThat(readiness.health().getStatus()).isEqualTo(Status.DOWN);
         var runner = runner(DomainDynamoCatalog.catalog());
@@ -147,9 +153,8 @@ class DynamoMigrationDatabaseTest {
         var verified = runner.verify();
         assertThat(verified.verified()).containsExactly("1 base-tables", "2 staff-alias-counters", "3 membership-catalog", "4 review-record-counters");
         assertThat(ledger.history()).hasSize(4);
-        // The owner binding is never touched by migration.
-        assertThat(client.getItem(GetItemRequest.builder().tableName(TABLES.protectedOwnerIdentityTableName()).consistentRead(true)
-                .key(Map.of("pk", s("OWNER"), "sk", s("ROOT"))).build()).item()).isEmpty();
+        // The owner binding is never touched by migration: whatever an earlier class seeded (or nothing) is still there, unchanged.
+        assertThat(owner()).isEqualTo(ownerBefore);
     }
 
     @Test void theCatalogAndCounterStepsReplayAcceptExistingItemsAndRefuseADifferentCatalog() {
