@@ -82,7 +82,8 @@ public final class DynamoMigrationRunner {
     public Outcome verify() {
         long current = checkedCurrent();
         var verified = new ArrayList<String>();
-        for (int version = 1; version <= Math.min(current, catalog.latestVersion()); version++) {
+        int known = (int) Math.min(current, catalog.latestVersion()); // latestVersion is an int, so the minimum fits
+        for (int version = 1; version <= known; version++) {
             var step = catalog.step(version);
             step.verify(client, tables);
             verified.add(version + " " + step.name());
