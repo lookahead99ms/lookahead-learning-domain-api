@@ -3,28 +3,33 @@ package com.lookahead.domain.membership;
 import com.lookahead.domain.access.StaffAccessService;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.security.AccountPrincipal;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.JsonNode;
 import java.util.*;
 import java.time.Clock;
-import java.sql.Timestamp;
+import java.time.Instant;
 
 /** A read projection of actual purchases and grants. Never persisted as a role. */
 @Service
 public class AccessSummaryService {
     public record Summary(String label, List<String> labels, List<String> grantedCourseIds) {}
-    private final JdbcTemplate jdbc;
-    private final ObjectMapper json;
+    private final AccessSummaryStore store;
     private final StaffAccessService staff;
     private final Clock clock;
     @org.springframework.beans.factory.annotation.Autowired
-    public AccessSummaryService(JdbcTemplate jdbc,ObjectMapper json,StaffAccessService staff) {
-        this(jdbc,json,staff,Clock.systemUTC());
+    public AccessSummaryService(AccessSummaryStore store,StaffAccessService staff) {
+        this(store,staff,Clock.systemUTC());
     }
-    public AccessSummaryService(JdbcTemplate jdbc,ObjectMapper json,StaffAccessService staff,Clock clock) {
-        this.jdbc=jdbc;this.json=json;this.staff=staff;this.clock=clock;
+    public AccessSummaryService(AccessSummaryStore store,StaffAccessService staff,Clock clock) {
+        this.store=store;this.staff=staff;this.clock=clock;
+    }
+    /** PostgreSQL convenience (existing tests and fixtures): the JDBC store built from the template. */
+    public AccessSummaryService(org.springframework.jdbc.core.JdbcTemplate jdbc,ObjectMapper json,StaffAccessService staff) {
+        this(new JdbcAccessSummaryStore(jdbc,json),staff,Clock.systemUTC());
+    }
+    public AccessSummaryService(org.springframework.jdbc.core.JdbcTemplate jdbc,ObjectMapper json,StaffAccessService staff,Clock clock) {
+        this(new JdbcAccessSummaryStore(jdbc,json),staff,clock);
     }
     public Summary get(AccountPrincipal actor,UUID target) {
         if(actor==null||!actor.isEnabled()) throw new AccountFailure(401,"AUTHENTICATION_REQUIRED","Sign in to continue");
@@ -33,15 +38,9 @@ public class AccessSummaryService {
             if(!permissions.manageAccess()&&!permissions.triageFeedback()&&!"co-author".equals(permissions.feedbackRole()))
                 throw new AccountFailure(403,"STAFF_REQUIRED","Author, co-author or admin required");
         }
-        Timestamp now=Timestamp.from(clock.instant());
-        var purchases=jdbc.query("""
-            SELECT plan_snapshot FROM membership_purchases WHERE account_id=?
-            AND status IN ('succeeded','scheduled') AND superseded_at IS NULL
-            AND starts_at<=? AND ends_at>? ORDER BY plan_id,id
-            """,(r,n)->json.readTree(r.getString(1)),target,now,now);
-        var courses=new TreeSet<>(jdbc.queryForList("SELECT topic_id FROM account_grants WHERE account_id=? AND (valid_until IS NULL OR valid_until>?)",String.class,target,now));
-        for(String grants:jdbc.queryForList("SELECT topic_grants::text FROM staff_access WHERE account_id=?",String.class,target))
-            json.readTree(grants).forEach(value->courses.add(value.asText()));
+        Instant now=clock.instant();
+        var purchases=store.activeSnapshots(target,now);
+        var courses=store.grantedTopics(target,now);
         return summarize(purchases,courses);
     }
     static Summary summarize(List<JsonNode> purchases,Set<String> grants) {

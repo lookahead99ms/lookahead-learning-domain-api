@@ -179,6 +179,33 @@ class SupportFeedbackServiceTest {
       log.containsNone("reply@example.test","sender@example.test","support@example.test","smtp.internal","A private message");
     }
   }
+  /** DLV-970: a DynamoDB outage, an unanswered read or a lost owner fence in the receipt store is never a 422; it reaches
+   *  AccountErrorHandler unchanged, which answers 503 ACCOUNT_STORAGE_UNAVAILABLE (Unavailable, SDK failures) or 409 (Conflict). */
+  @Test void storeOutagesAndConflictsPassThroughUnchanged() {
+    var sdkDown=software.amazon.awssdk.core.exception.SdkClientException.create("down");
+    var cancelled=software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException.builder().cancellationReasons(
+      software.amazon.awssdk.services.dynamodb.model.CancellationReason.builder().code("ConditionalCheckFailed").build()).build();
+    var readDown=catchThrowable(()->com.lookahead.learning.content.repository.DynamoOwnerReads.read(()->{throw sdkDown;}));
+    assertThat(readDown).isInstanceOf(com.lookahead.learning.content.repository.DynamoOwnerUnit.DynamoOwnerUnavailable.class);
+    var outcomes=List.of(storeFailure(sdkDown),storeFailure(cancelled),readDown);
+    assertThat(outcomes.get(0)).isInstanceOf(com.lookahead.domain.persistence.dynamodb.DynamoWrites.Unavailable.class);
+    assertThat(outcomes.get(1)).isInstanceOf(com.lookahead.domain.persistence.dynamodb.DynamoWrites.Conflict.class);
+    for(var failure:outcomes){
+      var store=mock(SupportReceiptStore.class,withSettings().mockMaker(org.mockito.MockMakers.PROXY));
+      when(store.reserve(any(),any(),any())).thenThrow(failure);
+      assertThatThrownBy(()->service(store).submit(learner,"request-1234567890",feedback("feedback","A subject"))).isSameAs(failure);
+      verify(store,never()).release(any(),any());
+    }
+    verifyNoInteractions(sender);
+    assertThat(recorded()).isEmpty();
+  }
+  /** The store's own exception types have package-private constructors: a transaction against a failing client makes real ones. */
+  static Throwable storeFailure(RuntimeException sdkFailure) {
+    var client=mock(software.amazon.awssdk.services.dynamodb.DynamoDbClient.class,withSettings().mockMaker(org.mockito.MockMakers.PROXY));
+    when(client.executeTransaction(any(software.amazon.awssdk.services.dynamodb.model.ExecuteTransactionRequest.class))).thenThrow(sdkFailure);
+    return catchThrowable(()->com.lookahead.domain.persistence.dynamodb.DynamoWrites.transaction(client)
+      .insertOnly("t",com.lookahead.domain.persistence.dynamodb.DynamoItems.key("a","b")).commit());
+  }
   @Test void rejectsHeaderInjectionAndNonImagesBeforeSending() {
     var service=service(new TestReceiptStore());
     assertThatThrownBy(()->service.submit(learner,"request-1234567890",new SupportFeedbackService.Feedback("feedback","subject\r\nBcc: other@example.test","message","reply@example.test",List.of()))).hasMessageContaining("subject");

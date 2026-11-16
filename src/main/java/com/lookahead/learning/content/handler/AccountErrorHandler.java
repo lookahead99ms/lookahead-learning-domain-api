@@ -1,8 +1,12 @@
 package com.lookahead.learning.content.handler;
 
+import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
 import com.lookahead.learning.content.exception.AccountFailure;
+import com.lookahead.learning.content.repository.DynamoOwnerUnit;
 
 import jakarta.servlet.http.HttpServletRequest;
+import software.amazon.awssdk.core.exception.SdkClientException;
+import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -66,5 +70,27 @@ public class AccountErrorHandler {
         log.warn("Account storage unavailable: {} {}", GlobalExceptionHandler.forLog(request.getMethod()),
                 GlobalExceptionHandler.forLog(request.getRequestURI()), ex);
         return failure(new AccountFailure(503, "ACCOUNT_STORAGE_UNAVAILABLE", "Account storage is unavailable; retain your draft and retry the same request"), request);
+    }
+
+    /**
+     * DLV-970: the DynamoDB store's outage is the same answer as the PostgreSQL one. {@link DynamoWrites.Unavailable}
+     * (a transaction whose outcome is unknown), its read-side twin {@link DynamoOwnerUnit.DynamoOwnerUnavailable} and
+     * the SDK's own failures (no connection, throttling, a service error) reaching the web layer answer 503
+     * {@code ACCOUNT_STORAGE_UNAVAILABLE}; the log line names the failure's types only, never the SDK message, which
+     * may carry an endpoint or a request ID.
+     */
+    @ExceptionHandler({DynamoWrites.Unavailable.class, DynamoOwnerUnit.DynamoOwnerUnavailable.class, SdkClientException.class, DynamoDbException.class})
+    ResponseEntity<?> storeUnavailable(RuntimeException ex, HttpServletRequest request) {
+        log.warn("Account storage unavailable: {} {} ({})", GlobalExceptionHandler.forLog(request.getMethod()),
+                GlobalExceptionHandler.forLog(request.getRequestURI()), com.lookahead.domain.Events.types(ex));
+        return failure(new AccountFailure(503, "ACCOUNT_STORAGE_UNAVAILABLE", "Account storage is unavailable; retain your draft and retry the same request"), request);
+    }
+
+    /** DLV-970: a condition that did not hold after the store's own retries is the existing revision conflict answer. */
+    @ExceptionHandler(DynamoWrites.Conflict.class)
+    ResponseEntity<?> storeConflict(DynamoWrites.Conflict ex, HttpServletRequest request) {
+        log.warn("Account storage conflict: {} {} ({})", GlobalExceptionHandler.forLog(request.getMethod()),
+                GlobalExceptionHandler.forLog(request.getRequestURI()), com.lookahead.domain.Events.types(ex));
+        return failure(new AccountFailure(409, "REVISION_CONFLICT", "The record changed while you were saving; reload before retrying"), request);
     }
 }

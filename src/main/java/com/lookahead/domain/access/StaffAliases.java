@@ -6,12 +6,9 @@ import com.lookahead.learning.content.security.LocalAuthorAccess;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.TransactionDefinition;
-import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * DLV-969 (owner decision 2026-11-03): only the owner sees who people are. Everyone else sees another person as a
@@ -23,16 +20,17 @@ public class StaffAliases {
     /** A person with several roles is labelled by the first of these; with none they are a Learner. */
     static final List<String> ORDER = List.of("co-author", "admin", "reviewer", "tester");
     static final int ATTEMPTS = 5;
-    private final JdbcTemplate jdbc;
+    private final StaffAliasStore store;
     private final StaffAccessService access;
     private final StaffAccessRepository staff;
-    /** Numbers are given in their own short transaction: callers may be read-only, and a clash must not abort them. */
-    private final TransactionTemplate assign;
 
     public StaffAliases(JdbcTemplate jdbc, StaffAccessService access, StaffAccessRepository staff, PlatformTransactionManager manager) {
-        this.jdbc = jdbc; this.access = access; this.staff = staff;
-        this.assign = new TransactionTemplate(manager);
-        assign.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        this(new JdbcStaffAliasStore(jdbc, manager), access, staff);
+    }
+    /** DLV-970: the store (PostgreSQL or DynamoDB) is selected by {@code app.persistence.store}. */
+    @org.springframework.beans.factory.annotation.Autowired
+    public StaffAliases(StaffAliasStore store, StaffAccessService access, StaffAccessRepository staff) {
+        this.store = store; this.access = access; this.staff = staff;
     }
 
     /** True when {@code viewer} may see real identities: the owner only. */
@@ -61,39 +59,10 @@ public class StaffAliases {
         return title(role) + " " + number(accountId, role);
     }
 
-    private boolean owner(UUID accountId) {
-        return LocalAuthorAccess.ACCOUNT_ID.equals(accountId) || Boolean.TRUE.equals(jdbc.queryForObject(
-            "SELECT EXISTS(SELECT 1 FROM cloud_accounts WHERE account_id=? AND author_access)", Boolean.class, accountId));
-    }
+    private boolean owner(UUID accountId) { return LocalAuthorAccess.ACCOUNT_ID.equals(accountId) || store.owner(accountId); }
 
     /** The person's number for {@code role}, given now if they have none; two people racing for one number retry. */
-    int number(UUID accountId, String role) {
-        for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
-            var known = jdbc.queryForList("SELECT number FROM staff_aliases WHERE account_id=? AND role=?", Integer.class, accountId, role);
-            if (!known.isEmpty()) {
-                // Found after this call's insert: the number was given on try number `attempt`.
-                if (attempt > 0) Events.success(Events.EVENT, "alias.assigned").addKeyValue("target.id", accountId)
-                        .addKeyValue("retry.attempt", attempt).addKeyValue("retry.max", ATTEMPTS)
-                        .log("Role label {} {} given to account {} on attempt {} of {}", title(role), known.getFirst(), accountId, attempt, ATTEMPTS);
-                return known.getFirst();
-            }
-            try {
-                assign.executeWithoutResult(status -> jdbc.update("""
-                    INSERT INTO staff_aliases(account_id,role,number)
-                    SELECT ?,?,COALESCE(max(number),0)+1 FROM staff_aliases WHERE role=?
-                    ON CONFLICT (account_id,role) DO NOTHING
-                    """, accountId, role, role));
-            } catch (DuplicateKeyException taken) {
-                // Another person took that number in the same moment; read again and take the next one.
-                Events.retry(Events.EVENT, "alias.assign", "NUMBER_TAKEN", attempt + 1, ATTEMPTS).addKeyValue("target.id", accountId)
-                        .log("Role label number for account {} ({}) was taken by someone else at the same moment: attempt {} of {}; trying the next number",
-                            accountId, title(role), attempt + 1, ATTEMPTS);
-            }
-        }
-        Events.failed(Events.EVENT, "alias.assign", "RETRIES_EXHAUSTED").addKeyValue("target.id", accountId).addKeyValue("retry.max", ATTEMPTS)
-                .log("Could not give a role label to account {} ({}) after {} attempts", accountId, title(role), ATTEMPTS);
-        throw new IllegalStateException("Could not assign a role label");
-    }
+    int number(UUID accountId, String role) { return store.number(accountId, role); }
 
     static String title(String role) {
         return switch (role) {

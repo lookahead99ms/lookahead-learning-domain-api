@@ -19,7 +19,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * DLV-971 (owner, 2026-11-06): {@code POST /api/v1/sweeps/run} {@code {"job": "support-requests" | "delivery-inbox" |
- * "admissions" | "all"}}, the owner's "run this job now". The Gateway adds the session, CSRF check and bearer token. The
+ * "admissions" | "maintenance" | "all"}}, the owner's "run this job now" ({@code maintenance}, DLV-970: the registered
+ * store maintenance jobs; it answers an empty list where nothing is registered). The Gateway adds the session, CSRF check and bearer token. The
  * owner alone (the same check as a triage of a review): 401 without a sign-in, {@code 403 PLATFORM_REVIEW_ACCESS_DENIED}
  * for everyone else, admins included; {@code 400 SWEEP_JOB_INVALID} for any other body; {@code 409 SWEEP_NOT_AVAILABLE}
  * for {@code admissions} where there is no cleanup (local mode). DEV and local only (owner, 2026-11-07): 404 {@code DEV_ONLY} in prod
@@ -43,7 +44,7 @@ public class SweepController {
         DevOnly.require(environment, "Running a sweep by hand");
         reviews.requireOwner(actor);
         RuntimeSweeps.Job job = body != null && Set.of("job").equals(body.keySet()) && body.get("job") instanceof String name ? RuntimeSweeps.Job.named(name) : null;
-        if (job == null) throw new AccountFailure(400, "SWEEP_JOB_INVALID", "Choose a job: support-requests, delivery-inbox, admissions or all.");
+        if (job == null) throw new AccountFailure(400, "SWEEP_JOB_INVALID", "Choose a job: support-requests, delivery-inbox, admissions, maintenance or all.");
         response.setHeader("Cache-Control", "no-store");
         return ApiResponse.success(sweeps.runNow(actor.accountId(), job));
     }

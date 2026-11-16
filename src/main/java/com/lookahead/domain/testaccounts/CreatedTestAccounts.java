@@ -12,7 +12,6 @@ import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * A pending reservation precedes Identity; only a completed Domain record may be activated.
@@ -58,18 +57,22 @@ public class CreatedTestAccounts {
         @Override public void disable(UUID accountId, String username) {}
     };
     private record Reservation(UUID accountId, String username, String state) {}
-    private final JdbcTemplate jdbc;
-    private final TransactionTemplate transactions;
+    private final TestAccountStore store;
     private final TestAccountPolicy policy;
     private final StaffAccessRepository staff;
     private final LocalAuthorAccess owner;
     private final TestIdentityOperator local;
     private TestAccountsService accounts;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    public CreatedTestAccounts(TestAccountStore store, TestAccountPolicy policy,
+            StaffAccessRepository staff, LocalAuthorAccess owner, TestIdentityOperator local) {
+        this.store=store; this.policy=policy; this.staff=staff; this.owner=owner; this.local=local;
+    }
+    /** PostgreSQL convenience (existing tests and fixtures): the JDBC store on the template and manager. */
     public CreatedTestAccounts(JdbcTemplate jdbc, PlatformTransactionManager transactionManager, TestAccountPolicy policy,
             StaffAccessRepository staff, LocalAuthorAccess owner, TestIdentityOperator local) {
-        this.jdbc=jdbc; this.transactions=new TransactionTemplate(transactionManager);
-        this.policy=policy; this.staff=staff; this.owner=owner; this.local=local;
+        this(new JdbcTestAccountStore(jdbc, transactionManager), policy, staff, owner, local);
     }
     /** Writes the scenarios and the DEV admitted row (DLV-969 S35). */
     @org.springframework.beans.factory.annotation.Autowired
@@ -88,7 +91,7 @@ public class CreatedTestAccounts {
     }
     public Allowance allowance(AccountPrincipal actor) {
         int cap=limit(actor);
-        int used=jdbc.queryForObject("SELECT count(*) FROM test_account_creations WHERE creator_id=? AND state IN ('active','deleted')",Integer.class,actor.accountId());
+        int used=store.lifetimeSpend(actor.accountId());
         // DLV-969 (owner, 2026-11-04): learner scenarios only, for every role. DLV-971 (owner, 2026-11-06): there are no
         // other scenarios; staff test accounts no longer exist anywhere.
         return new Allowance(cap,used,cap==Integer.MAX_VALUE?Integer.MAX_VALUE:Math.max(0,cap-used),null,TestAccountTemplates.creatable());
@@ -118,57 +121,50 @@ public class CreatedTestAccounts {
         // and admin scenarios included) is simply unknown.
         if (scenario!=null && !TestAccountTemplates.known(scenario)) throw new AccountFailure(422,"UNKNOWN_SCENARIO","Choose one of the listed scenarios.");
         var identity=identity();
-        var reservation=transactions.execute(status -> reserve(actor,request.key()));
+        // Two creates by one creator at once fence on the creator's revision: the loser reads again instead of answering 409.
+        var reservation=store.transactRetrying(work -> reserve(work,actor,request.key()));
         if (reservation==null) throw new IllegalStateException("Reservation did not complete");
         if (!"active".equals(reservation.state())) {
             String subject=identity.provision(reservation.accountId(),reservation.username(),cloud?null:request.password());
-            transactions.executeWithoutResult(status -> complete(actor,reservation,subject,scenario));
+            store.transact(work -> { complete(work,actor,reservation,subject,scenario); return null; });
         }
         identity.activate(reservation.accountId(),reservation.username());
         return new Created(reservation.accountId(),reservation.username(),true);
     }
-    private Reservation reserve(AccountPrincipal actor, UUID key) {
+    private Reservation reserve(TestAccountStore.Work work, AccountPrincipal actor, UUID key) {
         int cap=limit(actor);
-        jdbc.query("SELECT id FROM platform_subjects WHERE id=? FOR UPDATE",rs->{},actor.accountId());
-        var prior=jdbc.query("SELECT account_id,username,state FROM test_account_creations WHERE creator_id=? AND mutation_key=?",
-                (r,i)->new Reservation(r.getObject(1,UUID.class),r.getString(2),r.getString(3)),actor.accountId(),key);
-        if (!prior.isEmpty()) {
-            if ("deleted".equals(prior.getFirst().state())) throw new AccountFailure(409,"TEST_ACCOUNT_DELETED","This request already created an account that was deleted.");
-            return prior.getFirst();
+        work.lockSubject(actor.accountId());
+        var prior=work.reservation(actor.accountId(),key);
+        if (prior!=null) {
+            if ("deleted".equals(prior.state())) throw new AccountFailure(409,"TEST_ACCOUNT_DELETED","This request already created an account that was deleted.");
+            return new Reservation(prior.accountId(),prior.username(),prior.state());
         }
         // A timed-out reservation may hold capacity briefly, but never becomes a lifetime spend.
-        int used=jdbc.queryForObject("""
-                SELECT count(*) FROM test_account_creations WHERE creator_id=?
-                AND (state IN ('active','deleted') OR (state='pending' AND created_at>clock_timestamp()-interval '15 minutes'))
-                """,Integer.class,actor.accountId());
+        int used=work.holdsAndSpend(actor.accountId());
         if (used>=cap) throw limitReached(actor,cap);
         UUID id=UUID.nameUUIDFromBytes(("lookahead-created-test:"+actor.accountId()+":"+key).getBytes(StandardCharsets.UTF_8));
         String hex=id.toString().replace("-","");
         // DEV (DLV-969 S35): an address on the owner's domain, like the roster; it never signs in. 29 characters fits
         // the varchar(32) username columns.
         String username=policy.cloud()?"test-"+hex.substring(0,10)+"@"+TestAccountRoster.CLOUD_DOMAIN:"test-"+hex.substring(0,24);
-        jdbc.update("INSERT INTO test_account_creations(creator_id,mutation_key,account_id,username,state) VALUES (?,?,?,?,'pending')",
-                actor.accountId(),key,id,username);
+        work.reserve(actor.accountId(),key,id,username);
         return new Reservation(id,username,"pending");
     }
-    private void complete(AccountPrincipal actor, Reservation reserved, String subject, String scenario) {
+    private void complete(TestAccountStore.Work work, AccountPrincipal actor, Reservation reserved, String subject, String scenario) {
         limit(actor);
-        jdbc.query("SELECT id FROM platform_subjects WHERE id=? FOR UPDATE",rs->{},actor.accountId());
-        var states=jdbc.queryForList("SELECT state FROM test_account_creations WHERE creator_id=? AND account_id=? FOR UPDATE",
-                String.class,actor.accountId(),reserved.accountId());
-        if (states.isEmpty() || "deleted".equals(states.getFirst())) throw new AccountFailure(409,"TEST_ACCOUNT_DELETED","The account is no longer available.");
-        if ("active".equals(states.getFirst())) return;
+        work.lockSubject(actor.accountId());
+        String state=work.creationState(actor.accountId(),reserved.accountId());
+        if (state==null || "deleted".equals(state)) throw new AccountFailure(409,"TEST_ACCOUNT_DELETED","The account is no longer available.");
+        if ("active".equals(state)) return;
         int cap=limit(actor);
-        int spent=jdbc.queryForObject("SELECT count(*) FROM test_account_creations WHERE creator_id=? AND state IN ('active','deleted')",
-                Integer.class,actor.accountId());
+        int spent=work.lifetimeSpend(actor.accountId());
         if (spent>=cap) throw limitReached(actor,cap);
-        jdbc.update("INSERT INTO platform_subjects(id) VALUES (?) ON CONFLICT DO NOTHING",reserved.accountId());
-        jdbc.update("INSERT INTO test_account_registry(account_id,username,initialization,creator_id,last_changed_by) VALUES (?,?,'created',?,?)",
-                reserved.accountId(),reserved.username(),actor.accountId(),actor.accountId().toString());
+        work.createSubject(reserved.accountId());
+        work.registerCreated(reserved.accountId(),reserved.username(),actor.accountId());
         // DEV: admitted by its creator on the test issuer, so every account feature finds its row (DLV-969 S35).
         if (policy.cloud()) accounts.admitTestAccount(reserved.accountId(),reserved.username(),reserved.username(),actor.accountId());
         if (scenario!=null) accounts.applyCreated(reserved.accountId(),scenario,actor.accountId());
-        jdbc.update("UPDATE test_account_creations SET state='active' WHERE creator_id=? AND account_id=?",actor.accountId(),reserved.accountId());
+        work.activateCreation(actor.accountId(),reserved.accountId());
     }
     /** A lifetime creation limit hit: one {@code lookahead.limit} line (admin 10, co-author 20; the owner has none). */
     private static AccountFailure limitReached(AccountPrincipal actor, int cap) {
@@ -178,10 +174,11 @@ public class CreatedTestAccounts {
     }
     public void delete(AccountPrincipal actor, UUID id) {
         try {
-            var target=transactions.execute(status -> authorizedTarget(actor,id));
+            var target=store.transactRetrying(work -> authorizedTarget(work,actor,id));
             if (target==null) throw new AccountFailure(404,"TEST_ACCOUNT_NOT_FOUND","Managed test account not found.");
             identity().disable(id,target.username());
-            transactions.executeWithoutResult(status -> erase(actor,id));
+            // Erasure is idempotent: a checkout that slips in between its fence and the commit makes it run again and delete that too.
+            store.transactRetrying(work -> { erase(work,actor,id); return null; });
             Events.success(Events.EVENT,"test-account.delete").addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",id)
                 .addKeyValue("repeated","deleted".equals(target.state()))
                 .log("deleted".equals(target.state())?"Test account {} was already deleted; nothing more to do":"Test account {} deleted by account {}",id,actor.accountId());
@@ -191,7 +188,7 @@ public class CreatedTestAccounts {
             throw refused;
         }
     }
-    private Reservation authorizedTarget(AccountPrincipal actor, UUID id) {
+    private Reservation authorizedTarget(TestAccountStore.Work work, AccountPrincipal actor, UUID id) {
         policy.requireEnabled();
         if (id==null) throw new AccountFailure(404,"TEST_ACCOUNT_NOT_FOUND","Managed test account not found.");
         if (actor==null || !actor.isEnabled()) throw new AccountFailure(401,"AUTHENTICATION_REQUIRED","Sign in to continue.");
@@ -201,9 +198,9 @@ public class CreatedTestAccounts {
         boolean coauthor=roles.contains("co-author");
         boolean admin=roles.contains("admin");
         if (!isOwner&&!coauthor&&!admin) throw new AccountFailure(403,"DELETE_FORBIDDEN","Staff access required.");
-        var targets=jdbc.query("SELECT username,creator_id,creation_state FROM test_account_registry WHERE account_id=? FOR UPDATE",
-                (r,i)->new Object[]{r.getString(1),r.getObject(2,UUID.class),r.getString(3)},id);
-        if (targets.isEmpty()) throw new AccountFailure(404,"TEST_ACCOUNT_NOT_FOUND","Managed test account not found.");
+        var registry=work.registryLocked(id);
+        if (registry==null) throw new AccountFailure(404,"TEST_ACCOUNT_NOT_FOUND","Managed test account not found.");
+        var targets=List.<Object[]>of(new Object[]{registry.username(),registry.creatorId(),registry.creationState()});
         String username=(String)targets.getFirst()[0];
         if (LocalAuthorAccess.ACCOUNT_ID.equals(id))
             throw new AccountFailure(403,"PROTECTED_TEST_ACCOUNT","The Local author account cannot be deleted.");
@@ -221,15 +218,14 @@ public class CreatedTestAccounts {
             throw new AccountFailure(403,"DELETE_FORBIDDEN","Your role cannot delete this test account.");
         return new Reservation(id,username,(String)targets.getFirst()[2]);
     }
-    private void erase(AccountPrincipal actor, UUID id) {
-        var target=authorizedTarget(actor,id);
+    private void erase(TestAccountStore.Work work, AccountPrincipal actor, UUID id) {
+        var target=authorizedTarget(work,actor,id);
         if ("deleted".equals(target.state())) return;
-        jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor.accountId().toString());
+        work.actor(actor.accountId().toString());
         // Audit purge is a Local fixture privilege only; cloud mode never passes it (AccountDataErasure contract).
-        new AccountDataErasure(jdbc).erase(id, policy.local());
+        work.erase(id, policy.local());
         // Cloud: a deleted test account leaves every test-session list and check at once. The admitted row stays (V17).
-        jdbc.update("UPDATE test_account_creations SET state='deleted' WHERE account_id=?",id);
-        jdbc.update("UPDATE test_account_registry SET creation_state='deleted',revision=revision+1,last_changed_by=?,last_changed_at=clock_timestamp() WHERE account_id=?",
-                actor.accountId().toString(),id);
+        work.deleteCreation(id);
+        work.deleteRegistry(id,actor.accountId());
     }
 }

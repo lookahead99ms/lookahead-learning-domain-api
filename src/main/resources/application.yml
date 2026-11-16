@@ -57,6 +57,19 @@ app:
     manifest: ${LOOKAHEAD_AUTHOR_REVIEW_MANIFEST:}
   version: "@project.version@"
   deployment-environment: ${LOOKAHEAD_ENVIRONMENT}
+  # DLV-970: the one store this process uses. postgresql (default) keeps today's RDS/Local PostgreSQL; dynamodb
+  # selects the four approved tables and creates no JDBC data source. Any other value refuses startup.
+  persistence:
+    store: ${LOOKAHEAD_PERSISTENCE_STORE:postgresql}
+  dynamodb:
+    region: ${AWS_REGION:}
+    # Local only: the loopback DynamoDB Local endpoint, e.g. http://127.0.0.1:4400. Must be empty in dev and prod.
+    endpoint: ${LOOKAHEAD_DYNAMODB_ENDPOINT:}
+    # dev/prod: the four approved literal names; Local reuses the dev names on its own container.
+    user-account-details-table-name: ${LOOKAHEAD_DYNAMODB_USER_ACCOUNT_DETAILS_TABLE:}
+    administrator-audit-events-table-name: ${LOOKAHEAD_DYNAMODB_ADMINISTRATOR_AUDIT_EVENTS_TABLE:}
+    user-study-plan-details-table-name: ${LOOKAHEAD_DYNAMODB_USER_STUDY_PLAN_DETAILS_TABLE:}
+    protected-owner-identity-table-name: ${LOOKAHEAD_DYNAMODB_PROTECTED_OWNER_IDENTITY_TABLE:}
   identity:
     issuer: ${LOOKAHEAD_OAUTH_ISSUER:}
     upstream: ${LOOKAHEAD_IDENTITY_UPSTREAM:}
@@ -113,6 +126,9 @@ management:
       probes:
         enabled: true
       show-details: never
+      # DLV-970: the readiness group names both stores' indicators; only the selected store registers one, so
+      # membership is not validated (Boot would otherwise refuse to start over the absent indicator).
+      validate-group-membership: false
       group:
         readiness:
-          include: readinessState,domainDatabase,contentPublication
+          include: readinessState,domainDatabase,dynamodb,contentPublication

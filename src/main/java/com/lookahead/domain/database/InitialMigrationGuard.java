@@ -4,7 +4,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import javax.sql.DataSource;
 
-/** Holds a session lock while the explicitly reviewed initial cloud migration runs. */
+/** Holds a session lock while the explicitly reviewed initial cloud migration runs. PostgreSQL only (DLV-970). */
 public final class InitialMigrationGuard implements AutoCloseable {
     private static final long LOCK_KEY = 91481015L;
     private final Connection connection;

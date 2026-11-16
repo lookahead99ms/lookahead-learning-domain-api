@@ -26,6 +26,15 @@
         <project.build.outputTimestamp>2026-09-18T00:00:00Z</project.build.outputTimestamp>
     </properties>
     <dependencies>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>dynamodb</artifactId>
+            <version>2.55.12</version>
+            <exclusions>
+                <exclusion><groupId>software.amazon.awssdk</groupId><artifactId>netty-nio-client</artifactId></exclusion>
+                <exclusion><groupId>software.amazon.awssdk</groupId><artifactId>apache-client</artifactId></exclusion>
+            </exclusions>
+        </dependency>
         <dependency><groupId>com.stripe</groupId><artifactId>stripe-java</artifactId><version>34.0.0</version></dependency>
         <dependency>
             <groupId>software.amazon.awssdk</groupId>

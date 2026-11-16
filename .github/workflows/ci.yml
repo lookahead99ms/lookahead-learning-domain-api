@@ -76,6 +76,10 @@
           }
         },
         {
+          "name": "Test Maven bootstrap retry, fallback and checksum protection",
+          "run": "python3 -m unittest discover -s tools/build -p 'test_*.py'"
+        },
+        {
           "name": "Test security gates with clean, finding and incomplete fixtures",
           "run": "python3 -m unittest discover -s tools/security -p 'test_*.py'"
         },
@@ -119,9 +123,15 @@
           }
         },
         {
+          "name": "Start a disposable in-memory DynamoDB Local for the DynamoDB store tests (DLV-970)",
+          "run": "docker run -d --rm --name dynamodb-local -p 127.0.0.1:4445:8000 amazon/dynamodb-local:2.6.1@sha256:1856c05cc66a0e49dc1099e483ad2851477eeebe2135250ac11a1d1227db54b1 -jar DynamoDBLocal.jar -inMemory -sharedDb\nfor attempt in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:4445/ && exit 0; sleep 1; done\necho 'DynamoDB Local did not answer on 127.0.0.1:4445' >&2; exit 1"
+        },
+        {
           "name": "Test all production code and require at least 85 percent line coverage",
           "run": "./mvnw --batch-mode --no-transfer-progress -Pcoverage clean verify",
           "env": {
+            "DLV970_DYNAMODB_TEST_ENDPOINT": "http://127.0.0.1:4445",
+            "DLV970_LOCAL_DYNAMODB_ENDPOINT": "http://127.0.0.1:4445",
             "CLOUD_AUTH_TEST_DATABASE_URL": "jdbc:postgresql://127.0.0.1:4393/lookahead_domain_cloud_auth",
             "CLOUD_AUTH_TEST_PASSWORD_FILE": "${{ runner.temp }}/domain-test-password",
             "DLV921_DATABASE_URL": "jdbc:postgresql://127.0.0.1:4392/lookahead_domain_review",

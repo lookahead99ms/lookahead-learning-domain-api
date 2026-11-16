@@ -14,11 +14,11 @@ class AdminAccountDirectoryTest {
   var directory=mock(AccountDirectory.class);var access=mock(StaffAccessService.class);
   var actor=new AccountPrincipal(UUID.randomUUID(),"admin","Admin",true);
   doThrow(new AccountFailure(403,"OWNER_REQUIRED","Owner required")).when(access).requireOwner(actor);
-  var service=new AdminAccountDirectory(directory,access,mock(StaffAccessRepository.class),mock(AccessSummaryService.class),mock(JdbcTemplate.class),mock(TestAccountPolicy.class),mock(AccountRemovalService.class));
+  var service=new AdminAccountDirectory(directory,access,mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)),mock(AccessSummaryService.class),mock(JdbcTemplate.class),mock(TestAccountPolicy.class),mock(AccountRemovalService.class));
   assertThatThrownBy(()->service.list(actor,"",0)).isInstanceOf(AccountFailure.class);verifyNoInteractions(directory);
  }
  @Test void joinsIdentityWithCurrentDomainRolesAndAccessWithoutWrites() {
-  var directory=mock(AccountDirectory.class);var access=mock(StaffAccessService.class);var staff=mock(StaffAccessRepository.class);
+  var directory=mock(AccountDirectory.class);var access=mock(StaffAccessService.class);var staff=mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
   var summaries=mock(AccessSummaryService.class);var jdbc=mock(JdbcTemplate.class);
   var localPolicy=mock(TestAccountPolicy.class);when(localPolicy.local()).thenReturn(true);
   var actor=new AccountPrincipal(UUID.randomUUID(),"owner","Owner",true);UUID real=UUID.randomUUID(),admin=UUID.randomUUID();
@@ -75,7 +75,7 @@ class AdminAccountDirectoryTest {
   var directory=mock(AccountDirectory.class);var access=mock(StaffAccessService.class);var jdbc=mock(JdbcTemplate.class);
   var actor=new AccountPrincipal(UUID.randomUUID(),"coauthor","Co-author",true);
   doThrow(new AccountFailure(403,"OWNER_REQUIRED","Owner required")).when(access).requireOwner(actor);
-  var service=new AdminAccountDirectory(directory,access,mock(StaffAccessRepository.class),mock(AccessSummaryService.class),jdbc,mock(TestAccountPolicy.class),mock(AccountRemovalService.class));
+  var service=new AdminAccountDirectory(directory,access,mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)),mock(AccessSummaryService.class),jdbc,mock(TestAccountPolicy.class),mock(AccountRemovalService.class));
   assertThatThrownBy(()->service.list(actor,"",0)).isInstanceOf(AccountFailure.class);
   verifyNoInteractions(directory,jdbc);
  }

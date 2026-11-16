@@ -9,7 +9,6 @@ import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * DLV-969 S35 (owner, 2026-11-03): Local's roster in DEV, for the admin and staff videos: the 27 learner scenarios as
@@ -37,16 +36,19 @@ public class DevTestRoster {
     public record Restore(String confirm) {}
     /** How many accounts this call restored: 0 when none was deleted. */
     public record Restored(int restored) {}
-    private final JdbcTemplate jdbc;
-    private final TransactionTemplate transactions;
+    private final TestAccountStore store;
     private final TestAccountPolicy policy;
     private final LocalAuthorAccess owner;
     private final TestAccountsService service;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    public DevTestRoster(TestAccountStore store, TestAccountPolicy policy, LocalAuthorAccess owner, TestAccountsService service) {
+        this.store = store; this.policy = policy; this.owner = owner; this.service = service;
+    }
+    /** PostgreSQL convenience (existing tests and fixtures): the JDBC store on the template and manager. */
     public DevTestRoster(JdbcTemplate jdbc, PlatformTransactionManager transactionManager, TestAccountPolicy policy,
             LocalAuthorAccess owner, TestAccountsService service) {
-        this.jdbc = jdbc; this.transactions = new TransactionTemplate(transactionManager);
-        this.policy = policy; this.owner = owner; this.service = service;
+        this(new JdbcTestAccountStore(jdbc, transactionManager), policy, owner, service);
     }
 
     /** The roster's progress for the owner in DEV; null for everyone and everywhere else, so the page offers nothing. */
@@ -63,9 +65,10 @@ public class DevTestRoster {
                     .log("Test roster creation refused for account {}: only the owner creates it", actor.accountId());
             throw new AccountFailure(403, "TEST_ROSTER_OWNER_ONLY", "Only the owner can create the test roster.");
         }
-        var existing = new HashSet<>(jdbc.queryForList("SELECT account_id FROM test_account_registry", UUID.class));
+        var existing = store.registeredIds();
         var batch = TestAccountRoster.entries().stream().filter(entry -> !existing.contains(entry.accountId())).limit(BATCH).toList();
-        batch.forEach(entry -> transactions.executeWithoutResult(status -> service.admitRosterEntry(actor, entry)));
+        // Each account in its own transaction (the service's admitRosterEntry opens it).
+        batch.forEach(entry -> service.admitRosterEntry(actor, entry));
         var progress = status();
         Events.success(Events.EVENT, "test-roster.create").addKeyValue("account.id", actor.accountId()).addKeyValue("count", batch.size())
                 .addKeyValue("ready", progress.ready()).addKeyValue("total", progress.total())
@@ -91,12 +94,12 @@ public class DevTestRoster {
                     .log("Restore of deleted roster accounts refused: {}", refused.code());
             throw refused;
         }
-        var deleted = new HashSet<>(jdbc.queryForList(
-                "SELECT account_id FROM test_account_registry WHERE creation_state='deleted' AND creator_id IS NOT NULL AND initialization<>'created'", UUID.class));
+        var deleted = store.deletedRosterIds();
         int restored = 0;
         for (var entry : TestAccountRoster.entries()) {
             if (!deleted.contains(entry.accountId())) continue;
-            if (!Boolean.TRUE.equals(transactions.execute(status -> service.restoreRosterEntry(actor, entry)))) continue;
+            // Each account in its own transaction (the service's restoreRosterEntry opens it).
+            if (!service.restoreRosterEntry(actor, entry)) continue;
             restored++;
             Events.success(Events.EVENT, "test-account.restore").addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", entry.accountId())
                     .log("Roster test account {} restored to its scenario by account {}", entry.accountId(), actor.accountId());
@@ -139,20 +142,20 @@ public class DevTestRoster {
         var roster = new HashSet<UUID>();
         for (var entry : TestAccountRoster.entries()) roster.add(entry.accountId());
         int ready = 0, deleted = 0, withoutPlan = 0, changed = 0;
-        for (var row : jdbc.queryForList(STATUS)) {
-            UUID id = (UUID) row.get("account_id");
+        for (var row : store.rosterStatus()) {
+            UUID id = row.accountId();
             if (!roster.contains(id)) continue;
-            if ("deleted".equals(row.get("creation_state"))) { deleted++; continue; }
+            if ("deleted".equals(row.creationState())) { deleted++; continue; }
             ready++;
-            boolean planMissing = needsPlan(id) && !Boolean.TRUE.equals(row.get("has_plan"));
+            boolean planMissing = needsPlan(id) && !row.hasPlan();
             if (planMissing) withoutPlan++;
-            if (planMissing || Boolean.TRUE.equals(row.get("changed"))) changed++;
+            if (planMissing || row.changed()) changed++;
         }
         return new Status(roster.size(), ready, deleted, withoutPlan, changed);
     }
 
     /** A roster learner whose scenario includes a study plan. */
-    private static boolean needsPlan(UUID id) {
+    static boolean needsPlan(UUID id) {
         return TestAccountRoster.entries().stream().filter(entry -> entry.accountId().equals(id))
                 .anyMatch(entry -> LearnerScenario.of(Integer.parseInt(entry.username().substring(7))).planKind() != LearnerScenario.PlanKind.NONE);
     }

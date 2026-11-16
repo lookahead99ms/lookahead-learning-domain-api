@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.withSettings;
 import static org.mockito.Mockito.when;
 
 import com.lookahead.domain.access.StaffAccessRepository;
@@ -25,7 +26,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 class AccountRepositoryOwnerGrantsTest {
     private static final Set<String> CATALOG = Set.of("learn:docker", "grow:system-design");
     private final JdbcTemplate jdbc = mock(JdbcTemplate.class);
-    private final StaffAccessRepository staff = mock(StaffAccessRepository.class);
+    private final StaffAccessRepository staff = mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
     private final SnapshotValidator catalog = mock(SnapshotValidator.class);
     private final UUID account = UUID.randomUUID();
 

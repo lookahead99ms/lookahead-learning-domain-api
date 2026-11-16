@@ -13,7 +13,7 @@ import javax.crypto.spec.PBEKeySpec;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 
-/** Retired executable entrypoint; provisioning helpers retained for compatibility fixtures. */
+/** Retired executable entrypoint; provisioning helpers retained for compatibility fixtures. PostgreSQL only (DLV-970): not a bean, never used in dynamodb mode. */
 public final class DomainApiBootstrap {
     private static final String MASTER = "lookahead_bootstrap";
     private static final String APP = "lookahead_platform_app";

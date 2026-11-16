@@ -14,7 +14,7 @@ import static org.assertj.core.api.Assertions.*;
 
 class PlanNamingTest {
     final ObjectMapper mapper = new ObjectMapper();
-    final PlanRepository repository = mock(PlanRepository.class);
+    final PlanRepository repository = mock(PlanRepository.class, withSettings().mockMaker(org.mockito.MockMakers.PROXY));
     final SnapshotValidator validator = mock(SnapshotValidator.class);
     final PlanService service = new PlanService(repository, mapper, validator, new PlanJson(mapper));
     final UUID owner = UUID.randomUUID(), id = UUID.randomUUID(), version = UUID.randomUUID();

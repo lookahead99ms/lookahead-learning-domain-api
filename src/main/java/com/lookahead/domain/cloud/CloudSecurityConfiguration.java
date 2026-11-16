@@ -7,7 +7,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.List;
+import com.lookahead.domain.persistence.PersistenceStore;
+import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
@@ -47,8 +51,15 @@ public class CloudSecurityConfiguration {
     }
     @Bean CognitoTokenVerifier cognitoVerifier(CognitoSettings settings,CognitoIdentityProviderClient client){return new CognitoTokenVerifier(settings,client);}
     /** DLV-971: prepared access by email admits a first contact; a context without the access service (configuration tests) keeps every first contact waiting. */
-    @Bean CloudSignInRegistry cloudSignIns(JdbcTemplate jdbc,PlatformTransactionManager manager,org.springframework.beans.factory.ObjectProvider<com.lookahead.domain.access.StaffAccessService> access){var registry=new CloudSignInRegistry(jdbc,manager);access.ifAvailable(registry::configureStaffAccess);return registry;}
-    @Bean CloudAdmissionCleanup cloudAdmissionCleanup(JdbcTemplate jdbc,PlatformTransactionManager manager){return new CloudAdmissionCleanup(jdbc,manager);}
+    @Bean @ConditionalOnProperty(name=PersistenceStore.PROPERTY,havingValue="postgresql",matchIfMissing=true)
+    CloudSignInRegistry cloudSignIns(JdbcTemplate jdbc,PlatformTransactionManager manager,org.springframework.beans.factory.ObjectProvider<com.lookahead.domain.access.StaffAccessService> access){var registry=new JdbcCloudSignInRegistry(jdbc,manager);access.ifAvailable(registry::configureStaffAccess);return registry;}
+    /** DLV-970: the same registry on DynamoDB, selected by {@code app.persistence.store=dynamodb}. */
+    @Bean @ConditionalOnProperty(name=PersistenceStore.PROPERTY,havingValue="dynamodb")
+    CloudSignInRegistry dynamoCloudSignIns(DynamoDbClient client,DynamoTableNames tables,org.springframework.beans.factory.ObjectProvider<com.lookahead.domain.access.StaffAccessService> access){var registry=new DynamoCloudSignInRegistry(client,tables);access.ifAvailable(registry::configureStaffAccess);return registry;}
+    @Bean @ConditionalOnProperty(name=PersistenceStore.PROPERTY,havingValue="postgresql",matchIfMissing=true)
+    CloudAdmissionCleanup cloudAdmissionCleanup(JdbcTemplate jdbc,PlatformTransactionManager manager){return new CloudAdmissionCleanup(jdbc,manager);}
+    @Bean @ConditionalOnProperty(name=PersistenceStore.PROPERTY,havingValue="dynamodb")
+    CloudAdmissionCleanup dynamoCloudAdmissionCleanup(DynamoDbClient client,DynamoTableNames tables){return new CloudAdmissionCleanup(new DynamoAdmissionCleanupStore(client,tables));}
     @Bean CloudDomainTokenConverter cloudAuthenticationConverter(CognitoTokenVerifier verifier,CloudSignInRegistry registry,HttpServletRequest request){return new CloudDomainTokenConverter(verifier,registry,request);}
     @Bean JwtDecoder cloudDecoder(CognitoSettings settings){
         var client=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).followRedirects(HttpClient.Redirect.NEVER).build();

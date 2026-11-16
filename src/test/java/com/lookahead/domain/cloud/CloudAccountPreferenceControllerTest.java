@@ -10,7 +10,7 @@ import static org.mockito.Mockito.*;
 
 class CloudAccountPreferenceControllerTest {
     @Test void invalidPreferenceAndLinkShapesMatchLocalValidationWithoutCallingProvider() {
-        var registry=mock(CloudSignInRegistry.class);
+        var registry=mock(CloudSignInRegistry.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
         // Use the interface proxy maker to avoid cross-maker handler ambiguity in the full suite.
         var provider=mock(software.amazon.awssdk.services.cognitoidentityprovider.CognitoIdentityProviderClient.class,
                 withSettings().mockMaker(org.mockito.MockMakers.PROXY));

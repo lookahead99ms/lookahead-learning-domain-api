@@ -11,6 +11,8 @@ import java.time.Duration;
 import java.util.List;
 
 @Component("domainDatabase")
+// DLV-970: the PostgreSQL check; the DynamoDB store registers its own "dynamodb" indicator instead.
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = com.lookahead.domain.persistence.PersistenceStore.PROPERTY, havingValue = "postgresql", matchIfMissing = true)
 public class DomainDatabaseHealthIndicator implements HealthIndicator {
     static final String HEALTH_SQL = """
         SELECT current_user='%s' AND session_user='%s'

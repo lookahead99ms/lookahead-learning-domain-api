@@ -1,11 +1,11 @@
-FROM eclipse-temurin:21-jdk-noble@sha256:bd6ac06e2a2df928af21c75c4a8a0f2829a93377a65761d6a577bb32281e2ac3 AS build
+FROM eclipse-temurin:21-jdk-noble@sha256:06c1f157dacf6b68198bd9a4186dd4c34ef24e65d7bbbe2a0cf8e62571ad38c9 AS build
 ARG RELEASE_VERSION=dev
 ARG BUILD_VERSION=0.0.1-SNAPSHOT
 ARG SOURCE_REVISION=local
 WORKDIR /workspace
 # Keep the wrapper on the checksum-pinned ZIP distribution (its tar fallback
 # has different bytes). This package is needed only in the build stage.
-# DLV-969: Acquire::Retries=0 closes the retry path of CVE-2026-109518 (apt, no Ubuntu fix yet).
+# DLV-969: retain Acquire::Retries=0 as defense in depth; the pinned base now includes the APT fix.
 RUN apt-get -o Acquire::Retries=0 update \
     && apt-get -o Acquire::Retries=0 install -y --no-install-recommends unzip \
     && rm -rf /var/lib/apt/lists/*
@@ -28,7 +28,7 @@ RUN ./mvnw --batch-mode --no-transfer-progress "-Drevision=$BUILD_VERSION" "-Dre
     && mkdir /workspace/health \
     && javac --release 21 -d /workspace/health src/main/java/com/lookahead/domain/health/ContainerHealthcheck.java
 
-FROM eclipse-temurin:21-jre-noble@sha256:161310cd5bd41fd549d19cf9f90b614897cb4a1532555c613b43b7e0628fe5d6 AS runtime
+FROM eclipse-temurin:21-jre-noble@sha256:0d57a8e90c2bb844c5a8e1b2b71e11eff06dad7edcfd803cd21ed4ae203b2515 AS runtime
 ARG RELEASE_VERSION=dev
 ARG BUILD_VERSION=0.0.1-SNAPSHOT
 ARG SOURCE_REVISION=local

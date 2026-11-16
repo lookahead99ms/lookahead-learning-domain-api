@@ -134,6 +134,15 @@ class DomainSecurityIntegrationTest {
         http.perform(post(route+"/work-items").header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
         http.perform(put(route+"/work-items/DLV-1").header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
     }
+    /** DLV-971 sweeps: the owner's manual run is a bearer route with the account scope; it was denied by default before (403 for everyone). */
+    @Test void sweepRunIsReachableWithTheAccountScopeAndDeniedWithoutIt() throws Exception {
+        String route="/api/v1/sweeps/run";
+        http.perform(post(route).cookie(new jakarta.servlet.http.Cookie("JSESSIONID","forged"))).andExpect(status().isForbidden());
+        when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
+        http.perform(post(route).header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
+        when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "account"));
+        http.perform(post(route).header("Authorization","Bearer synthetic-token")).andExpect(status().isNotFound());
+    }
     @Test void staffAccessRequiresBearerAndAccountScopeWithoutBrowserSession() throws Exception {
         for (String route : List.of("/api/v1/admin/access", "/api/v1/admin/access/lookup", "/api/v1/account/permissions", "/api/v1/auth/invitations/activate", "/api/v1/account/access-summary", "/api/v1/admin/test-accounts", "/api/v1/admin/test-accounts/"+SUBJECT+"/reset", "/api/v1/admin/accounts", "/api/v1/admin/accounts/"+SUBJECT+"/downgrade", "/api/v1/admin/accounts/"+SUBJECT+"/delete")) {
             http.perform(get(route).cookie(new jakarta.servlet.http.Cookie("JSESSIONID", "forged")))

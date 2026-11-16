@@ -3,42 +3,35 @@ package com.lookahead.domain.access;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.stereotype.Repository;
-import tools.jackson.databind.ObjectMapper;
+import java.util.function.Supplier;
 
-@Repository
-public class StaffAccessRepository {
-    public void mutationActor(UUID actor) {
-        jdbc.query("SELECT set_config('lookahead.actor_id',?,true)",rs->{},actor.toString());
-    }
+/**
+ * Staff assignments (roles, topic grants, full curriculum) and pending invitations by email, with their audit events.
+ * DLV-970: {@link JdbcStaffAccessRepository} is the PostgreSQL store; {@link DynamoStaffAccessRepository} keeps the
+ * same contract on DynamoDB, where {@link #save} is one revision-fenced transaction with its uniqueness sentinels.
+ */
+public abstract class StaffAccessRepository {
     public record Assignment(UUID id, UUID accountId, String pendingEmail, Set<String> roles,
             Set<String> topicGrants, boolean fullCurriculum, long revision) {}
-    private final JdbcTemplate jdbc;
-    private final ObjectMapper mapper;
-    public StaffAccessRepository(JdbcTemplate jdbc, ObjectMapper mapper) { this.jdbc=jdbc; this.mapper=mapper; }
-    private Assignment row(java.sql.ResultSet r, int index) throws java.sql.SQLException {
-        return new Assignment(r.getObject("id",UUID.class),r.getObject("account_id",UUID.class),
-                r.getString("pending_email"),strings(r.getString("roles")),strings(r.getString("topic_grants")),
-                r.getBoolean("full_curriculum"),r.getLong("revision"));
-    }
-    private Set<String> strings(String json) { return Set.copyOf(mapper.readValue(json, mapper.getTypeFactory().constructCollectionType(List.class,String.class))); }
-    public Assignment forAccount(UUID account) { return jdbc.query("SELECT * FROM staff_access WHERE account_id=?",this::row,account).stream().findFirst().orElse(null); }
-    public List<Assignment> list() { return jdbc.query("SELECT * FROM staff_access ORDER BY updated_at DESC LIMIT 500",this::row); }
+    /** Runs {@code work} in one store transaction (PostgreSQL); on DynamoDB every store method is its own transaction. */
+    public <T> T transaction(Supplier<T> work) { return work.get(); }
+    /** The audit actor of the following writes in this transaction (PostgreSQL session setting); a no-op elsewhere. */
+    public abstract void mutationActor(UUID actor);
+    public abstract Assignment forAccount(UUID account);
+    public abstract List<Assignment> list();
     /** DLV-969: the owner's account ids (cloud author access); the People list never shows their row to other staff. */
-    public Set<UUID> owners() { return Set.copyOf(jdbc.queryForList("SELECT account_id FROM cloud_accounts WHERE author_access",UUID.class)); }
-    public Assignment lock(UUID id) { return jdbc.query("SELECT * FROM staff_access WHERE id=? FOR UPDATE",this::row,id).stream().findFirst().orElse(null); }
-    public Assignment pending(String email) { return jdbc.query("SELECT * FROM staff_access WHERE account_id IS NULL AND pending_email=? AND updated_at > clock_timestamp()-interval '14 days' AND (roles <> '[]'::jsonb OR topic_grants <> '[]'::jsonb OR full_curriculum) FOR UPDATE",this::row,email).stream().findFirst().orElse(null); }
-    public void insert(Assignment a) {
-        jdbc.update("INSERT INTO staff_access(id,account_id,pending_email,roles,topic_grants,full_curriculum,revision) VALUES(?,?,?,?::jsonb,?::jsonb,?,?)",
-                a.id(),a.accountId(),a.pendingEmail(),mapper.writeValueAsString(a.roles()),mapper.writeValueAsString(a.topicGrants()),a.fullCurriculum(),a.revision());
-    }
-    public void update(Assignment a) {
-        jdbc.update("UPDATE staff_access SET account_id=?,pending_email=?,roles=?::jsonb,topic_grants=?::jsonb,full_curriculum=?,revision=?,updated_at=clock_timestamp() WHERE id=?",
-                a.accountId(),a.pendingEmail(),mapper.writeValueAsString(a.roles()),mapper.writeValueAsString(a.topicGrants()),a.fullCurriculum(),a.revision(),a.id());
-    }
-    public void event(UUID actor, String action, Assignment old, Assignment next) {
-        jdbc.update("INSERT INTO staff_access_events(event_id,assignment_id,actor_id,action,previous_state,next_state) VALUES(?,?,?, ?,?::jsonb,?::jsonb)",
-                UUID.randomUUID(),next.id(),actor,action,old==null?null:mapper.writeValueAsString(old),mapper.writeValueAsString(next));
+    public abstract Set<UUID> owners();
+    /** The assignment to change, read for update; null when there is none. */
+    public abstract Assignment lock(UUID id);
+    /** The live pending invitation for a normalised email (14 days, with something to grant), or null. */
+    public abstract Assignment pending(String email);
+    public abstract void insert(Assignment a);
+    public abstract void update(Assignment a);
+    public abstract void event(UUID actor, String action, Assignment old, Assignment next);
+    /** One whole change: the row inserted or updated at {@code old}'s revision and its event, together. */
+    public void save(UUID actor, String action, Assignment old, Assignment next) {
+        mutationActor(actor);
+        if (old == null) insert(next); else update(next);
+        event(actor, action, old, next);
     }
 }

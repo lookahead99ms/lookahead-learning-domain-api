@@ -148,7 +148,7 @@ class SecurityGateTests(unittest.TestCase):
 
     def test_runtime_base_avoids_known_vulnerable_alpine_pin(self):
         dockerfile = (checks.ROOT / 'Dockerfile').read_text()
-        self.assertEqual('eclipse-temurin:21-jre-noble@sha256:161310cd5bd41fd549d19cf9f90b614897cb4a1532555c613b43b7e0628fe5d6', checks.base_images(dockerfile)[1])
+        self.assertEqual('eclipse-temurin:21-jre-noble@sha256:0d57a8e90c2bb844c5a8e1b2b71e11eff06dad7edcfd803cd21ed4ae203b2515', checks.base_images(dockerfile)[1])
         self.assertIn('USER 10001:10001', dockerfile)
         self.assertIn('--shell /usr/sbin/nologin', dockerfile)
         self.assertIn('HEALTHCHECK', dockerfile)
@@ -318,15 +318,84 @@ class SecurityGateTests(unittest.TestCase):
             checks.scan('config')
             self.assertEqual('',(Path(directory)/'scanner-config'/'ignore').read_text())
 
-    def test_repository_carries_only_the_reviewed_apt_exception(self):
-        # DLV-968: the 2026-10-31 eclipse-temurin noble rebuild ships libbrotli1 1.1.0-2ubuntu0.1, so the CVE-2026-111497 entry is gone.
-        # DLV-969 (owner, 2026-11-05): CVE-2026-109518 in apt has no Ubuntu fix yet; it is carried for one week and nothing else is.
-        accepted=checks.load_vulnerability_exceptions(today=date(2026,11,5))
-        self.assertEqual(['CVE-2026-109518'],sorted(accepted))
-        self.assertEqual('apt',accepted['CVE-2026-109518']['package'])
-        self.assertLessEqual(date.fromisoformat(accepted['CVE-2026-109518']['expiresAt']),date(2026,11,12))
-        with self.assertRaisesRegex(ValueError,'Expired vulnerability exception'):
-            checks.load_vulnerability_exceptions(today=date(2026,11,13))
+    def test_retired_apt_exception_still_expires_at_its_original_boundary(self):
+        # Keep the original expiry regression after removing the now-patched advisory.
+        with tempfile.TemporaryDirectory() as directory:
+            policy=Path(directory)/'vulnerability-exceptions.json'
+            item={'vulnerabilityId':'CVE-2026-109518','package':'apt','expiresAt':'2026-11-12',
+                  'ticket':'DLV-969','rationale':'Historical policy fixture; never used by the scanner.'}
+            policy.write_text(checks.json.dumps({'version':1,'exceptions':[item]}))
+            accepted=checks.load_vulnerability_exceptions(policy,today=date(2026,11,5))
+            self.assertEqual(['CVE-2026-109518'],sorted(accepted))
+            self.assertEqual('apt',accepted['CVE-2026-109518']['package'])
+            self.assertLessEqual(date.fromisoformat(accepted['CVE-2026-109518']['expiresAt']),date(2026,11,12))
+            with self.assertRaisesRegex(ValueError,'Expired vulnerability exception'):
+                checks.load_vulnerability_exceptions(policy,today=date(2026,11,13))
+
+    def test_patched_bases_need_no_vulnerability_exception(self):
+        self.assertEqual({},checks.load_vulnerability_exceptions(today=date(2026,11,16)))
+        self.assertEqual({},checks.load_vulnerability_exceptions(today=date(2027,11,16)))
+        bases=checks.base_images((checks.ROOT/'Dockerfile').read_text())
+        self.assertEqual([
+            'eclipse-temurin:21-jdk-noble@sha256:06c1f157dacf6b68198bd9a4186dd4c34ef24e65d7bbbe2a0cf8e62571ad38c9',
+            'eclipse-temurin:21-jre-noble@sha256:0d57a8e90c2bb844c5a8e1b2b71e11eff06dad7edcfd803cd21ed4ae203b2515',
+        ],bases)
+
+    def test_sbom_and_image_scans_do_not_suppress_the_patched_apt_advisory(self):
+        for kind in ('sbom','image'):
+            document={'Metadata':{'OS':{'Family':'ubuntu'}},'Results':[
+                {'Class':'os-pkgs','Packages':[{'Name':'apt','Version':'2.8.3'}],
+                 'Vulnerabilities':[{'VulnerabilityID':'CVE-2026-109518','Severity':'HIGH'}]},
+                {'Class':'lang-pkgs','Type':'jar','Packages':[{'Name':'fixture','Version':'1'}]}]}
+            def scanFixture(args, **kwargs):
+                Path(args[args.index('--output')+1]).write_text(checks.json.dumps(document))
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run',side_effect=scanFixture), patch('builtins.print'):
+                with self.assertRaisesRegex(ValueError,'Security findings require review'):
+                    checks.scan(kind,'fixture:1')
+                self.assertEqual('',(Path(directory)/'scanner-config'/'ignore').read_text())
+
+    def test_image_gate_requires_the_built_image(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks.sys,'argv',['check.py','images']), patch.object(checks,'scan') as scan:
+            with self.assertRaisesRegex(ValueError,'Built application image is required'):
+                checks.main()
+            scan.assert_not_called()
+
+    def test_image_gate_scans_both_pins_and_requires_java_in_the_final_image(self):
+        bases=checks.base_images((checks.ROOT/'Dockerfile').read_text())
+        for failed in (False,True):
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks.sys,'argv',['check.py','images','--image','fixture:built']), patch.object(checks,'scan',side_effect=[ValueError('Security findings require review') if failed else None,None,None]) as scan, patch('builtins.print'):
+                if failed:
+                    with self.assertRaisesRegex(ValueError,'Image findings or coverage failures require review'):
+                        checks.main()
+                else:
+                    checks.main()
+                self.assertEqual([('image',bases[0]),('image',bases[1]),('image','fixture:built')],
+                                 [call.args for call in scan.call_args_list])
+                self.assertEqual([False,False,True],
+                                 [call.kwargs['require_java'] for call in scan.call_args_list])
+
+    def test_maven_sbom_includes_transitives_and_test_scope_without_private_root(self):
+        tree={'groupId':'private.fixture','artifactId':'private-root','version':'1','children':[
+            {'groupId':'org.example','artifactId':'runtime','version':'2','scope':'compile','children':[
+                {'groupId':'org.example','artifactId':'transitive','version':'3'}]},
+            {'groupId':'org.example','artifactId':'test-helper','version':'4','scope':'test'}]}
+        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run') as run, patch('builtins.print'):
+            (Path(directory)/'maven-tree.json').write_text(checks.json.dumps(tree))
+            checks.dependencies('maven')
+            bom=checks.read(Path(directory)/'dependencies.cdx.json')
+            self.assertEqual({'runtime','transitive','test-helper'}, {item['name'] for item in bom['components']})
+            self.assertNotIn('private-root',checks.json.dumps(bom))
+            command=run.call_args.args[0]
+            self.assertIn('-DoutputType=json',command)
+            self.assertFalse(any('scope' in value.lower() for value in command))
+
+    def test_vulnerability_policy_rejects_a_malformed_document(self):
+        with tempfile.TemporaryDirectory() as directory:
+            policy=Path(directory)/'exceptions.json'
+            for document in ({'version':2,'exceptions':[]},{'version':1,'exceptions':{}}):
+                policy.write_text(checks.json.dumps(document))
+                with self.assertRaisesRegex(ValueError,'Invalid vulnerability exception contract'):
+                    checks.load_vulnerability_exceptions(policy)
 
     def test_misconfiguration_exceptions_are_exact_expiring_and_bound_to_an_existing_target(self):
         # DLV-968: a trivy check that is a false positive on one named file may be carried for a bounded time; nothing else is ignored.

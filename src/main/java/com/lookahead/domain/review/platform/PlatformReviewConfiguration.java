@@ -1,6 +1,8 @@
 package com.lookahead.domain.review.platform;
 
 import com.lookahead.domain.StartupChecks;
+import com.lookahead.domain.persistence.PersistenceStore;
+import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.domain.delivery.DeliveryPlanService;
 import com.lookahead.domain.delivery.DeliveryPlanStore;
 import com.lookahead.domain.publication.PublicationSettings;
@@ -10,10 +12,12 @@ import java.util.List;
 import java.util.Optional;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.JdbcTemplate;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.s3.S3Client;
 import tools.jackson.databind.ObjectMapper;
 
@@ -71,8 +75,15 @@ public class PlatformReviewConfiguration {
         };
     }
 
-    @Bean ReviewRecordNumbers reviewRecordNumbers(JdbcTemplate jdbc) { return new ReviewRecordNumbers.Jdbc(jdbc); }
-    @Bean ReviewStatusHistory reviewStatusHistory(JdbcTemplate jdbc) { return new ReviewStatusHistory.Jdbc(jdbc); }
+    // DLV-970: the two record stores that still touch the database, one pair per persistence store.
+    @Bean @ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "postgresql", matchIfMissing = true)
+    ReviewRecordNumbers reviewRecordNumbers(JdbcTemplate jdbc) { return new ReviewRecordNumbers.Jdbc(jdbc); }
+    @Bean @ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "postgresql", matchIfMissing = true)
+    ReviewStatusHistory reviewStatusHistory(JdbcTemplate jdbc) { return new ReviewStatusHistory.Jdbc(jdbc); }
+    @Bean @ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
+    ReviewRecordNumbers dynamoReviewRecordNumbers(DynamoDbClient client, DynamoTableNames tables) { return new ReviewRecordNumbers.Dynamo(client, tables); }
+    @Bean @ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
+    ReviewStatusHistory dynamoReviewStatusHistory(DynamoDbClient client, DynamoTableNames tables) { return new ReviewStatusHistory.Dynamo(client, tables, java.time.Clock.systemUTC()); }
 
     @Bean PlatformReviewService.Stores reviewStores(StoreSettings settings, PublicationSettings publication, ObjectProvider<S3Client> clients,
             ObjectMapper mapper, ReviewRecordNumbers numbers) {

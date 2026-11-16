@@ -127,8 +127,12 @@ public class PlanService {
         JsonNode namingSource = imported ? local : body;
         String name = namingSource.has("name") ? planName(namingSource) : defaultPlanName(planNumber, snapshot);
         repository.createPlan(account, id, versionId, goal, progress, name, planNumber);
-        insertVersion(account, id, versionId, null, snapshot, validated.provenance(), recovery, imported ? "import" : "create", mapper.valueToTree(validated.assignmentContentIds()));
+        // DLV-970: every refusal that can be decided before the version is written (the lifecycle reservation, 409
+        // PLAN_SUBJECT_CONFLICT and its kin) comes first: in dynamodb mode insertVersion publishes a version above the
+        // inline budget as a document before the owner transaction, and a refusal after it would orphan that document.
+        // The lifecycle row stays after createPlan: on PostgreSQL plan_lifecycle references plans.
         if(lifecycle!=null)lifecycle.create(account,id,snapshot,body.path("startDate"),imported);
+        insertVersion(account, id, versionId, null, snapshot, validated.provenance(), recovery, imported ? "import" : "create", mapper.valueToTree(validated.assignmentContentIds()));
         if(freeAllowance!=null)freeAllowance.afterCreate(account,id,freeCreation);
         if (imported) event(account, id, versionId, 1, "legacyImport", progress);
         return receipt(account, key, operation, raw, id, 201, view(account, plan(account, id, false), version(account, id, versionId)));

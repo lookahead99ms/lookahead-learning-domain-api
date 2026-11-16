@@ -21,15 +21,15 @@ public final class TestAccountRoster {
      * row is reachable only through a test session.
      */
     public static final String TEST_ISSUER = "urn:lookahead:dev-test-account";
-    public record Entry(String username) {
+    /** A roster account: its username and the {@code learnerNN} scenario it starts from (its own name on the fixed roster). */
+    public record Entry(String username, String template) {
+        public Entry(String username) { this(username, username); }
         public UUID accountId() {
             return UUID.nameUUIDFromBytes(("lookahead-local-test:" + username).getBytes(StandardCharsets.UTF_8));
         }
         public String email() { return username + "@lookahead.test"; }
         /** The DEV username, shown in lists and on the test-account picker. */
         public String cloudUsername() { return username + "@" + CLOUD_DOMAIN; }
-        /** The scenario this entry uses: its own {@code learnerNN}. */
-        public String template() { return username; }
         public String firstName() { return Character.toUpperCase(username.charAt(0)) + username.substring(1); }
     }
     private TestAccountRoster() {}

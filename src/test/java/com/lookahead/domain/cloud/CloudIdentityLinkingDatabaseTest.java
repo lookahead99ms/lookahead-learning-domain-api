@@ -1,6 +1,7 @@
 package com.lookahead.domain.cloud;
 
 import com.lookahead.domain.access.AccountAdmissionService;
+import com.lookahead.domain.access.JdbcStaffAccessRepository;
 import com.lookahead.domain.access.StaffAccessRepository;
 import com.lookahead.domain.access.StaffAccessService;
 import com.lookahead.domain.testaccounts.TestAccountRoster;
@@ -57,7 +58,7 @@ class CloudIdentityLinkingDatabaseTest {
         return data;
     }
     static String sql(String file)throws Exception{return Files.readString(Path.of("src/main/resources/db/domain",file));}
-    CloudSignInRegistry registry(){return new CloudSignInRegistry(jdbc,new DataSourceTransactionManager(source));}
+    CloudSignInRegistry registry(){return new JdbcCloudSignInRegistry(jdbc,new DataSourceTransactionManager(source));}
     static CognitoIdentity identity(String subject,String username,String email){return new CognitoIdentity(ISSUER,subject,UUID.randomUUID().toString(),username,"Name of "+subject,Instant.now(),email);}
     static CognitoIdentity google(String subject,String email){return identity(subject,"Google_"+subject.hashCode(),email);}
     static CognitoIdentity password(String subject,String email){return identity(subject,email,email);}
@@ -77,7 +78,7 @@ class CloudIdentityLinkingDatabaseTest {
     int accountsWith(String email){return jdbc.queryForObject("SELECT count(*) FROM cloud_accounts WHERE verified_email=?",Integer.class,email);}
     AccountAdmissionService admission(){
         var local=new com.lookahead.learning.content.security.LocalAuthorAccess(new org.springframework.mock.env.MockEnvironment().withProperty("app.deployment-environment","dev"));
-        var staff=new StaffAccessRepository(jdbc,new tools.jackson.databind.ObjectMapper());
+        var staff=new JdbcStaffAccessRepository(jdbc,new tools.jackson.databind.ObjectMapper());
         return new AccountAdmissionService(jdbc,new StaffAccessService(staff,local,mock(com.lookahead.learning.content.validator.SnapshotValidator.class)),staff,new tools.jackson.databind.ObjectMapper());
     }
     AccountAdmissionService.Waiting waiting(UUID account){return admission().waiting(owner).waiting().stream().filter(w->w.accountId().equals(account)).findFirst().orElseThrow();}

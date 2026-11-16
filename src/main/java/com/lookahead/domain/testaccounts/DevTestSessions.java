@@ -49,14 +49,18 @@ public class DevTestSessions {
     private record Holder(UUID accountId, String role) {}
     private static final Holder NOBODY = new Holder(null, "");
     private record Target(UUID accountId, String username, String displayName) {}
-    private final JdbcTemplate jdbc;
+    private final TestAccountStore store;
     private final TestAccountPolicy policy;
     private final String issuer;
     private final byte[] secret;
 
-    public DevTestSessions(JdbcTemplate jdbc, TestAccountPolicy policy, String issuer, String gatewaySecret) {
-        this.jdbc = jdbc; this.policy = policy; this.issuer = issuer;
+    public DevTestSessions(TestAccountStore store, TestAccountPolicy policy, String issuer, String gatewaySecret) {
+        this.store = store; this.policy = policy; this.issuer = issuer;
         this.secret = Objects.requireNonNull(gatewaySecret).getBytes(StandardCharsets.UTF_8);
+    }
+    /** PostgreSQL convenience (existing tests and fixtures): the JDBC store on the template's data source. */
+    public DevTestSessions(JdbcTemplate jdbc, TestAccountPolicy policy, String issuer, String gatewaySecret) {
+        this(new JdbcTestAccountStore(jdbc, new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource())), policy, issuer, gatewaySecret);
     }
     private UpgradeMarkers markers;
     /** DLV-969 (owner, 2026-11-04): the "upgraded by" marker on the picker; without it every account shows none. */
@@ -136,8 +140,7 @@ public class DevTestSessions {
         if (subject == null || subject.isBlank() || subject.length() > 256) return null;
         try {
             // Any linked sign-in (S36) names the same account, as for the holder's role.
-            return jdbc.queryForList(com.lookahead.domain.cloud.CloudIdentities.ACCOUNT_OF_IDENTITY, UUID.class, issuer, subject, issuer, subject)
-                    .stream().findFirst().orElse(null);
+            return store.accountOf(issuer, subject);
         } catch (RuntimeException unknown) { return null; }
     }
 
@@ -159,31 +162,21 @@ public class DevTestSessions {
      */
     private String holderRole(String subject) { return holderOf(subject).role(); }
     private Holder holderOf(String subject) {
-        if (subject == null || subject.isBlank() || subject.length() > 256) return NOBODY;
-        var holders = jdbc.query("""
-                SELECT c.account_id,c.author_access FROM cloud_accounts c WHERE c.account_id IN (%s) AND c.admitted AND c.enabled
-                AND NOT EXISTS (SELECT 1 FROM cloud_account_states s WHERE s.account_id=c.account_id)
-                """.formatted(com.lookahead.domain.cloud.CloudIdentities.ACCOUNT_OF_IDENTITY),
-                (row, n) -> new Object[]{row.getObject(1, UUID.class), row.getBoolean(2)}, issuer, subject, issuer, subject);
-        if (holders.isEmpty()) return NOBODY;
-        boolean owner = (Boolean) holders.getFirst()[1];
-        UUID account = (UUID) holders.getFirst()[0];
+        // The subject is normalised, not branched on: an empty or oversized one is simply asked of nobody, and the store's
+        // answer (null for an unknown subject) decides, so no caller-controlled condition guards the role read.
+        String key = subject == null ? "" : subject.strip();
+        var holder = key.isEmpty() || key.length() > 256 ? null : store.holder(issuer, key);
+        if (holder == null) return NOBODY;
+        boolean owner = holder.authorAccess();
+        UUID account = holder.accountId();
         return new Holder(account, TestAccountTemplates.role(owner, owner ? Set.of() : roles(account)));
     }
 
     private Set<String> roles(UUID account) {
-        return new HashSet<>(jdbc.queryForList("SELECT jsonb_array_elements_text(roles) FROM staff_access WHERE account_id=?", String.class, account));
+        return new HashSet<>(store.staffRoles(account));
     }
 
     private List<Target> targets(UUID only) {
-        String sql = """
-                SELECT r.account_id,r.username,c.display_name FROM test_account_registry r
-                JOIN cloud_accounts c ON c.account_id=r.account_id AND c.issuer=? AND c.admitted AND c.enabled
-                WHERE r.creation_state='active' AND (r.initialization='created' OR r.creator_id IS NOT NULL)
-                """;
-        var mapper = (org.springframework.jdbc.core.RowMapper<Target>) (row, n) ->
-                new Target(row.getObject(1, UUID.class), row.getString(2), row.getString(3));
-        return only == null ? jdbc.query(sql + " ORDER BY r.username", mapper, TestAccountRoster.TEST_ISSUER)
-                : jdbc.query(sql + " AND r.account_id=?", mapper, TestAccountRoster.TEST_ISSUER, only);
+        return store.targets(only).stream().map(t -> new Target(t.accountId(), t.username(), t.displayName())).toList();
     }
 }

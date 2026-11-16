@@ -3,7 +3,7 @@ package com.lookahead.domain;
 import com.lookahead.domain.compatibility.LegacyStorageNames;
 import org.flywaydb.core.Flyway;
 
-/** Retired launcher; migration configuration and role checks remain shared with administration and fixtures. */
+/** Retired launcher; migration configuration and role checks remain shared with administration and fixtures. PostgreSQL only (DLV-970): the DynamoDB store migrates through persistence.dynamodb.migration.DomainDynamoMigration. */
 public final class DomainApiMigration {
     private DomainApiMigration() {}
     public static void main(String[] args) {

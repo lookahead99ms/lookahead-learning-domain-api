@@ -52,7 +52,12 @@
     "SupportRequestsPrefix": "support-requests/",
     "DeliveryPrefix": "delivery/",
     "TestAccountIdentity": "dev",
-    "EmailEnabled": "false"
+    "EmailEnabled": "false",
+    "PersistenceStore": "postgresql",
+    "UserAccountDetailsTable": "lookahead-dev-user-account-details",
+    "AdministratorAuditEventsTable": "lookahead-dev-administrator-audit-events",
+    "UserStudyPlanDetailsTable": "lookahead-dev-user-study-plan-details",
+    "ProtectedOwnerIdentityTable": "lookahead-dev-protected-owner-identity"
   },
   "logFailurePatterns": [
     "ERROR",

@@ -3,6 +3,7 @@ package com.lookahead.learning.content.service;
 import com.lookahead.learning.content.controller.PlanController;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.handler.AccountErrorHandler;
+import com.lookahead.learning.content.repository.JdbcPlanRepository;
 import com.lookahead.learning.content.repository.PlanRepository;
 import com.lookahead.learning.content.security.AccountPrincipal;
 import com.lookahead.learning.content.util.PlanJson;
@@ -78,7 +79,7 @@ class PlanLifecycleDatabaseTest {
         JsonNode catalog;
         try (var input = getClass().getResourceAsStream("/accounts/catalog.json")) { catalog = mapper.readTree(input); }
         var json = new PlanJson(mapper);
-        var target = new PlanService(new PlanRepository(jdbc, json), mapper, new SnapshotValidator(mapper, catalog), json);
+        var target = new PlanService(new JdbcPlanRepository(jdbc, json), mapper, new SnapshotValidator(mapper, catalog), json);
         var factory = new ProxyFactory(target);
         factory.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(source), new AnnotationTransactionAttributeSource()));
         return (PlanService) factory.getProxy();
@@ -88,7 +89,7 @@ class PlanLifecycleDatabaseTest {
         JsonNode catalog;
         try (var input = getClass().getResourceAsStream("/accounts/catalog.json")) { catalog = mapper.readTree(input); }
         var json = new PlanJson(mapper);
-        var target = new PlanService(new PlanRepository(jdbc, json), mapper, new SnapshotValidator(mapper, catalog), json);
+        var target = new PlanService(new JdbcPlanRepository(jdbc, json), mapper, new SnapshotValidator(mapper, catalog), json);
         var publication = org.mockito.Mockito.mock(ProtectedContentPolicy.class);
         org.mockito.Mockito.when(publication.freeContentIds()).thenReturn(java.util.Set.of("fixture-a"));
         target.configureFreeAllowance(new FreePlanAllowance(jdbc,
@@ -229,8 +230,8 @@ class PlanLifecycleDatabaseTest {
         var independent = new org.springframework.transaction.support.TransactionTemplate(
                 new DataSourceTransactionManager(source));
         independent.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
-        var first = new PlanRepository(jdbc, new PlanJson(mapper));
-        var second = new PlanRepository(new JdbcTemplate(source), new PlanJson(mapper));
+        var first = new JdbcPlanRepository(jdbc, new PlanJson(mapper));
+        var second = new JdbcPlanRepository(new JdbcTemplate(source), new PlanJson(mapper));
         UUID account = owner(), other = UUID.randomUUID();
         jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)", other);
         transactions.executeWithoutResult(outer -> {

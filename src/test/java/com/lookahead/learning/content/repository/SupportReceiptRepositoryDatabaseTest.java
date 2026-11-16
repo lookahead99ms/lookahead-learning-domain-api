@@ -33,7 +33,8 @@ class SupportReceiptRepositoryDatabaseTest {
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V1__platform.sql")));
         receipts=new SupportReceiptRepository(jdbc,new DataSourceTransactionManager(source));
     }
-    @AfterAll void stop(){if(jdbc!=null){jdbc.execute("DROP SCHEMA "+schema+" CASCADE");if(createdRuntimeRole)jdbc.execute("DROP ROLE lookahead_platform_app");}}
+    /** V1 grants the runtime role USAGE on schema public, which the schema drop does not reach; DROP OWNED revokes it before the role goes. */
+    @AfterAll void stop(){if(jdbc!=null){jdbc.execute("DROP SCHEMA "+schema+" CASCADE");if(createdRuntimeRole){jdbc.execute("DROP OWNED BY lookahead_platform_app");jdbc.execute("DROP ROLE lookahead_platform_app");}}}
     String subject(){UUID id=UUID.randomUUID();jdbc.update("INSERT INTO platform_subjects(id) VALUES (?)",id);return id.toString();}
     String status(String owner,String key){var rows=jdbc.queryForList("SELECT status FROM support_receipts WHERE account_id=? AND request_key=?",String.class,UUID.fromString(owner),key);return rows.isEmpty()?null:rows.getFirst();}
 

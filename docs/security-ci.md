@@ -34,6 +34,20 @@ Gradle resolution includes project/buildscript resolvable configurations. Maven 
 
 Dependabot proposes weekly Friday 11 AM America/New_York updates for the native build system, Docker bases and Actions. A base update requires review, rebuild, tests and rescanning; existing deployed containers do not update automatically. Enabling remote checks requires the user-owned Git cycle. Keep required status checks mapped to the actual `verify` job; do not add invented status names. Hosted execution, branch protection and failure-email delivery need their own verification.
 
+## APT exception removal (November 16, 2026)
+
+The November 12 expiry for CVE-2026-109518 correctly blocked scanning. The
+Linux AMD64 images in the November 11 Temurin Noble rebuilds contain fixed `apt` and
+`libapt-pkg6.0t64` version `2.8.4ubuntu0.1`. Both builder and runtime are repinned
+to those immutable image indexes, and `vulnerability-exceptions.json` is empty.
+The original expiry validation remains enforced; no date was extended.
+`Acquire::Retries=0` remains on build-stage APT commands as defense in depth.
+Repeat the dependency, both-base and final-image scans when changing the pins;
+an empty exception file does not itself prove that an image is clean.
+
+Source: [Ubuntu's CVE-2026-109518 advisory](https://ubuntu.com/security/CVE-2026-109518).
+
+
 ## Temporary Tomcat override (DLV-916)
 
 On 2026-09-19 Maven Central lists Boot 4.1.1 as the latest stable 4.1 release; its BOM manages Tomcat 11.0.24. This application retains Boot 4.1.1 and overrides embedded Tomcat to 11.0.25, the Apache-published fixed release. Gradle uses a group-scoped resolution rule; Maven uses the Boot parent `tomcat.version` property. Remove the override when a compatible stable Boot patch manages 11.0.25 or newer, then repeat dependency, security, contract and image checks. Do not switch to a milestone release solely to remove this override.

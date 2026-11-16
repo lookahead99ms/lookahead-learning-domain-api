@@ -191,12 +191,28 @@ case "${MVNW_PASSWORD:+has-password}" in
 has-password) [ -n "${MVNW_USERNAME-}" ] || MVNW_USERNAME='' MVNW_PASSWORD='' ;;
 esac
 
-if [ -z "${MVNW_USERNAME-}" ] && command -v wget >/dev/null; then
-  verbose "Found wget ... using wget"
-  wget ${__MVNW_QUIET_WGET:+"$__MVNW_QUIET_WGET"} "$distributionUrl" -O "$TMP_DOWNLOAD_DIR/$distributionUrlName" || die "wget: Failed to fetch $distributionUrl"
-elif [ -z "${MVNW_USERNAME-}" ] && command -v curl >/dev/null; then
-  verbose "Found curl ... using curl"
-  curl ${__MVNW_QUIET_CURL:+"$__MVNW_QUIET_CURL"} -f -L -o "$TMP_DOWNLOAD_DIR/$distributionUrlName" "$distributionUrl" || die "curl: Failed to fetch $distributionUrl"
+# Retry only bootstrap downloads, never Maven builds or checksum failures.
+download_distribution() {
+  for downloadTool in wget curl; do
+    command -v "$downloadTool" >/dev/null || continue
+    for downloadAttempt in 1 2 3; do
+      verbose "Downloading Maven with $downloadTool (attempt $downloadAttempt/3)"
+      if [ "$downloadTool" = wget ]; then
+        if wget ${__MVNW_QUIET_WGET:+"$__MVNW_QUIET_WGET"} --tries=1 --timeout=30 "$distributionUrl" -O "$TMP_DOWNLOAD_DIR/$distributionUrlName"; then
+          return 0
+        fi
+      elif curl ${__MVNW_QUIET_CURL:+"$__MVNW_QUIET_CURL"} --show-error --connect-timeout 15 --max-time 120 -f -L -o "$TMP_DOWNLOAD_DIR/$distributionUrlName" "$distributionUrl"; then
+        return 0
+      fi
+      echo "$downloadTool: Maven download attempt $downloadAttempt/3 failed" >&2
+      [ "$downloadAttempt" = 3 ] || sleep 2
+    done
+  done
+  return 1
+}
+
+if [ -z "${MVNW_USERNAME-}" ] && { command -v wget >/dev/null || command -v curl >/dev/null; }; then
+  download_distribution || die "Failed to fetch $distributionUrl after bounded download retries"
 elif set_java_home; then
   verbose "Falling back to use Java to download"
   javaSource="$TMP_DOWNLOAD_DIR/Downloader.java"

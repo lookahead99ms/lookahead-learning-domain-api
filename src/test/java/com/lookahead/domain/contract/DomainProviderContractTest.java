@@ -50,6 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.withSettings;
 import static org.mockito.Mockito.when;
 
 /**
@@ -188,7 +189,7 @@ class DomainProviderContractTest {
         var principal = new AccountPrincipal(ACCOUNT, "learner@example.test", "Learner", true);
         var admission = new CloudSignInRegistry.Admission(ACCOUNT, SIGN_IN, null, Instant.parse("2026-10-31T00:10:00Z"));
         var entry = new CloudSignInRegistry.Entry(SIGN_IN, true, "Work laptop", "Synthetic browser", Instant.parse("2026-10-31T00:00:00Z"), Instant.parse("2026-10-31T00:05:00Z"));
-        var registry = mock(CloudSignInRegistry.class);
+        var registry = mock(CloudSignInRegistry.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
         when(registry.admit(any(), any())).thenReturn(admission);
         when(registry.replace(any(), any(), any(), any())).thenReturn(new CloudSignInRegistry.Admission(ACCOUNT, SIGN_IN, null, null));
         when(registry.revoke(any(), any(), any())).thenReturn(false);
@@ -198,7 +199,7 @@ class DomainProviderContractTest {
         when(registry.profile(any(), any(), any())).thenReturn(Map.of("displayName", "Learner"));
         when(registry.preferences(any(), any(), anyString())).thenReturn(Map.of("theme", "dark"));
         when(registry.links(any(), any(), any())).thenReturn(Map.of("links", Map.of()));
-        var cognito = mock(software.amazon.awssdk.services.cognitoidentityprovider.CognitoIdentityProviderClient.class);
+        var cognito = mock(software.amazon.awssdk.services.cognitoidentityprovider.CognitoIdentityProviderClient.class, withSettings().mockMaker(org.mockito.MockMakers.PROXY));
         var account = new DomainAccountController(mock(AccountRepository.class), mock(ProtectedContentPolicy.class), mock(LocalAuthorAccess.class));
         var resolver = new HandlerMethodArgumentResolver() {
             public boolean supportsParameter(MethodParameter parameter) {

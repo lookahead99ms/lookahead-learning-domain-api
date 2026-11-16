@@ -1,0 +1,355 @@
+{
+  "name": "07 \u00b7 Migrate DEV data",
+  "run-name": "${{ github.workflow }} | ${{ inputs.release_version }} | ${{ inputs.command || 'migrate' }} | #${{ github.run_number }}",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "release_version": {
+          "description": "Published release tag vyyyy.mm.dd.hh.nn (01 \u00b7 Full approved and published it): plan, owner approval, one Fargate task from its image runs the DynamoDB migration entrypoint under lookahead-dev-migration-task; the service is not touched. Run it before 04 \u00b7 Deploy DEV switches this release to the dynamodb store (data first, then app)",
+          "type": "string",
+          "required": true
+        },
+        "command": {
+          "description": "migrate applies and records the data steps this release needs; verify re-checks every recorded step; status reports the ledger (verify and status write nothing)",
+          "type": "choice",
+          "options": [
+            "migrate",
+            "verify",
+            "status"
+          ],
+          "required": false,
+          "default": "migrate"
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "concurrency": {
+    "group": "deploy-dev",
+    "cancel-in-progress": false
+  },
+  "env": {
+    "DEPLOY_ROLE": "${{ vars.DEV_DEPLOY_ROLE_ARN || 'arn:aws:iam::509614632283:role/lookahead-dev-deploy' }}",
+    "RELEASE_VERSION": "${{ inputs.release_version }}",
+    "MIGRATE_COMMAND": "${{ inputs.command || 'migrate' }}"
+  },
+  "jobs": {
+    "validate": {
+      "name": "Security gate",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 15,
+      "permissions": {
+        "contents": "read"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Refuse any run that is not on main",
+          "run": "test \"$GITHUB_REF\" = refs/heads/main"
+        },
+        {
+          "name": "Set up Python for release and Infra tooling",
+          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+          "with": {
+            "python-version": "3.14"
+          }
+        },
+        {
+          "name": "Install hash-locked release coverage tooling",
+          "run": "python -m pip install --only-binary=:all: --require-hashes -r tools/release/requirements-coverage.txt"
+        },
+        {
+          "name": "Test the migration tooling this run executes and require 85 percent coverage",
+          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py,*/migrate.py' --fail-under=85",
+          "env": {
+            "COVERAGE_FILE": "${{ runner.temp }}/release-tooling.coverage"
+          }
+        }
+      ]
+    },
+    "plan-migration": {
+      "name": "Plan DEV data migration",
+      "needs": "validate",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 20,
+      "environment": "dev",
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "id-token": "write"
+      },
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "AWS_MAX_ATTEMPTS": "1",
+        "AWS_RETRY_MODE": "standard",
+        "AWS_EC2_METADATA_DISABLED": "true"
+      },
+      "outputs": {
+        "command": "${{ steps.plan.outputs.command }}",
+        "plan-digest": "${{ steps.plan.outputs.plan_digest }}"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Resolve the dispatched release tag once and freeze its main commit",
+          "id": "source",
+          "run": "mkdir -p \"$RUNNER_TEMP/migrate-plan\"\npython3 tools/release/release_version.py resolve --app domain --record \"$RUNNER_TEMP/migrate-plan/release-source.json\""
+        },
+        {
+          "name": "Point the release-source record at the runner temp directory",
+          "run": "echo \"RELEASE_SOURCE_RECORD=$RUNNER_TEMP/migrate-plan/release-source.json\" >> \"$GITHUB_ENV\""
+        },
+        {
+          "name": "Use short-lived DEV OIDC credentials (domain-deploy-migrate-plan)",
+          "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
+          "with": {
+            "aws-region": "us-east-2",
+            "role-to-assume": "${{ env.DEPLOY_ROLE }}",
+            "allowed-account-ids": "509614632283",
+            "role-duration-seconds": 900,
+            "role-session-name": "domain-deploy-migrate-plan-${{ github.run_id }}-1",
+            "unset-current-credentials": true,
+            "output-credentials": false,
+            "disable-retry": true
+          }
+        },
+        {
+          "name": "Plan the migration task: published digest, roles, network, tables, ledger items, resource preview",
+          "id": "plan",
+          "run": "python3 tools/release/migrate.py plan --output \"$RUNNER_TEMP/migrate-plan/plan.json\""
+        },
+        {
+          "name": "Retain the migration plan",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "migrate-plan",
+            "path": "${{ runner.temp }}/migrate-plan/",
+            "if-no-files-found": "error",
+            "retention-days": 30
+          }
+        }
+      ]
+    },
+    "approve-migration": {
+      "name": "Approve DEV data migration",
+      "needs": [
+        "plan-migration"
+      ],
+      "if": "always() && needs.plan-migration.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 20,
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "issues": "write",
+        "pull-requests": "read"
+      },
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "APPROVAL_WAIT_MINUTES": "${{ vars.APPROVAL_WAIT_MINUTES }}",
+        "APPROVAL_VALID_MINUTES": "${{ vars.APPROVAL_VALID_MINUTES }}"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Set up Python for release and Infra tooling",
+          "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+          "with": {
+            "python-version": "3.14"
+          }
+        },
+        {
+          "name": "Restore the migration plan of this run",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "migrate-plan",
+            "path": "${{ runner.temp }}/migrate-plan"
+          }
+        },
+        {
+          "name": "Point the release-source record at the runner temp directory",
+          "run": "echo \"RELEASE_SOURCE_RECORD=$RUNNER_TEMP/migrate-plan/release-source.json\" >> \"$GITHUB_ENV\""
+        },
+        {
+          "name": "Open the approval issue and wait for the owner comment (10 minutes)",
+          "id": "approve",
+          "run": "python3 tools/release/migrate.py approve --plan \"$RUNNER_TEMP/migrate-plan/plan.json\" --receipt \"$RUNNER_TEMP/migrate-approval/approval.json\""
+        },
+        {
+          "name": "Retain the approval receipt",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "migrate-approval",
+            "path": "${{ runner.temp }}/migrate-approval/",
+            "if-no-files-found": "error",
+            "retention-days": 30
+          }
+        },
+        {
+          "name": "Close the approval issue when approval failed or expired",
+          "if": "failure()",
+          "continue-on-error": true,
+          "run": "python3 tools/release/issue_close.py --stage \"Approve DEV data migration\" --outcome failure --detail \"Rejected, expired or failed; no migration task ran.\" --match \"domain data\""
+        }
+      ]
+    },
+    "migrate-dev": {
+      "name": "Migrate DEV data",
+      "needs": [
+        "plan-migration",
+        "approve-migration"
+      ],
+      "if": "always() && needs.approve-migration.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 60,
+      "environment": "dev",
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "issues": "write",
+        "id-token": "write"
+      },
+      "env": {
+        "GH_TOKEN": "${{ github.token }}",
+        "APPROVAL_WAIT_MINUTES": "${{ vars.APPROVAL_WAIT_MINUTES }}",
+        "APPROVAL_VALID_MINUTES": "${{ vars.APPROVAL_VALID_MINUTES }}",
+        "AWS_MAX_ATTEMPTS": "1",
+        "AWS_RETRY_MODE": "standard",
+        "AWS_EC2_METADATA_DISABLED": "true"
+      },
+      "steps": [
+        {
+          "name": "Checkout trusted release tooling from main",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Restore the migration plan of this run",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "migrate-plan",
+            "path": "${{ runner.temp }}/migrate-plan"
+          }
+        },
+        {
+          "name": "Restore the approval receipt",
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "name": "migrate-approval",
+            "path": "${{ runner.temp }}/migrate-approval"
+          }
+        },
+        {
+          "name": "Point the release-source record at the runner temp directory",
+          "run": "echo \"RELEASE_SOURCE_RECORD=$RUNNER_TEMP/migrate-plan/release-source.json\" >> \"$GITHUB_ENV\""
+        },
+        {
+          "name": "Recheck the migration approval before AWS credentials",
+          "run": "python3 tools/release/migrate.py verify --plan \"$RUNNER_TEMP/migrate-plan/plan.json\" --receipt \"$RUNNER_TEMP/migrate-approval/approval.json\""
+        },
+        {
+          "name": "Use short-lived DEV OIDC credentials (domain-deploy-migrate)",
+          "uses": "aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd",
+          "with": {
+            "aws-region": "us-east-2",
+            "role-to-assume": "${{ env.DEPLOY_ROLE }}",
+            "allowed-account-ids": "509614632283",
+            "role-duration-seconds": 3600,
+            "role-session-name": "domain-deploy-migrate-${{ github.run_id }}-1",
+            "unset-current-credentials": true,
+            "output-credentials": false,
+            "disable-retry": true
+          }
+        },
+        {
+          "name": "Execute the approved plan: register the task definition, run the task, wait, read the exit code and the report line",
+          "id": "execute",
+          "run": "python3 tools/release/migrate.py execute --plan \"$RUNNER_TEMP/migrate-plan/plan.json\" --receipt \"$RUNNER_TEMP/migrate-approval/approval.json\" --output \"$RUNNER_TEMP/migrate-result/result.json\""
+        },
+        {
+          "name": "Retain the migration result whatever the outcome",
+          "if": "always()",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "migrate-result",
+            "path": "${{ runner.temp }}/migrate-result/",
+            "if-no-files-found": "warn",
+            "retention-days": 90
+          }
+        },
+        {
+          "name": "Close the approval issue with the migration outcome",
+          "if": "always()",
+          "continue-on-error": true,
+          "env": {
+            "OUTCOME": "${{ steps.execute.outcome }}"
+          },
+          "run": "detail=\"$MIGRATE_COMMAND of DEV data for $RELEASE_VERSION ended with outcome $OUTCOME; the result artifact of this run holds every step and the report line.\"\npython3 tools/release/issue_close.py --stage \"Migrate DEV data\" --outcome \"$OUTCOME\" --detail \"$detail\" --receipt \"$RUNNER_TEMP/migrate-approval/approval.json\""
+        }
+      ]
+    },
+    "record": {
+      "name": "Record migration",
+      "needs": [
+        "plan-migration",
+        "approve-migration",
+        "migrate-dev"
+      ],
+      "if": "always() && needs.plan-migration.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "permissions": {
+        "contents": "read",
+        "actions": "read"
+      },
+      "steps": [
+        {
+          "name": "Restore every receipt this run produced (absent stages stay absent)",
+          "continue-on-error": true,
+          "uses": "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
+          "with": {
+            "pattern": "{migrate-plan,migrate-approval,migrate-result}",
+            "path": "${{ runner.temp }}/migrate-record",
+            "merge-multiple": false
+          }
+        },
+        {
+          "name": "Retain one record per migration run",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "migrate-record-${{ inputs.release_version }}-${{ github.run_id }}",
+            "path": "${{ runner.temp }}/migrate-record/",
+            "if-no-files-found": "error",
+            "retention-days": 90
+          }
+        }
+      ]
+    }
+  }
+}

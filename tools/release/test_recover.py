@@ -9,7 +9,7 @@ import unittest
 import deploy
 import recover as m
 import owner_approval as owner
-from test_deploy import APP, DeployFixture
+from test_deploy import APP, HAS_STORE, DeployFixture
 from test_owner_approval import record
 
 FALLBACK = 'v2026.10.20.10.00'
@@ -66,6 +66,34 @@ class PlanTests(RecoverFixture):
         self.aws.serving('old'); self.aws.stack['status'] = 'UPDATE_IN_PROGRESS'
         planned = self.recovery()
         self.assertEqual([True, False, True, False, True], [s['busyStackPark'] for s in planned['stages']])
+
+    @unittest.skipUnless(HAS_STORE, 'this application has no persistence store switch')
+    def test_a_recovery_keeps_the_store_the_stack_serves(self):
+        """DLV-970 S2: the configuration still says postgresql after the cutover; every stage names the stack's store explicitly, so
+        deploy.plan's as-configured guard never refuses a recovery and no stage switches the store."""
+        self.config['parameters'].update({deploy.STORE_PARAMETER: 'postgresql', **deploy.TABLE_PARAMETERS}); self.writeConfig()
+        self.aws.serving('old'); self.aws.stack['parameters'].update({deploy.STORE_PARAMETER: 'dynamodb', **deploy.TABLE_PARAMETERS})
+        planned = self.recovery()
+        self.assertEqual('dynamodb', planned['persistenceStore'])
+        self.assertTrue(all(s['persistenceStore'] == 'dynamodb' and s['parameters'][deploy.STORE_PARAMETER] == 'dynamodb' for s in planned['stages']))
+        m.validate(planned, self.env, self.root, self.get)
+        with self.assertRaisesRegex(ValueError, 'Recovery stage park changed'):
+            m.validate(dict(planned, persistenceStore='postgresql', planDigest=deploy.digest({**{k: v for k, v in planned.items() if k != 'planDigest'}, 'persistenceStore': 'postgresql'})),
+                       self.env, self.root, self.get)
+        stamp = self.now.replace(microsecond=0).isoformat()
+        self.assertIn('kept at `dynamodb`: a recovery never switches the store', m.body(planned, {'createdAt': stamp, 'expiresAt': stamp}))
+        # An environment that names another store is ignored: a recovery never switches.
+        self.assertEqual('dynamodb', m.plan(dict(self.env, DEPLOY_PERSISTENCE_STORE='postgresql'), self.aws, self.root, self.get, now=self.now)['persistenceStore'])
+        receipt = self.approvedRecovery(planned)
+        self.stage('park', planned, receipt)
+        served = self.stage('target', planned, receipt)
+        self.assertEqual(('healthy', 'dynamodb'), (served['outcome'], self.aws.stack['parameters'][deploy.STORE_PARAMETER]))
+        # A stack from before the switch existed renders the configuration's store; a configuration without the switch renders none.
+        del self.aws.stack['parameters'][deploy.STORE_PARAMETER]
+        self.assertEqual('postgresql', self.recovery()['persistenceStore'])
+        self.config['parameters'] = {k: v for k, v in self.config['parameters'].items() if k != deploy.STORE_PARAMETER and k not in deploy.TABLE_PARAMETERS}; self.writeConfig()
+        self.aws.stack['parameters'][deploy.STORE_PARAMETER] = 'dynamodb'
+        self.assertIsNone(self.recovery()['persistenceStore'])
 
     def test_recovery_needs_a_deployed_stack_a_distinct_fallback_and_a_bounded_wait(self):
         with self.assertRaisesRegex(ValueError, 'does not exist yet'):

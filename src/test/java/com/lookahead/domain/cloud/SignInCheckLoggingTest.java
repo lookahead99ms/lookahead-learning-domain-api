@@ -79,7 +79,7 @@ class SignInCheckLoggingTest {
     }
 
     @Test void theApiConverterPassesRefusalCodesOnAndLogsFailuresOnce() {
-        var registry = mock(CloudSignInRegistry.class);
+        var registry = mock(CloudSignInRegistry.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
         var request = new MockHttpServletRequest();
         request.addHeader(CloudDomainTokenConverter.PROOF_HEADER, "p".repeat(43));
         var converter = new CloudDomainTokenConverter(verifier, registry, request);
@@ -119,7 +119,7 @@ class SignInCheckLoggingTest {
             var jdbc = mock(JdbcTemplate.class);
             when(jdbc.queryForObject(anyString(), eq(Boolean.class), any(Object[].class)))
                     .thenThrow(new DataAccessResourceFailureException("password=hunter2", new SQLException("down", "57P01")));
-            var manager = mock(PlatformTransactionManager.class);
+            var manager = mock(PlatformTransactionManager.class, withSettings().mockMaker(org.mockito.MockMakers.PROXY));
             new CloudAdmissionCleanup(jdbc, manager).run();
             assertThat(log.only("admission.cleanup").getFormattedMessage())
                     .isEqualTo("Admission cleanup skipped this run: DataAccessResourceFailureException < SQLException (SQL state 57P01); the next run tries again");

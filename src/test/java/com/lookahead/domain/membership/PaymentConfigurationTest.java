@@ -11,7 +11,7 @@ class PaymentConfigurationTest {
     private static PaymentGateway gateway(String environment) {
         var env = new MockEnvironment();
         if (environment != null) env.setProperty("app.deployment-environment", environment);
-        return new PaymentConfiguration().paymentGateway(new JdbcTemplate(), new DataSourceTransactionManager(), env);
+        return new PaymentConfiguration().paymentGateway(new JdbcMockPaymentStore(new JdbcTemplate(), new DataSourceTransactionManager()), env);
     }
     @Test void devAsksTheOwnerLocalPaysTheMockAndProdIsRefused() {
         assertThat(gateway("dev")).isInstanceOf(OwnerApprovalPaymentGateway.class);

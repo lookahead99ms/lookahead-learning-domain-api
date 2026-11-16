@@ -13,7 +13,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.mockito.MockMakers;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -40,7 +39,8 @@ class LegacyCatalogPlanTest {
                "topicIds":["look-ahead:system-design"],"route":["/","look-ahead","system-design","caching"]}]}
             """.replace("VERSION", CATALOG_VERSION)));
         assertThat(catalog.allTopicIds()).containsExactly("blaze:system-design");
-        repository = mock(PlanRepository.class, withSettings().mockMaker(MockMakers.SUBCLASS));
+        // DLV-970: PlanRepository is an interface now; the default mock maker keeps every PlanRepository mock on one maker.
+        repository = mock(PlanRepository.class, withSettings().mockMaker(org.mockito.MockMakers.PROXY));
         when(repository.findReceipt(any(), any())).thenReturn(Optional.empty());
         when(repository.grants(OWNER)).thenReturn(Set.of("blaze:system-design"));
         when(repository.allocatePlanNumber(OWNER)).thenReturn(1L);

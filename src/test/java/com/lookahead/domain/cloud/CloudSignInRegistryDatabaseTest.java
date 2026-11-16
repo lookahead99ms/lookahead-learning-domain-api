@@ -9,6 +9,7 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.*;
 import com.lookahead.domain.access.AccountAdmissionService;
+import com.lookahead.domain.access.JdbcStaffAccessRepository;
 import com.lookahead.domain.access.StaffAccessRepository;
 import com.lookahead.domain.access.StaffAccessService;
 import static org.assertj.core.api.Assertions.*;
@@ -39,7 +40,7 @@ class CloudSignInRegistryDatabaseTest {
         jdbc.execute(Files.readString(Path.of("src/main/resources/db/domain/V20__cloud_merge_tokens.sql")));
         registry=service();
     }
-    CloudSignInRegistry service(){return new CloudSignInRegistry(jdbc,new DataSourceTransactionManager(source));}
+    CloudSignInRegistry service(){return new JdbcCloudSignInRegistry(jdbc,new DataSourceTransactionManager(source));}
     @AfterAll void stop(){if(jdbc!=null)jdbc.execute("DROP SCHEMA "+schema+" CASCADE");}
     CognitoIdentity identity(String subject){return new CognitoIdentity(issuer,subject,UUID.randomUUID().toString(),"same@example.invalid","Learner",Instant.now());}
     UUID provision(CognitoIdentity identity){UUID id=UUID.randomUUID();jdbc.update("INSERT INTO platform_subjects VALUES(?)",id);jdbc.update("INSERT INTO cloud_accounts(account_id,issuer,subject,admitted,username,display_name) VALUES(?,?,?,true,?,?)",id,identity.issuer(),identity.subject(),identity.username(),identity.displayName());return id;}
@@ -208,7 +209,7 @@ class CloudSignInRegistryDatabaseTest {
     int events(UUID account,String action){return jdbc.queryForObject("SELECT count(*) FROM cloud_admission_events WHERE account_id=? AND action=?",Integer.class,account,action);}
     /** DLV-971 (owner, 2026-11-07): prepared access by email is a pass through the DEV gate. */
     @Test void firstContactWithPreparedAccessIsAdmittedAtOnceWithItsRoles(){
-        var staff=new StaffAccessRepository(jdbc,new tools.jackson.databind.ObjectMapper());
+        var staff=new JdbcStaffAccessRepository(jdbc,new tools.jackson.databind.ObjectMapper());
         var catalog=mock(com.lookahead.learning.content.validator.SnapshotValidator.class);when(catalog.allTopicIds()).thenReturn(Set.of("java"));
         var access=new StaffAccessService(staff,new com.lookahead.learning.content.security.LocalAuthorAccess(new org.springframework.mock.env.MockEnvironment().withProperty("app.deployment-environment","dev")),catalog);
         UUID preparedBy=UUID.randomUUID();jdbc.update("INSERT INTO platform_subjects VALUES(?)",preparedBy);UUID invitation=UUID.randomUUID();
@@ -244,7 +245,7 @@ class CloudSignInRegistryDatabaseTest {
     AccountAdmissionService admission(){
         var owner=new com.lookahead.learning.content.security.LocalAuthorAccess(new org.springframework.mock.env.MockEnvironment().withProperty("app.deployment-environment","dev"));
         var catalog=mock(com.lookahead.learning.content.validator.SnapshotValidator.class);when(catalog.allTopicIds()).thenReturn(Set.of("java"));
-        var staff=new StaffAccessRepository(jdbc,new tools.jackson.databind.ObjectMapper());
+        var staff=new JdbcStaffAccessRepository(jdbc,new tools.jackson.databind.ObjectMapper());
         return new AccountAdmissionService(jdbc,new StaffAccessService(staff,owner,catalog),staff,new tools.jackson.databind.ObjectMapper());
     }
     @Test void firstContactRecordsOneWaitingRowUntilTheOwnerAdmitsIt(){
@@ -374,11 +375,11 @@ class CloudSignInRegistryDatabaseTest {
         assertThat(events(waiting,"admit")).isEqualTo(1);
         // A rejected assignment rolls the admission back as one transaction.
         UUID second=firstContact(contact("to-admit-rollback",null));
-        var conflicting=new AccountAdmissionService(jdbc,new StaffAccessService(new StaffAccessRepository(jdbc,new tools.jackson.databind.ObjectMapper()),
+        var conflicting=new AccountAdmissionService(jdbc,new StaffAccessService(new JdbcStaffAccessRepository(jdbc,new tools.jackson.databind.ObjectMapper()),
             new com.lookahead.learning.content.security.LocalAuthorAccess(new org.springframework.mock.env.MockEnvironment().withProperty("app.deployment-environment","dev")),
             mock(com.lookahead.learning.content.validator.SnapshotValidator.class)){
             @Override public StaffAccessRepository.Assignment save(com.lookahead.learning.content.security.AccountPrincipal actor,Change change){throw new com.lookahead.learning.content.exception.AccountFailure(409,"ACCESS_ASSIGNMENT_CONFLICT","synthetic");}
-        },new StaffAccessRepository(jdbc,new tools.jackson.databind.ObjectMapper()),new tools.jackson.databind.ObjectMapper());
+        },new JdbcStaffAccessRepository(jdbc,new tools.jackson.databind.ObjectMapper()),new tools.jackson.databind.ObjectMapper());
         failsWith(()->tx.execute(status->conflicting.admit(owner,new AccountAdmissionService.Request(second.toString(),List.of("admin")))),409,"ACCESS_ASSIGNMENT_CONFLICT");
         assertThat(jdbc.queryForObject("SELECT admitted FROM cloud_accounts WHERE account_id=?",Boolean.class,second)).isFalse();
         assertThat(events(second,"admit")).isZero();

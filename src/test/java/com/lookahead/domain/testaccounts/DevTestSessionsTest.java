@@ -26,7 +26,7 @@ class DevTestSessionsTest {
     /** Answers like the real service: the Gateway secret is "secret", holder "sub-admin" may use ACCOUNT only. */
     static final class Stub extends DevTestSessions {
         RuntimeException failure;
-        Stub() { super(null, null, "issuer", "secret"); }
+        Stub() { super((TestAccountStore) null, null, "issuer", "secret"); }
         @Override public AccountPrincipal actAs(String holder, UUID account) {
             if (failure != null) throw failure;
             if (account == null) throw new AccountFailure(422, "TEST_ACCOUNT_REQUIRED", "Choose a test account.");

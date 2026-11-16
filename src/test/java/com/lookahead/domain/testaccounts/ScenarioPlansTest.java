@@ -20,7 +20,7 @@ class ScenarioPlansTest {
  ObjectMapper json=new ObjectMapper();
  @Test void everyScenarioWritesRealVersionProgressAndExplicitLifecycle() throws Exception {
   var publication=mock(ProtectedContentPolicy.class);var catalog=mock(SnapshotValidator.class);
-  var plans=mock(PlanRepository.class);var lifecycle=mock(PlanLifecycle.class);
+  var plans=mock(PlanRepository.class, withSettings().mockMaker(org.mockito.MockMakers.PROXY));var lifecycle=mock(PlanLifecycle.class);
   JsonNode source=json.readTree(getClass().getResourceAsStream("/study-plans/synthetic-adoption-template.json"));
   Set<String> topics=new HashSet<>();source.path("topicIds").forEach(t->topics.add(t.asText()));
   var asset=new ProtectedContentPolicy.Asset("fixture","a".repeat(64),"application/json","pro",topics,Set.of(),"all");
@@ -54,7 +54,7 @@ class ScenarioPlansTest {
  }
  /** DLV-969 S35: DEV has no custom-plan fixture file; the custom scenarios get the ready-made plan, with no fixture read. */
  @Test void devGivesTheCustomScenariosTheReadyMadePlan() throws Exception {
-  var publication=mock(ProtectedContentPolicy.class);var catalog=mock(SnapshotValidator.class);var plans=mock(PlanRepository.class);
+  var publication=mock(ProtectedContentPolicy.class);var catalog=mock(SnapshotValidator.class);var plans=mock(PlanRepository.class, withSettings().mockMaker(org.mockito.MockMakers.PROXY));
   JsonNode source=json.readTree(getClass().getResourceAsStream("/study-plans/synthetic-adoption-template.json"));
   Set<String> topics=new HashSet<>();source.path("topicIds").forEach(t->topics.add(t.asText()));
   var asset=new ProtectedContentPolicy.Asset("fixture","a".repeat(64),"application/json","pro",topics,Set.of(),"all");
@@ -70,7 +70,7 @@ class ScenarioPlansTest {
   assertThatThrownBy(()->off.populate(owner,LearnerScenario.of(3),Instant.now())).hasMessageContaining("disabled");
  }
  @Test void missingOrUntrustedFixturesFailBeforePlanWrites() throws Exception {
-  var publication=mock(ProtectedContentPolicy.class);var catalog=mock(SnapshotValidator.class);var plans=mock(PlanRepository.class);
+  var publication=mock(ProtectedContentPolicy.class);var catalog=mock(SnapshotValidator.class);var plans=mock(PlanRepository.class, withSettings().mockMaker(org.mockito.MockMakers.PROXY));
   var service=new ScenarioPlans(publication,catalog,plans,mock(PlanLifecycle.class),new PlanJson(json),json,new TestAccountPolicy(TestAccountPolicyTest.local()),root.resolve("missing").toString());
   assertThatThrownBy(()->service.populate(UUID.randomUUID(),LearnerScenario.of(3),Instant.now())).hasMessageContaining("prepared");
   when(publication.find(anyString())).thenReturn(Optional.empty());
