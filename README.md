@@ -471,6 +471,9 @@ and needs no added curl or application SDK. Distroless Java 21 Debian candidates
 were investigated but rejected because their complete package scans still found
 blocking vulnerabilities. No image exception is used.
 
+The November 16 base refresh includes Ubuntu's APT fix and removes the expired
+vulnerability exception; see [Security CI](docs/security-ci.md#apt-exception-removal-november-16-2026).
+
 The scanner blocks High, Critical and Unknown severities, including unfixed
 findings, and requires complete OS/Java package coverage for built images.
 A passing base scan does not certify the application: CI scans both exact pinned
