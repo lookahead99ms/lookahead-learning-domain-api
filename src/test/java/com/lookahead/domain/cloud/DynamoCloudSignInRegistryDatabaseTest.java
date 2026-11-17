@@ -281,6 +281,31 @@ class DynamoCloudSignInRegistryDatabaseTest {
         assertThat(accounts.identities(id)).hasSize(2);
     }
 
+    @Test void ownerBindingWrittenAfterTheFirstContactAdmitsTheWaitingOwnerAtItsNextSignIn() {
+        // DLV-970 DEV cutover order: the owner signed in before OWNER / ROOT was written and became an ordinary waiting account.
+        var late = identity("late-owner-subject", "late-owner@example.invalid", "late-owner@example.invalid");
+        failsWith(() -> registry.admit(late, proof('w')), 403, "ACCOUNT_ADMISSION_REQUIRED");
+        UUID id = accounts.accountOf(ISSUER, "late-owner-subject");
+        assertThat(accounts.control(id).admitted()).isFalse(); assertThat(accounts.control(id).author()).isFalse();
+        assertThat(admissions.waiting()).singleElement().satisfies(w -> assertThat(w.accountId()).isEqualTo(id));
+        // The binding is written (by hand, never by the runtime); the next sign-in is the reviewed admission decision.
+        DynamoLocalFixture.seedOwner(client, ISSUER, "late-owner-subject");
+        try (var log = LogCapture.start()) {
+            assertThat(registry.admit(same(late), proof('w')).signInId()).isNotNull();
+            assertThat(log.only("admission.admitted-owner").getFormattedMessage()).contains("bound after the first contact");
+        }
+        var control = accounts.control(id);
+        assertThat(control.admitted()).isTrue(); assertThat(control.author()).isTrue(); assertThat(control.admittedAt()).isEqualTo(NOW);
+        assertThat(admissions.waiting()).isEmpty();
+        assertThat(get(client, TABLES.userAccountDetailsTableName(), WAITING, waitingSk(NOW, id))).isEmpty();
+        assertThat(query(client, TABLES.administratorAuditEventsTableName(), account(id), "ADMISSION#")).extracting(e -> e.get("action").s()).containsExactlyInAnyOrder("request", "admit");
+        assertThat(registry.authenticate(same(late), proof('w')).cloudAuthor()).isTrue();
+        // Nothing changes for an account that is not the owner's: it still waits.
+        var other = identity("s-9", "other@example.invalid", "other@example.invalid");
+        failsWith(() -> registry.admit(other, proof('x')), 403, "ACCOUNT_ADMISSION_REQUIRED");
+        failsWith(() -> registry.admit(same(other), proof('x')), 403, "ACCOUNT_ADMISSION_REQUIRED");
+    }
+
     @Test void ownerControlDisablesEnablesAndDeletesWithSessionsEndedAndErasureResumable() {
         var ownerIdentity = identity(OWNER_SUBJECT, "owner@example.invalid", "owner@example.invalid");
         // DLV-970: the protected owner identity admits itself at first contact (nothing else could on a fresh store).

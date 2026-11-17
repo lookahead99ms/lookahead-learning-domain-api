@@ -341,7 +341,12 @@ public final class DynamoCloudSignInRegistry extends CloudSignInRegistry {
         }
         requireEnabled(row);
         // DLV-969 S36: a sign-in just linked to a waiting account is "linked"; the owner still has to admit it.
-        if (!row.admitted()) { if (!linked) refresh(identity, row, binding, now); throw waiting(row.id(), linked ? "linked" : "refreshed"); }
+        // DLV-970: unless the sign-in is the protected owner identity whose binding was written after its first contact
+        // (the DEV cutover order): the reviewed decision admits the waiting owner now, nothing else could.
+        if (!row.admitted()) {
+            if (ownerIdentity(identity)) row = admitWaitingOwner(row, now);
+            else { if (!linked) refresh(identity, row, binding, now); throw waiting(row.id(), linked ? "linked" : "refreshed"); }
+        }
         if (!linked) row = refreshEmail(identity, row, binding, now);
         // Owner identity (Protected Owner Identity, issuer/subject) decides author access; it is recorded on the control item at sign-in, never from a profile field.
         if (!row.author() && ownerIdentity(identity)) { var tx = accounts.transaction(); accounts.control(tx, row, Map.of("author", bool(true)), null); accounts.directory(tx, row, Map.of("author", bool(true))); tx.commit(); row = accounts.control(row.id()); }
@@ -361,6 +366,19 @@ public final class DynamoCloudSignInRegistry extends CloudSignInRegistry {
         throw failure(503, "CREDENTIAL_CHANGE_PENDING");
     }
     private boolean ownerIdentity(CognitoIdentity identity) { return owner.matchesVerifiedIdentity(identity.issuer(), identity.subject()); }
+    /** The owner's admission of a waiting account that is its own: the same writes as the owner endpoint, author set in the same statement. */
+    private Control admitWaitingOwner(Control row, Instant now) {
+        var tx = accounts.transaction();
+        accounts.control(tx, row, attrs("admitted", bool(true), "author", bool(true), "admittedAt", time(now), "admittedBy", DynamoItems.nul()),
+            "\"admitted\"=? AND \"accountState\"=?", bool(false), s("ACTIVE"));
+        if (row.requestedAt() != null) tx.delete(table, key(WAITING, waitingSk(row.requestedAt(), row.id())), null);
+        accounts.directory(tx, row, Map.of("admitted", bool(true), "author", bool(true)));
+        accounts.admission(tx, row.id(), row.issuer(), row.subject(), null, "admit", List.of(), now);
+        tx.commit();
+        Events.success(Events.EVENT, "admission.admitted-owner").addKeyValue("account.id", row.id())
+            .log("Waiting account {} admitted: its sign-in is the protected owner identity, bound after the first contact", row.id());
+        return accounts.control(row.id());
+    }
     private AccountFailure waiting(UUID id, String action) {
         // Committed: the owner now sees the waiting account on People and access.
         Events.refused(Events.EVENT, "admission.waiting-" + action, "ACCOUNT_ADMISSION_REQUIRED").addKeyValue("account.id", id)

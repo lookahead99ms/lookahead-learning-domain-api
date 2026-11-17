@@ -37,7 +37,8 @@ each with one dynamodb-mode adapter (`DynamoAccountRecords`, `DynamoPlanFacts`, 
 the account aggregate creates it at first contact and the test-account store on creation.
 
 Not on DynamoDB: the `CloudAccountAdministration` command-line tool (the owner identity admits
-itself at first contact, `resolve-password-change` has no DynamoDB counterpart yet) and the Local
+itself at first contact, or at its next sign-in when `OWNER / ROOT` was written after that contact;
+`resolve-password-change` has no DynamoDB counterpart yet) and the Local
 audit purge (an insert-only audit has no equivalent). The author flag is bound from Protected
 Owner Identity at first contact rather than re-checked on every request. Cross-lane facts for the
 merge page: `MembershipFacts.hasPaidMembership` and `StudyPlanFacts.cards` (`DynamoPlanFacts`).

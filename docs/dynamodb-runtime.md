@@ -106,8 +106,10 @@ registered and the job answers an empty list.
 ## Accounts in dynamodb mode: what differs from PostgreSQL
 
 - The protected owner identity is admitted at its own first contact (`admission.admitted-owner`);
-  on PostgreSQL the operator's `CloudAccountAdministration admit` did this. Everyone else waits
-  for the owner as before.
+  on PostgreSQL the operator's `CloudAccountAdministration admit` did this. If `OWNER / ROOT` is
+  written only after that first contact (the DEV cutover order of 2026-11-17), the owner's waiting
+  account is admitted at its next sign-in instead, by the same writes as the owner endpoint, with
+  the author flag set. Everyone else waits for the owner as before.
 - A session's `lastActiveAt` is written at most once a minute and never fences the control item,
   so a page's parallel calls do not contend; idle expiry counts from the last write.
 - Sign-in challenges carry the generation they were issued under and die with it (Disable,

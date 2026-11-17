@@ -22,7 +22,8 @@ migration entrypoint, sweeps). The AWS DEV cutover (tables, IAM, `07 · Migrate 
 deploy with `persistence_store=dynamodb`) stays user-run and is described in the Infra
 cutover guide; local tests do not establish AWS permissions. On DynamoDB the
 `CloudAccountAdministration` command-line tool is not needed: the protected owner identity
-admits itself at first contact and every other account action is an owner endpoint.
+admits itself at first contact (or at its next sign-in, when its `OWNER / ROOT` binding was
+written after that contact) and every other account action is an owner endpoint.
 
 ## Audit retention and Local fixture provisioning
 
