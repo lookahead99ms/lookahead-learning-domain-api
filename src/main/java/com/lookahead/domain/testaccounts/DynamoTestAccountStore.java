@@ -1,7 +1,6 @@
 package com.lookahead.domain.testaccounts;
 
 import com.lookahead.domain.membership.MembershipItems;
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoItems;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
@@ -12,7 +11,6 @@ import java.time.Instant;
 import java.util.*;
 import java.util.function.Function;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
@@ -26,7 +24,7 @@ import static com.lookahead.domain.testaccounts.TestAccountItems.*;
  * of every account it locked, with reset receipts as insert-only audit events. Pending creation holds expire logically
  * after {@value #HOLD_MINUTES} minutes, checked in code.
  *
- * <p><b>Immediate commits inside a body.</b> PostgreSQL ran a whole body in one transaction; here some of it is durable
+ * <p><b>Immediate commits inside a body.</b> The retired PostgreSQL store ran a whole body in one transaction; here some of it is durable
  * before the commit, each piece its own committed operation: {@link Work#createSubject} (the subject
  * {@code ACCOUNT#id / META}: schemaVersion 1, revision, lastPlanNumber, createdAt, which lane B's plan stores fence on
  * for every call the scenario makes inside the body, so it cannot wait), the cross-lane calls on lane A's and lane B's
@@ -43,8 +41,7 @@ import static com.lookahead.domain.testaccounts.TestAccountItems.*;
  * <p><b>Conflicts.</b> A failed condition surfaces as {@link DynamoWrites.Conflict} (409). {@link #transactRetrying}
  * re-reads and re-runs a body up to {@value #ATTEMPTS} times, for bodies with nothing but reads and this store's own
  * writes (a creation reservation, the delete's authorisation, the idempotent erasure); a body with side effects (seed,
- * reset, restore, the creation's completion) runs once and keeps the 409, where PostgreSQL would have waited on the row
- * lock, because re-running it would write its scenario twice.
+ * reset, restore, the creation's completion) runs once and keeps the 409, where a row lock would have waited, because re-running it would write its scenario twice.
  *
  * <p><b>Purchases superseded by a reset or restore</b> are read at commit, after the META revision the commit fences on:
  * a checkout committed before that read is in the list and superseded, one committed after it moves the revision and the
@@ -54,7 +51,6 @@ import static com.lookahead.domain.testaccounts.TestAccountItems.*;
  * REVISION_CONFLICT rather than silently superseding what it never evaluated.
  */
 @Component
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoTestAccountStore implements TestAccountStore {
     static final int HOLD_MINUTES = 15, ATTEMPTS = 3;
     private final DynamoDbClient client;

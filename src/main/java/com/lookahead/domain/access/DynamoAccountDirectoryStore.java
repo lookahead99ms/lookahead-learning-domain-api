@@ -5,7 +5,6 @@ import static com.lookahead.domain.cloud.CloudAccountItems.*;
 import com.lookahead.domain.access.AccountDirectory.Account;
 import com.lookahead.domain.access.AccountDirectory.Page;
 import com.lookahead.domain.cloud.DynamoCloudAccounts;
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoItems;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import java.time.Clock;
@@ -15,7 +14,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
@@ -27,7 +25,6 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
  * item of each matching row decides the deleted state before anything is returned.
  */
 @Repository
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoAccountDirectoryStore implements AccountDirectoryStore {
     private record Person(UUID id, String username, String displayName, String email, boolean admitted, boolean enabled, List<String> usernames) {}
     private final DynamoCloudAccounts accounts;

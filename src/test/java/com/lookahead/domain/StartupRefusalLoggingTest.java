@@ -2,11 +2,9 @@ package com.lookahead.domain;
 
 import ch.qos.logback.classic.Level;
 import com.lookahead.domain.cloud.CognitoSettings;
-import com.lookahead.domain.database.DomainDatabaseConnections;
 import com.lookahead.domain.publication.CloudRuntimeGuard;
 import com.lookahead.domain.publication.PublicationSettings;
 import com.lookahead.domain.review.ReviewArtifactCatalog;
-import com.lookahead.learning.content.config.AccountDatabaseConfiguration;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
@@ -19,8 +17,9 @@ import tools.jackson.databind.json.JsonMapper;
 import static org.assertj.core.api.Assertions.*;
 
 /**
- * DLV-969 (owner, 2026-11-04): before startup is refused, one {@code lookahead.startup} WARN names the setting, secret
- * or file by its name and says what is wrong; never its value, and the exception keeps its fixed text.
+ * DLV-969 (owner, 2026-11-04): before startup is refused, one {@code lookahead.startup} line names the setting, secret
+ * or file by its name and says what is wrong; never its value, and the exception keeps its fixed text. Plain logs
+ * (owner, 2026-11-17): a refused startup is a misconfiguration an operator must fix, so the line is an ERROR.
  */
 class StartupRefusalLoggingTest {
     static final String SECRET = "hunter2-synthetic-secret-value";
@@ -28,7 +27,7 @@ class StartupRefusalLoggingTest {
 
     private static String refusal(LogCapture log) {
         var line = log.only("startup.check");
-        assertThat(line.getLevel()).isEqualTo(Level.WARN);
+        assertThat(line.getLevel()).isEqualTo(Level.ERROR);
         assertThat(line.getLoggerName()).isEqualTo("lookahead.startup");
         return line.getFormattedMessage();
     }
@@ -93,35 +92,17 @@ class StartupRefusalLoggingTest {
 
     private MockEnvironment guard() throws Exception {
         return new MockEnvironment().withProperty("app.deployment-environment", "dev").withProperty("app.publication.region", "us-east-2")
-                .withProperty("server.address", "127.0.0.1").withProperty("spring.datasource.password", SECRET)
-                .withProperty("spring.datasource.url", "jdbc:postgresql://synthetic.abc.us-east-2.rds.amazonaws.com/lookahead_platform?sslmode=verify-full&sslrootcert=" + certificate());
+                .withProperty("server.address", "127.0.0.1");
     }
 
     @Test void theCloudRuntimeGuardNamesTheSettingItRefused() throws Exception {
         var cases = new java.util.LinkedHashMap<MockEnvironment, String>();
         cases.put(guard().withProperty("AWS_SECRET_ACCESS_KEY", SECRET), "AWS_SECRET_ACCESS_KEY is set; the cloud app uses only the ECS task role");
-        cases.put(guard().withProperty("spring.datasource.password", "arn:aws:secretsmanager:us-east-2:123456789012:secret:synthetic"),
-                "spring.datasource.password (LOOKAHEAD_DOMAIN_DB_PASSWORD) is a secret ARN; the task definition must inject the secret's value");
-        cases.put(guard().withProperty("spring.datasource.password", "short"), "spring.datasource.password (LOOKAHEAD_DOMAIN_DB_PASSWORD) is empty or shorter than 16 characters");
-        cases.put(guard().withProperty("spring.datasource.password", "${UNRESOLVED_PASSWORD}"),
-                "spring.datasource.password (LOOKAHEAD_DOMAIN_DB_PASSWORD) could not be read: it holds a ${...} placeholder with no value");
         cases.put(guard().withProperty("server.address", "0.0.0.0"), "server.address (LOOKAHEAD_BIND_ADDRESS) must be 127.0.0.1");
-        cases.put(guard().withProperty("spring.datasource.url", guard().getProperty("spring.datasource.url").replace("verify-full", "require")),
-                "the database JDBC URL (LOOKAHEAD_DOMAIN_JDBC_URL, or SPRING_FLYWAY_URL for migrations) does not set sslmode=verify-full");
-        cases.put(guard().withProperty("spring.datasource.url", "jdbc:postgresql://db.internal.example/lookahead_platform?sslmode=verify-full"),
-                "the database JDBC URL (LOOKAHEAD_DOMAIN_JDBC_URL, or SPRING_FLYWAY_URL for migrations) does not point at an RDS endpoint in AWS_REGION");
-        cases.put(guard().withProperty("spring.datasource.url", "jdbc:postgresql://synthetic.abc.us-east-2.rds.amazonaws.com/other?sslmode=verify-full"),
-                "does not name the lookahead_platform database");
-        cases.put(guard().withProperty("spring.datasource.url", "jdbc:postgresql://synthetic.abc.us-east-2.rds.amazonaws.com/lookahead_platform?sslmode=verify-full&sslrootcert=/missing/ca.pem"),
-                "its CA bundle file is not absolute, missing, unreadable, a symbolic link or larger than 1 MB (IllegalArgumentException)");
-        cases.put(guard().withProperty("spring.datasource.url", "jdbc:postgresql://user:" + SECRET + "@db.example/lookahead_platform"),
-                "the database JDBC URL (LOOKAHEAD_DOMAIN_JDBC_URL, or SPRING_FLYWAY_URL for migrations) must name one host, an optional port,"
-                        + " a database name and no user or password");
-        cases.put(guard().withProperty("app.publication.region", "nowhere"), "AWS_REGION (app.publication.region) is not an AWS region name");
         for (var entry : cases.entrySet()) {
             try (var log = LogCapture.start("lookahead.startup")) {
                 assertThatThrownBy(() -> CloudRuntimeGuard.validate(entry.getKey())).isInstanceOf(IllegalStateException.class);
-                assertThat(refusal(log)).startsWith("Startup refused: ").contains(entry.getValue()).doesNotContain(SECRET, "db.internal", "/missing/ca.pem", "UNRESOLVED_PASSWORD");
+                assertThat(refusal(log)).startsWith("Startup refused: ").contains(entry.getValue()).doesNotContain(SECRET);
             }
         }
         try (var log = LogCapture.start("lookahead.startup")) {
@@ -130,28 +111,6 @@ class StartupRefusalLoggingTest {
             lowerCost.withProperty("server.ssl.enabled", "true").withProperty("server.ssl.client-auth", "want");
             assertThatThrownBy(() -> CloudRuntimeGuard.validate(lowerCost)).hasMessage("Lower-cost DEV requires application mTLS");
             assertThat(refusal(log)).isEqualTo("Startup refused: server.ssl.client-auth must be need for the lower-cost-dev profile (application mTLS);"
-                    + " the app stops before it takes traffic");
-        }
-    }
-
-    @Test void theJdbcUrlRuleBrokenIsNamedWithoutTheUrl() {
-        var cases = new java.util.LinkedHashMap<String, String>();
-        cases.put("mysql://db.example/x", "does not start with jdbc:postgresql://");
-        cases.put("jdbc:postgresql://db.example/x?password=" + SECRET, "has a query parameter other than one sslmode and one sslrootcert, or one without a value");
-        cases.put("jdbc:postgresql://db.example/x?sslmode=sometimes", "has an sslmode other than disable, allow, prefer, require, verify-ca or verify-full");
-        cases.put("jdbc:postgresql://db.example/x?sslrootcert=relative.pem", "has an sslrootcert that is not an absolute path");
-        cases.put("jdbc:postgresql://db.example/x y", "could not be parsed as a URL");
-        cases.forEach((url, problem) -> {
-            try (var log = LogCapture.start("lookahead.startup")) {
-                assertThatThrownBy(() -> AccountDatabaseConfiguration.validateJdbcUrl(url)).isInstanceOf(IllegalStateException.class);
-                assertThat(refusal(log)).isEqualTo("Startup refused: " + DomainDatabaseConnections.URL_SETTING + " " + problem + "; the app stops before it takes traffic")
-                        .doesNotContain(SECRET, "db.example");
-            }
-        });
-        try (var log = LogCapture.start("lookahead.startup")) {
-            assertThatThrownBy(() -> DomainDatabaseConnections.validateTarget("staging", "us-east-2", "jdbc:postgresql://db.example/x"))
-                    .hasMessage("Domain database requires explicit local, dev or prod environment");
-            assertThat(refusal(log)).isEqualTo("Startup refused: app.deployment-environment (LOOKAHEAD_ENVIRONMENT) must be local, dev or prod;"
                     + " the app stops before it takes traffic");
         }
     }

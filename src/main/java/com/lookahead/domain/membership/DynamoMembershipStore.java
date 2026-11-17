@@ -1,6 +1,5 @@
 package com.lookahead.domain.membership;
 
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoItems;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
@@ -10,7 +9,6 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.*;
 import java.util.function.Function;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
@@ -28,7 +26,6 @@ import static com.lookahead.domain.membership.MembershipRules.invalid;
  * the purchase key) up to {@value #ATTEMPTS} times, then surfaces {@link DynamoWrites.Conflict}.
  */
 @Component
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoMembershipStore implements MembershipStore {
     static final int ATTEMPTS = 3;
     private final DynamoDbClient client;

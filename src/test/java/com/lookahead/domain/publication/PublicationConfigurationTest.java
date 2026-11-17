@@ -82,16 +82,12 @@ class PublicationConfigurationTest {
     void cloudBeansInitializeVerifiedPublicationAndReadinessWithControlledObjectSource(String mode) throws Exception {
         var helper = new PublicationBootstrapTest(); helper.directory=directory;
         var fixture = helper.fixture(null,false,false);
-        var guard = new CloudRuntimeGuardTest(); guard.directory=directory;
-        var environment = guard.valid();
         // Cloud production directory is Linux /tmp; fixture constructor uses the real test path.
         var selected = helper.settings(fixture);
         new ApplicationContextRunner().withUserConfiguration(PublicationConfiguration.Cloud.class)
                 .withBean(PublicationSettings.class,()->selected)
                 .withBean("syntheticObjects",PublicationObjectSource.class,()->helper.source(fixture),definition->definition.setPrimary(true))
-                .withPropertyValues("app.deployment-environment="+mode, "app.publication.region=us-east-2", "server.address=127.0.0.1",
-                        "spring.datasource.password="+environment.getProperty("spring.datasource.password"),
-                        "spring.datasource.url="+environment.getProperty("spring.datasource.url"))
+                .withPropertyValues("app.deployment-environment="+mode, "app.publication.region=us-east-2", "server.address=127.0.0.1")
                 .run(context->{
                     assertThat(context).hasNotFailed().hasSingleBean(S3Client.class).hasSingleBean(ContainerCredentialsProvider.class);
                     var configuration = new PublicationConfiguration();

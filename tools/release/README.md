@@ -222,12 +222,12 @@ in the task definition family `lookahead-dev-domain-migrate` with the task role 
 execution role, cluster, subnets, security group and log group (`deployment/dev/deploy-config.json`) and the four pinned DEV
 table names. Inputs: `release_version` (a tag already in ECR) and `command` (`migrate` default, `verify`, `status`). It shares
 the `deploy-dev` concurrency group, so it never runs beside a deploy, recovery or restart. The service, its stack and its
-task definition family are never touched; `04 · Deploy DEV` with `persistence_store` `dynamodb` follows a successful run.
+task definition family are never touched; `04 · Deploy DEV` with the same release follows a successful run.
 
 1. **Security gate**: the release tooling tests with the 85 percent gate, now including `migrate.py`.
 2. **Plan DEV data migration** (`plan-migration`, environment `dev`, session `domain-deploy-migrate-plan-<run>-1`):
    `release_version.py resolve` freezes the tag; `migrate.py plan` reads the published digest back from ECR, the stack's
-   current store and DesiredCount, and writes `plan.json` (artifact `migrate-plan`): roles, network, entry point, environment,
+   current DesiredCount, and writes `plan.json` (artifact `migrate-plan`): roles, network, entry point, environment,
    tables, ledger items and the resource rows the issue shows.
 3. **Approve DEV data migration**: one v2 issue (task definition family, the one-off task, the untouched service, the four
    tables, the ledger items `DATA_VERSION#DOMAIN / STEP#…`, `CURRENT`, `LOCK`); the owner answers
@@ -247,24 +247,17 @@ IAM candidate (Infra): `lookahead-dev-deploy` needs `ecs:RegisterTaskDefinition`
 and `lookahead-dev-ecs-execution`, and `logs:GetLogEvents` on `/lookahead/dev/domain`; the trust must admit the two
 `domain-deploy-migrate*` sessions. The full table is in the repository README, "DynamoDB store and DEV data migration".
 
-## Persistence store switch (Domain only, DLV-970)
+## Persistence store switch (Domain only, DLV-970; retired 2026-11-17)
 
-`deploy.py` renders the template parameter `PersistenceStore` from `deployment/dev/deploy-config.json` unless the `04 · Deploy DEV`
-input `persistence_store` names a store for one run (`01 · Full` and `03 · Publish` call the deploy with `as-configured`). Rules the
-plan enforces:
-
-- **`as-configured` never changes the store a stack serves.** When the configuration and the stack's current `PersistenceStore`
-  disagree (the window between the cutover and the merge of the deploy-config pull request) the plan is refused with
-  `The stack serves the dynamodb store but deployment/dev/deploy-config.json says postgresql …`, a park included (the next
-  scheduled start would serve the flipped revision). Only an input that names the store switches it, on purpose. So right after the
-  cutover (`persistence_store` = `dynamodb`), merge the deploy-config pull request (`PersistenceStore=dynamodb`) before any further
-  Domain merge or deploy.
-- **`05 · Recover DEV` keeps the store the stack serves**: every stage names it explicitly, whatever the configuration or the
-  environment says; a recovery never switches the store.
-- **Rollback rule**: the line is the application's first write on DynamoDB. The migration's seed rows (counters, markers, the
-  membership catalog, the ledger) are not application data and PostgreSQL stays complete until then, so before the first application
-  write the flag goes back with `04 · Deploy DEV` and `persistence_store` = `postgresql`. After the first application write the way back
-  is a data decision, not a flag.
+History. From 2026-11-10 to 2026-11-17 `deploy.py` rendered the Domain template parameter `PersistenceStore`
+(`postgresql` or `dynamodb`) from `deployment/dev/deploy-config.json`, overridable for one run by the `04 · Deploy DEV`
+input `persistence_store`; `as-configured` was refused while the configuration and the stack disagreed, `05 · Recover DEV`
+kept the store the stack served, and the rollback rule was the application's first write on DynamoDB. The DEV cutover
+happened on 2026-11-17 (`07 · Migrate DEV data` to data version 5, then a deploy on `dynamodb`), and PostgreSQL was retired
+the same day: the parameter, the input, the `DEPLOY_PERSISTENCE_STORE` variable, the `DatabaseAddress` /
+`DomainAppSecretArn` / `DomainAppVersion` parameters and the task's database secret are gone. A deploy never names a store;
+the Domain's configuration pins the four DynamoDB table names and `deploy.py` only checks that they are the DEV names.
+The way back from a data step is a new step, not a flag.
 
 ## Settings the repository needs
 
@@ -281,7 +274,8 @@ trust must admit the sessions `<app>-deploy-plan-*` and `<app>-deploy-*` (DLV-96
 ## Shared copies and local checks
 
 `migrate.py`, `test_migrate.py`, `migrate-dev.yml` and `test_dev_persistence_store.py` exist in the Domain repository only (DLV-970);
-`deploy.py` carries the persistence store switch code everywhere, dormant where the configuration has no `PersistenceStore`.
+the Domain's `deploy.py` and `recover.py` lost the store switch code on 2026-11-17 and carry the DynamoDB table-name check
+instead, so the three copies of `deploy.py`, `recover.py` and their tests differ until Web and Gateway take the same change.
 `recover.py` and `test_recover.py` are identical across the three app repositories too; `recover-dev.yml` differs only in the
 application name (as `deploy-dev.yml` does). `release_version.py`, `issue_template.py`, `issue_close.py` and `owner_approval.py` are byte-identical copies of
 Infra's `github/releases/release_version.py`, `github/approvals/issue_template.py` and

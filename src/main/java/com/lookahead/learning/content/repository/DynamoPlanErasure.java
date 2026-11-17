@@ -24,7 +24,6 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
  */
 @Component
 @Profile("accounts")
-@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = com.lookahead.domain.persistence.PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoPlanErasure implements PlanErasure {
     static final List<String> PREFIXES = List.of("PLAN#", "PLANLIST#", "LIFECYCLE#", "MUTATION#", "SUPPORT#", "SUPPORTTIME#");
     static final List<String> LEDGER_PREFIXES = List.of("FREECREATE#", "FREEDELETE#");

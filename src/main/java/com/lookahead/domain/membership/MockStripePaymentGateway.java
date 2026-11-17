@@ -1,8 +1,6 @@
 package com.lookahead.domain.membership;
 
 import java.util.UUID;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.transaction.PlatformTransactionManager;
 
 /** Local provider simulator. Independent, durable payment records model an external payment's durability. */
 public final class MockStripePaymentGateway implements PaymentGateway {
@@ -15,8 +13,6 @@ public final class MockStripePaymentGateway implements PaymentGateway {
         com.lookahead.domain.Events.success(com.lookahead.domain.Events.PAYMENT,"payment.provider").addKeyValue("provider.scenario",scenario)
             .log("Payments use the mock provider with scenario {}: no real charge is ever made",scenario);
     }
-    /** PostgreSQL convenience (existing tests and fixtures): the JDBC records in their own transactions. */
-    public MockStripePaymentGateway(JdbcTemplate jdbc, PlatformTransactionManager manager, String scenario) { this(new JdbcMockPaymentStore(jdbc,manager),scenario); }
     public Result create(String key,int amount,String currency) {
         Result existing=findByKey(key);
         if(existing!=null) {

@@ -3,30 +3,24 @@
 DLV-970 (lane D, 2026-11-10). This page is the short operator view; the design and the
 library classes are in [DynamoDB persistence](dynamodb-persistence.md).
 
-## Store selection
+## The one store
 
-One process reads and writes exactly one store, chosen by `LOOKAHEAD_PERSISTENCE_STORE`
-(`app.persistence.store`):
+DynamoDB is the one store (DLV-970; PostgreSQL served DEV until 2026-11-17 and was retired with the
+store switch `LOOKAHEAD_PERSISTENCE_STORE`, the `Jdbc…` stores, Flyway and the database settings).
+What is wired: `DynamoDbClient`, `DynamoTableNames`, `DynamoSettings`, the `dynamodb` readiness
+check, every `Dynamo…` store and the DynamoDB maintenance jobs. What never exists: any
+`DataSource`, JDBC template, JDBC transaction manager or Flyway bean, and the classes themselves
+are off the class path (`DynamoModeApplicationContextTest` asserts both). The readiness group
+names `readinessState`, `dynamodb` and `contentPublication`.
 
-| Value | What is wired | What never exists |
-| --- | --- | --- |
-| `postgresql` (default, unset) | Hikari `DataSource`, `JdbcTemplate`, `JdbcTransactionManager`, the `domainDatabase` readiness check, every `Jdbc…` store | the DynamoDB client |
-| `dynamodb` | `DynamoDbClient`, `DynamoTableNames`, `DynamoSettings`, the `dynamodb` readiness check, every `Dynamo…` store, the DynamoDB maintenance jobs | any `DataSource`, JDBC template, transaction manager or Flyway bean (`DynamoModeApplicationContextTest` asserts it) |
-
-Any other value stops the process before it takes traffic (`PERSISTENCE_STORE_INVALID`).
-A DynamoDB failure never falls back to PostgreSQL. The readiness group lists both
-indicator names; the selected store contributes one.
-
-In `dynamodb` mode the store's failures answer what the PostgreSQL ones do: a transaction
-whose outcome is unknown (`DynamoWrites.Unavailable`) or an SDK failure reaching the web
-layer answers `503 ACCOUNT_STORAGE_UNAVAILABLE`; a condition that did not hold after the
-store's own retries (`DynamoWrites.Conflict`) answers `409 REVISION_CONFLICT`. The log line
-carries the failure's types only, never the SDK message.
-
-The PostgreSQL-only tools stay PostgreSQL-only and are not Spring beans: `DomainApiBootstrap`
-(retired entrypoint, Local role provisioning helpers), `DomainApiMigration` (Flyway
-configuration and migration-role checks), `domain.database.DomainDatabaseConnections`,
-`InitialMigrationGuard` and `LocalAuditProvisioning`. Nothing in `dynamodb` mode calls them.
+The store's failures: a transaction whose outcome is unknown (`DynamoWrites.Unavailable`) or an
+SDK failure reaching the web layer answers `503 ACCOUNT_STORAGE_UNAVAILABLE`; a condition that
+did not hold after the store's own retries (`DynamoWrites.Conflict`) answers `409 REVISION_CONFLICT`.
+The 503 is one ERROR line that names the operation and table(s) (`DynamoWrites.Unavailable.call()`),
+quotes the SDK's own message (an IAM denial names the role and the action it lacks; the answer body
+never carries it), the status and code the caller got and the reference of the stack trace that
+follows; the 409 is one WARN line with the failure's type (see README → Reading the log). There is
+no other store to fall back to.
 
 ## Settings
 
@@ -51,9 +45,8 @@ default credential chain. Building the client opens no connection.
    `lookahead-dev-user-study-plan-details`, `lookahead-dev-protected-owner-identity`:
    `aws dynamodb create-table --endpoint-url http://127.0.0.1:4400 --table-name <name> --billing-mode PAY_PER_REQUEST --attribute-definitions AttributeName=pk,AttributeType=S AttributeName=sk,AttributeType=S --key-schema AttributeName=pk,KeyType=HASH AttributeName=sk,KeyType=RANGE`
 3. Run the migration (below) with `LOOKAHEAD_ENVIRONMENT=local LOOKAHEAD_DYNAMODB_ENDPOINT=http://127.0.0.1:4400`.
-4. Start Domain with `LOOKAHEAD_PERSISTENCE_STORE=dynamodb`, `LOOKAHEAD_ENVIRONMENT=local`,
-   `LOOKAHEAD_DYNAMODB_ENDPOINT=http://127.0.0.1:4400` and no `LOOKAHEAD_DOMAIN_JDBC_URL` /
-   `LOOKAHEAD_DOMAIN_DB_PASSWORD`. Readiness answers UP once the data version watermark
+4. Start Domain with `LOOKAHEAD_ENVIRONMENT=local` and
+   `LOOKAHEAD_DYNAMODB_ENDPOINT=http://127.0.0.1:4400`. Readiness answers UP once the data version watermark
    reaches the build's requirement (`DomainDynamoCatalog.REQUIRED`).
 
 Tests never use the 4400 store: `*DatabaseTest` classes run on a disposable in-memory
@@ -73,13 +66,9 @@ java -cp /opt/lookahead/app.jar -Dloader.main=com.lookahead.domain.persistence.d
 
 Inputs are process variables: `LOOKAHEAD_ENVIRONMENT`, `AWS_REGION`, the four
 `LOOKAHEAD_DYNAMODB_*_TABLE` names (dev/prod) or `LOOKAHEAD_DYNAMODB_ENDPOINT` (local),
-`GITHUB_RUN_ID` for the run identity (`github-<id>`, else `local-<uuid>`) and, for `migrate`
-only, the optional PostgreSQL import source of step 5 (`DynamoMigrationSources`):
-`LOOKAHEAD_IMPORT_JDBC_URL` (validated like the runtime's URL: in dev and prod a regional RDS
-endpoint with verify-full TLS), `LOOKAHEAD_IMPORT_DB_USER` (`lookahead_platform_app` by
-default; the step only reads) and `LOOKAHEAD_IMPORT_DB_PASSWORD` (an ECS secret, the same
-database password the service receives). Without the URL a local store has nothing to import;
-dev and prod refuse step 5. It prints one JSON
+`GITHUB_RUN_ID` for the run identity (`github-<id>`, else `local-<uuid>`). No command reads
+anything but the four tables (the PostgreSQL import source of step 5, `LOOKAHEAD_IMPORT_*`, was
+retired with PostgreSQL on 2026-11-17). It prints one JSON
 line (`command`, `environment`, `runId`, `before`, `after`, `required`, `applied`, `verified`,
 `ahead`, or `failed` with the failure's type). Exit 0: the command succeeded; 1: it failed and
 the ledger is unchanged past the last recorded step (a held lock is `LOCKED`, a changed
@@ -92,19 +81,20 @@ catalog (`DomainDynamoCatalog`) is append-only: step 1 `base-tables` verifies th
 tables, step 2 `staff-alias-counters` seeds the permanent label counters, step 3
 `membership-catalog` seeds the ten membership plans and the catalog revision, step 4
 `review-record-counters` initialises the two record-number counters at 0, step 5
-`account-access-import` (owner decision 2026-11-17) reads the PostgreSQL platform database
-once and writes every real account with its PostgreSQL id (control and subject items,
-identities, email carriers, directory and waiting projections, the staff assignment and its
-events, admission events at their recorded times, permanent label claims), live pending staff
-invitations, raises the label counters to the highest imported number and the two record
-counters to the PostgreSQL sequence values, removes the sign-in waiting rows the store recorded
-before the import, and refuses an admitted account it does not know; one transaction per
-account, a rerun skips imported accounts (`IMPORT#account-access / RESULT` records the
-outcome). Managed test accounts are not imported: the roster is created again from the Test
-accounts page. The migration-task role alone may write the ledger; the running app's role only
-reads it.
+`account-access-import` (owner decision 2026-11-17). On DEV, run 44162520740 of 2026-11-17 read the
+PostgreSQL platform database once and wrote every real account with its PostgreSQL id (control and
+subject items, identities, email carriers, directory and waiting projections, the staff assignment
+and its events, admission events at their recorded times, permanent label claims), the live pending
+staff invitations, raised the label counters to the highest imported number and the two record
+counters to the sequence values, and recorded the outcome in `IMPORT#account-access / RESULT`.
+The source was retired the same day: the step keeps its number, name and definition text (the DEV
+ledger holds that checksum), leaves a store that carries the marker untouched, writes the empty
+marker on a store without one (a fresh local store, PROD), and `verify` still checks that every
+account the marker names is there as imported. Managed test accounts were not imported: the roster
+is created again from the Test accounts page. The migration-task role alone may write the ledger;
+the running app's role only reads it.
 
-## Sweeps in dynamodb mode
+## Sweeps
 
 `RuntimeSweeps` gains a fourth job, `maintenance` (`POST /api/v1/sweeps/run {"job":
 "maintenance"}` or part of `all`, and the 4-hour cadence). It runs every job registered with
@@ -116,20 +106,19 @@ receipts), `account-erasure` (`DynamoAccountErasure.resumePage`: deletions inter
 their state transition) and `sign-in-records` (`DynamoSignInRecordRetirement`: sessions not
 active for 7 days and challenges past the 15-minute window, per account through the directory;
 `FAMILY#` bindings stay so a revoked token family is never admitted again). The 48-hour
-admission cleanup runs as before through its own store. In `postgresql` mode nothing is
-registered and the job answers an empty list.
+admission cleanup runs as before through its own store.
 
-## Accounts in dynamodb mode: what differs from PostgreSQL
+## Accounts: what differs from the retired PostgreSQL store (history)
 
 - The protected owner identity is admitted at its own first contact (`admission.admitted-owner`);
-  on PostgreSQL the operator's `CloudAccountAdministration admit` did this. If `OWNER / ROOT` is
+  on PostgreSQL (until 2026-11-17) the operator's `CloudAccountAdministration admit` did this. If `OWNER / ROOT` is
   written only after that first contact (the DEV cutover order of 2026-11-17), the owner's waiting
   account is admitted at its next sign-in instead, by the same writes as the owner endpoint, with
   the author flag set. Everyone else waits for the owner as before.
 - A session's `lastActiveAt` is written at most once a minute and never fences the control item,
   so a page's parallel calls do not contend; idle expiry counts from the last write.
 - Sign-in challenges carry the generation they were issued under and die with it (Disable,
-  Delete, a merge, "end other sign-ins"), as the SQL cancels them.
+  Delete, a merge, "end other sign-ins"), as the retired SQL cancelled them.
 - The e-mailed account merge (`DynamoCloudMergeService`) is one fenced transaction on the
   email's sentinel and every account's control revision; the deleted accounts' erasure runs
   after it, resumable by `account-erasure`. A race answers `409 MERGE_CONFLICT`, never a half

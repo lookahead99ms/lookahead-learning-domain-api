@@ -213,8 +213,10 @@ class RequestLogTest {
                 + "wrong. Quote reference " + GATEWAY_ID + " when you report it.\",\"reference\":\"" + GATEWAY_ID + "\"}");
         assertThat(failures.list).singleElement().satisfies(event -> {
             assertThat(event.getLevel()).isEqualTo(Level.ERROR);
-            assertThat(event.getFormattedMessage()).isEqualTo("Unexpected failure reference=" + GATEWAY_ID
-                    + " PUT /api/v1/plans/current");
+            // Plain logs (owner, 2026-11-17): what was being done, why and where, what the caller got, the reference.
+            assertThat(event.getFormattedMessage()).matches("PUT /api/v1/plans/current failed after \\d+ ms: unexpected IllegalStateException in"
+                    + " RequestLogTest\\.lambda\\$\\w+\\$\\d+ \\(RequestLogTest\\.java:\\d+\\): database password is hunter2;"
+                    + " answered 500 UNEXPECTED_ERROR; reference " + GATEWAY_ID);
             assertThat(event.getThrowableProxy().getClassName()).isEqualTo(IllegalStateException.class.getName());
             assertThat(event.getMDCPropertyMap()).containsEntry("requestId", GATEWAY_ID);
         });

@@ -11,12 +11,12 @@ import java.util.UUID;
  */
 public interface PlanErasure {
     /**
-     * Test-account erasure ({@code JdbcAccountDataErasure}): the free-plan ledgers go too and the lifetime
+     * Test-account erasure ({@code DynamoAccountDataErasure}): the free-plan ledgers go too and the lifetime
      * free-creation counter on META returns to 0, so a reseeded test account starts with its full allowance.
      */
     void erase(UUID account);
     /**
-     * Account removal ({@code JdbcAccountRemovalStore.erase}): the free-plan ledgers and the lifetime counter stay;
+     * Account removal ({@code DynamoAccountRemovalStore.erase}): the free-plan ledgers and the lifetime counter stay;
      * the runtime may not delete them, and a returning person has a new account ID.
      */
     void eraseAccount(UUID account);

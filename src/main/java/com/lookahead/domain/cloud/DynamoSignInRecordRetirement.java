@@ -2,7 +2,6 @@ package com.lookahead.domain.cloud;
 
 import static com.lookahead.domain.cloud.CloudAccountItems.*;
 
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoItems;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
@@ -14,22 +13,20 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
 
 /**
- * DLV-970: the {@code sign-in-records} maintenance job. PostgreSQL keeps every sign-in row and reads the live ones by
- * index; on DynamoDB every request reads the account's whole {@code SESSION#} list, so dead records must go. One page
+ * DLV-970: the {@code sign-in-records} maintenance job. The retired PostgreSQL store kept every sign-in row and read the
+ * live ones by index; on DynamoDB every request reads the account's whole {@code SESSION#} list, so dead records must go. One page
  * walks up to {@link #ACCOUNTS_PER_PAGE} directory entries and deletes, per account, the sessions not active for
  * {@link #RETENTION} (long past the 30-minute idle and 7-day absolute limits, revoked or not) and the challenges whose
  * expiry is older than the 15-minute rate-limit window. {@code FAMILY#} bindings stay: a revoked token family must
  * never be admitted again, and the binding without its session denies it. Nothing relies on TTL.
  */
 @Component
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoSignInRecordRetirement implements MaintenanceJobs.Job {
     public static final String NAME = "sign-in-records";
     public static final Duration RETENTION = Duration.ofDays(7);

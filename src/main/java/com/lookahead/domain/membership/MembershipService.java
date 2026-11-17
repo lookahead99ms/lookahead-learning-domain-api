@@ -44,13 +44,6 @@ public class MembershipService {
         this.store=store;this.json=json;this.payments=payments;this.staff=staff;this.clock=clock;
         this.ownerApproval=payments instanceof OwnerApprovalPaymentGateway;
     }
-    /** PostgreSQL convenience (existing tests and fixtures): the JDBC store built from the template and manager. */
-    public MembershipService(org.springframework.jdbc.core.JdbcTemplate jdbc,ObjectMapper json,org.springframework.transaction.PlatformTransactionManager manager,PaymentGateway payments,StaffAccessService staff) {
-        this(new JdbcMembershipStore(jdbc,json,manager),json,payments,staff,Clock.systemUTC());
-    }
-    public MembershipService(org.springframework.jdbc.core.JdbcTemplate jdbc,ObjectMapper json,org.springframework.transaction.PlatformTransactionManager manager,PaymentGateway payments,StaffAccessService staff,Clock clock) {
-        this(new JdbcMembershipStore(jdbc,json,manager),json,payments,staff,clock);
-    }
     private Instant now(){return clock.instant();}
     private Set<String> catalogs(JsonNode plan){var out=new HashSet<String>();plan.path("scope").path("catalogs").forEach(x->out.add(x.asText()));return out;}
     private static ObjectNode require(ObjectNode definition){if(definition==null)throw invalid("Unknown membership plan");return definition;}
@@ -385,7 +378,7 @@ public class MembershipService {
             finally{paymentSlot.release();}
         }catch(AccountFailure refused){
             Events.refused(Events.PAYMENT,"purchase.decision",refused.code()).addKeyValue("account.id",who).addKeyValue("actor.role",role)
-                .addKeyValue("purchase.id",id).log("Decision on purchase request {} refused: {} ({})",id,refused.code(),refused.getMessage());
+                .addKeyValue("purchase.id",id).log("Decision on purchase request {} by {} refused: {} ({})",id,decider(role,who),refused.code(),refused.getMessage());
             throw refused;
         }
         var done=decided.purchase();
@@ -394,13 +387,15 @@ public class MembershipService {
         Events.success(Events.PAYMENT,approve?"purchase.approved":"purchase.declined").addKeyValue("account.id",who).addKeyValue("actor.role",role)
             .addKeyValue("target.id",decided.target()).addKeyValue("purchase.id",id).addKeyValue("plan.code",planCode(done.path("planId").asText()))
             .addKeyValue("price.cents",done.path("pricePaidCents").asInt()).addKeyValue("repeated",decided.repeated())
-            .log(decided.repeated()?"Purchase request {} of account {} was already {} ({}); the same decision by account {} ({}) changes nothing"
-                :"Purchase request {} of account {} {} ({}) by account {} ({})",id,decided.target(),approve?"approved":"declined",done.path("status").asText(),who,role);
+            .log(decided.repeated()?"Purchase request {} of account {} was already {} ({}); the same decision by {} changes nothing"
+                :"Purchase request {} of account {} {} ({}) by {}",id,decided.target(),approve?"approved":"declined",done.path("status").asText(),decider(role,who));
         var answer=json.createObjectNode().put("decision",decision).put("repeated",decided.repeated());
         answer.set("purchase",done);
         return answer;
     }
     private static AccountFailure forbiddenDecision(){return new AccountFailure(403,"PURCHASE_APPROVAL_FORBIDDEN","Only the owner or an admin can approve purchase requests.");}
+    /** "Owner 1a2b3c4d" / "Admin 1a2b3c4d" when the decider's role is known, else "Account 1a2b3c4d" (plain logs: the actor in the sentence). */
+    static String decider(String role,UUID who){return Events.actor("owner".equals(role)?"Owner":"admin".equals(role)?"Admin":"Account",who);}
     private Decided decideWithin(MembershipStore.Work work,AccountPrincipal actor,UUID id,String decision,java.util.function.Predicate<UUID> mayDecideFor){
         UUID target=work.purchaseAccount(id);
         if(target==null)throw purchaseNotFound();
@@ -443,11 +438,11 @@ public class MembershipService {
             var receipt=startSaleChecked(actor,sale);
             Events.success(Events.PAYMENT,"sale.started").addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",receipt.path("id").asText())
                 .addKeyValue("plan.codes",sale.planIds())
-                .log("Owner started sale {} ({}) for plan(s) {} from {} until {}",receipt.path("id").asText(),sale.template(),sale.planIds(),sale.startsAt(),sale.endsAt());
+                .log("{} started sale {} ({}) for plan(s) {} from {} until {}",Events.actor("Owner",actor.accountId()),receipt.path("id").asText(),sale.template(),sale.planIds(),sale.startsAt(),sale.endsAt());
             return receipt;
         } catch(AccountFailure refused) {
             Events.refused(Events.PAYMENT,"sale.start",refused.code()).addKeyValue("account.id",actor==null?null:actor.accountId())
-                .log("Starting a sale refused: {} ({})",refused.code(),refused.getMessage());
+                .log("Starting a sale by {} refused: {} ({})",Events.actor("Account",actor==null?null:actor.accountId()),refused.code(),refused.getMessage());
             throw refused;
         }
     }
@@ -462,10 +457,10 @@ public class MembershipService {
             staff.requireOwner(actor);store.stopSale(actor.accountId(),id,now());
         } catch(AccountFailure refused) {
             Events.refused(Events.PAYMENT,"sale.stop",refused.code()).addKeyValue("account.id",actor==null?null:actor.accountId()).addKeyValue("target.id",id)
-                .log("Stopping sale {} refused: {}",id,refused.code());
+                .log("Stopping sale {} by {} refused: {}",id,Events.actor("Account",actor==null?null:actor.accountId()),refused.code());
             throw refused;
         }
-        Events.success(Events.PAYMENT,"sale.stopped").addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",id).log("Owner stopped sale {}",id);
+        Events.success(Events.PAYMENT,"sale.stopped").addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",id).log("{} stopped sale {}",Events.actor("Owner",actor.accountId()),id);
     }
     public ObjectNode price(AccountPrincipal actor,String id,int price){
         try {
@@ -474,11 +469,11 @@ public class MembershipService {
             var p=change.changed();
             Events.success(Events.PAYMENT,"plan.price-changed").addKeyValue("account.id",actor.accountId()).addKeyValue("plan.code",planCode(id))
                 .addKeyValue("price.cents",price).addKeyValue("price.before",before[0])
-                .log("Owner changed the price of plan {} from {} to {} cents",planCode(id),before[0],price);
+                .log("{} changed the price of plan {} from {} to {} cents",Events.actor("Owner",actor.accountId()),planCode(id),before[0],price);
             return p;
         } catch(AccountFailure refused) {
             Events.refused(Events.PAYMENT,"plan.price-change",refused.code()).addKeyValue("account.id",actor==null?null:actor.accountId()).addKeyValue("plan.code",planCode(id))
-                .log("Price change for plan {} refused: {} ({})",planCode(id),refused.code(),refused.getMessage());
+                .log("Price change for plan {} by {} refused: {} ({})",planCode(id),Events.actor("Account",actor==null?null:actor.accountId()),refused.code(),refused.getMessage());
             throw refused;
         }
     }

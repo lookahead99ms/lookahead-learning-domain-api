@@ -11,9 +11,8 @@ import java.util.UUID;
 
 /**
  * DLV-969: the DEV/PROD sign-in registry (an abstract class rather than an interface so existing interface-free mocks keep working): first contact, admission of a sign-in into one of two slots, challenges,
- * revocation, profile, preferences and links. DLV-970: one contract, two stores. {@link JdbcCloudSignInRegistry} is
- * the PostgreSQL implementation (row locks serialise admission, replacement, disable and revocation per account);
- * {@link DynamoCloudSignInRegistry} keeps the same policy on DynamoDB items with revision-fenced transactions.
+ * revocation, profile, preferences and links. DLV-970: {@link DynamoCloudSignInRegistry} keeps the policy on DynamoDB
+ * items with revision-fenced transactions (the PostgreSQL implementation, row locks per account, retired 2026-11-17).
  */
 public abstract class CloudSignInRegistry {
     public record Entry(UUID signInId,boolean current,String label,String clientDescription,Instant createdAt,Instant lastActiveAt) {}

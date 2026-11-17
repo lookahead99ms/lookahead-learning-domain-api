@@ -1,6 +1,5 @@
 package com.lookahead.domain.review;
 
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoItems;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
@@ -36,17 +35,16 @@ import static com.lookahead.domain.review.ReviewModels.*;
  *   (request hash and the event it recorded), both written in the same transaction as the event.</li>
  * </ul>
  * The sequence is per actor and artifact: PostgreSQL's global identity only ever ordered one actor's history on one
- * artifact. The head's revision is the lock the SQL {@code FOR UPDATE} on the actor row provided; the key receipt and
+ * artifact. The head's revision is the lock the retired SQL store's {@code FOR UPDATE} on the actor row provided; the key receipt and
  * the event lookup are the two UNIQUE constraints; the latest event on the head is the one-successor index. The
  * actor must exist as {@code ACCOUNT#<actor> / META} (lane A's account record, schema 1), as the SQL foreign key on
- * {@code platform_subjects} required. A transaction that loses a race is re-evaluated from the store up to three
+ * the subject table required. A transaction that loses a race is re-evaluated from the store up to three
  * times, which turns the race into the business answer (replay, idempotency or supersession conflict).
  */
 @Component
 @Profile("accounts & local-test & resource & !prod & !production")
 @ConditionalOnProperty(name="app.deployment-environment",havingValue="local")
 @ConditionalOnProperty(name="app.local-test.author-enabled",havingValue="true")
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoAuthorReviewStore implements AuthorReviewStore {
     static final int SCHEMA = 1, ACCOUNT_SCHEMA = 1, ATTEMPTS = 3;
     static final String RECONCILIATION = "PENDING_MAIN_RECONCILIATION", ACTION = "review.decided";

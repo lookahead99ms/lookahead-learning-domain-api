@@ -25,7 +25,11 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
-/** DLV-970: the DynamoDB store's failures answer exactly what the PostgreSQL ones do, without the SDK's words. */
+/**
+ * DLV-970: the DynamoDB store's failures answer exactly what the PostgreSQL ones do, without the SDK's words in the
+ * answer. Plain logs (owner, 2026-11-17): the ERROR line does quote the SDK's words (endpoint, request ID) and names
+ * the operation and table when the store knows them; the stack trace follows with the reference.
+ */
 public class DynamoStorageFailureMappingTest {
     public static final String SECRET = "synthetic endpoint http://127.0.0.1:4400 request-id=do-not-expose";
     final ListAppender<ILoggingEvent> logged = new ListAppender<>();
@@ -61,7 +65,7 @@ public class DynamoStorageFailureMappingTest {
         return failure;
     }
 
-    @Test void anUnknownOutcomeAndTheSdksOwnFailuresAre503AccountStorageUnavailableWithoutTheSdkMessage() throws Exception {
+    @Test void anUnknownOutcomeAndTheSdksOwnFailuresAre503AccountStorageUnavailableAndOneErrorLineQuotesTheSdk() throws Exception {
         for (RuntimeException failure : new RuntimeException[] {unavailable(), readUnavailable(), SdkClientException.builder().message(SECRET).build(),
                 ProvisionedThroughputExceededException.builder().message(SECRET).build(), DynamoDbException.builder().message(SECRET).build()}) {
             logged.list.clear();
@@ -72,9 +76,12 @@ public class DynamoStorageFailureMappingTest {
             assertThat(result.getResponse().getContentAsString()).contains("\"code\":\"ACCOUNT_STORAGE_UNAVAILABLE\"", "retain your draft", "retry the same request")
                     .doesNotContain("4400", "request-id", "do-not-expose", "stackTrace");
             assertThat(logged.list).singleElement().satisfies(line -> {
-                assertThat(line.getFormattedMessage()).startsWith("Account storage unavailable: POST /api/v1/plans/dynamo (").contains(failure.getClass().getSimpleName());
-                assertThat(line.getFormattedMessage()).doesNotContain("4400", "do-not-expose");
-                assertThat(line.getThrowableProxy()).as("no stack with the SDK message").isNull();
+                assertThat(line.getLevel()).isEqualTo(ch.qos.logback.classic.Level.ERROR);
+                assertThat(line.getFormattedMessage()).startsWith("POST /api/v1/plans/dynamo failed: DynamoDB ")
+                        .contains(" failed (", SECRET + ")", "; answered 503 ACCOUNT_STORAGE_UNAVAILABLE; reference ");
+                if (failure instanceof DynamoWrites.Unavailable store && !store.tables().isEmpty())
+                    assertThat(line.getFormattedMessage()).contains("DynamoDB ExecuteTransaction on lookahead-dev-user-account-details failed (SdkClientException: " + SECRET + ")");
+                assertThat(line.getThrowableProxy()).as("the stack trace follows the ERROR line").isNotNull();
             });
         }
     }

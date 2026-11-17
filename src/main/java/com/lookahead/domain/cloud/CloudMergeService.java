@@ -24,7 +24,6 @@ import tools.jackson.databind.ObjectMapper;
  * and {@code merge.merge} refusals with their code, {@code account.merge} once the merge commits, one
  * {@code account.merge-removed} per account that went; account IDs and counts only, never the email or the link.
  * <p>DLV-970: the policy, the email and the log lines live here; the store work is one unit per call in
- * {@link JdbcCloudMergeService} (one PostgreSQL transaction under the email's advisory lock) and
  * {@link DynamoCloudMergeService} (one fenced DynamoDB transaction under the email's sentinel).
  */
 public abstract class CloudMergeService {

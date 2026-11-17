@@ -8,8 +8,8 @@ Local verification does not establish effective AWS permissions or cloud readine
 ## Runtime and transport
 
 Use the Java21 application image, UID/GID 10001, a read-only root filesystem and a
-writable task-local `/tmp`. The image carries the checksum-verified RDS CA bundle
-at `/opt/lookahead/trust/rds-global-bundle.pem` and the container health probe.
+writable task-local `/tmp`. The image carries the container health probe (the RDS CA bundle
+it carried for PostgreSQL left with that store on 2026-11-17).
 The default local artifact is `target/lookahead-domain-api-0.0.1-SNAPSHOT.jar`;
 release builds use `lookahead-domain-api-<version>.jar` and copy it to
 `/opt/lookahead/app.jar` in the image. A locally built JAR is not an image receipt.
@@ -35,7 +35,7 @@ grant an account or curriculum entitlement.
 
 Management HTTP binds only to `127.0.0.1:8081`. The task-local probe requests
 `/actuator/health/readiness`; it requires HTTP 200 with only `{"status":"UP"}`.
-Readiness includes `readinessState`, `domainDatabase` and `contentPublication`.
+Readiness includes `readinessState`, `dynamodb` and `contentPublication`.
 It does not prove a real browser login, public ingress or all optional features.
 The ordinary Local listener remains on its configured address/port, defaulting to
 `127.0.0.1:8080`; the image's Local default bind address is supplied separately.
@@ -53,7 +53,6 @@ Never put values in configuration examples, workflow output, logs or evidence.
 | `Tls` | `serverCertificate` | `LOOKAHEAD_TLS_SERVER_CERTIFICATE` | Valid server-auth leaf/chain with exact Domain slot SAN and at least one day remaining |
 | `Tls` | `serverKey` | `LOOKAHEAD_TLS_SERVER_KEY` | Matching PKCS8 private-key PEM, with no extra blocks/material |
 | `Tls` | `trust` | `LOOKAHEAD_TLS_TRUST` | Valid self-signed CA anchors for the reviewed private transport trust |
-| `DomainApp` | `password` | `LOOKAHEAD_DOMAIN_DB_PASSWORD` | Exactly 48 alphanumeric characters in this DEV injected-credential contract |
 | `DomainGateway` | Whole scalar secret | `LOOKAHEAD_DOMAIN_GATEWAY_SECRET` | Same secret used by Gateway; resolved, no control characters, 32–4096 characters |
 
 The existing Infra selector shape is
@@ -68,7 +67,7 @@ private key. Its TLS private key is an explicitly injected transport credential.
 
 | Input | Required binding |
 | --- | --- |
-| `AWS_REGION` | Selected region shared by publication/Cognito/RDS validation |
+| `AWS_REGION` | Selected region shared by publication/Cognito/DynamoDB validation |
 | `LOOKAHEAD_COGNITO_ISSUER` | Exact regional **application** pool issuer, distinct from Gateway's DEV admission pool |
 | `APP_OAUTH_CLIENT_ID` | Application client ID whose access tokens Gateway forwards; alphanumeric, 10–128 characters |
 | `LOOKAHEAD_COGNITO_SCOPE_PREFIX` | Reviewed resource-server prefix, without trailing slash |
@@ -80,16 +79,15 @@ authorization through an anonymous-credentials Cognito client; they do not requi
 adding Cognito administrative IAM actions to Domain's task role. Gateway's separate
 admission `AdminGetUser` and operations-table reads are not Domain requirements.
 
-PostgreSQL owns Domain account mapping, grants, sign-ins, plans and progress.
+The DynamoDB store (four tables) owns Domain account mapping, grants, sign-ins, plans and progress.
 Runtime cannot create/admit accounts or grant author access automatically. See
 [cloud authentication](cloud-authentication.md) for sign-in and recovery contracts.
 
-## Database and publication
+## Store and publication
 
 | Input | Required binding |
 | --- | --- |
-| `LOOKAHEAD_DOMAIN_JDBC_URL` | Regional RDS endpoint and `lookahead_platform`, `sslmode=verify-full`, absolute readable RDS CA bundle path |
-| `SPRING_DATASOURCE_USERNAME` | Exact existing runtime role `lookahead_platform_app` |
+| `LOOKAHEAD_DYNAMODB_USER_ACCOUNT_DETAILS_TABLE`, `LOOKAHEAD_DYNAMODB_ADMINISTRATOR_AUDIT_EVENTS_TABLE`, `LOOKAHEAD_DYNAMODB_USER_STUDY_PLAN_DETAILS_TABLE`, `LOOKAHEAD_DYNAMODB_PROTECTED_OWNER_IDENTITY_TABLE` | The four approved DEV table names (`lookahead-dev-*`), pinned in the task template; no endpoint override in dev |
 | `LOOKAHEAD_AWS_ACCOUNT_ID` | Exact twelve-digit publication owner account |
 | `LOOKAHEAD_PUBLICATION_BUCKET` | Existing reviewed private publication bucket |
 | `LOOKAHEAD_PUBLICATION_RELEASE_ID` | Candidate's explicit Content calendar tag `vYYYY.MM.DD.HH.NN` |
@@ -113,11 +111,9 @@ does not list the bucket. Unpinned live discovery additionally needs a prefix-sc
 start this candidate. The publication pipeline's receipt records object versions;
 the application's existing pin is the calendar tag plus both content digests.
 
-Runtime Flyway stays disabled. Existing schema/history and restricted privileges
-must be verified through Infra's approved Flyway Utils flow before service start.
-The retired Domain migration/bootstrap launchers remain disabled. Account
-administration is a separate explicitly invoked operator capability, never an
-application startup side effect.
+Data steps are applied by `07 · Migrate DEV data` before a release that needs them is
+deployed ("data first, then app"); readiness reports `DATA_VERSION_BEHIND` otherwise. Account
+administration is the owner's endpoints, never an application startup side effect.
 
 Optional cloud platform-review image storage requires its separate S3/KMS inputs
 and grants; missing storage returns 503 for that capability. Core readiness is not
@@ -137,7 +133,7 @@ archive through Domain extraction/hash/allowlist/catalog consumers without AWS.
 See [cloud publication](cloud-publication.md) for the format and startup limits.
 
 Actual secret versions/CA provenance, DNS/discovery, compatible immutable image,
-ECS injection/task credentials, S3/KMS denials, RDS TLS/grants, Cognito sign-in,
+ECS injection/task credentials, S3/KMS denials, DynamoDB grants, Cognito sign-in,
 cross-service saved progress and failure recovery still need deployment evidence.
 Shared-role authority, lifecycle/shutdown ownership and the finite verifier are
 central activation decisions. This document does not enable deployment or approve

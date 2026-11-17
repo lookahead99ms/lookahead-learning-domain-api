@@ -1,5 +1,6 @@
 package com.lookahead.learning.content.handler;
 
+import com.lookahead.domain.Events;
 import com.lookahead.domain.RequestLog;
 import com.lookahead.learning.content.dto.ApiError;
 
@@ -46,8 +47,9 @@ public class GlobalExceptionHandler {
             return error(refused, refused.getReasonPhrase(), request, List.of());
         }
         String reference = RequestLog.reference();
-        log.error("Unexpected failure reference={} {} {}", reference, forLog(request.getMethod()),
-                forLog(request.getRequestURI()), exception);
+        // Plain logs (owner, 2026-11-17): what was being done, why and where in our code, what the caller got, the reference.
+        log.error("{} {} {}: {}; answered 500 INTERNAL_SERVER_ERROR; reference {}", forLog(request.getMethod()),
+                forLog(request.getRequestURI()), RequestLog.failedAfter(request), Events.unexpected(exception), reference, exception);
         return error(HttpStatus.INTERNAL_SERVER_ERROR, "An unexpected error occurred", request,
                 List.of("Reference: " + reference));
     }

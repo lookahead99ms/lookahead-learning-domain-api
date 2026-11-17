@@ -1,31 +1,19 @@
 package com.lookahead.domain.review.platform;
 
-import org.springframework.jdbc.core.JdbcTemplate;
 
-/** DLV-971: the next record number for a kind, from the Postgres sequences of V22 (review_record_seq, support_request_seq). */
+/** DLV-971: the next record number for a kind (review records and support requests), unique and increasing. */
 @FunctionalInterface
 public interface ReviewRecordNumbers {
     long next(String kind);
 
-    /** The sequences live in the Domain database; the runtime role holds USAGE on both (V22). */
-    final class Jdbc implements ReviewRecordNumbers {
-        private final JdbcTemplate jdbc;
-        public Jdbc(JdbcTemplate jdbc) { this.jdbc = jdbc; }
-        @Override public long next(String kind) {
-            String sequence = PlatformReviewModels.KIND_REQUEST.equals(kind) ? "support_request_seq" : "review_record_seq";
-            Long value = jdbc.queryForObject("SELECT nextval(?::regclass)", Long.class, sequence);
-            return value == null ? 0 : value;
-        }
-    }
-
     /**
-     * DLV-970: the same two counters on DynamoDB, {@code SEQUENCE#review-record / COUNTER} and
+     * DLV-970: the two counters on DynamoDB, {@code SEQUENCE#review-record / COUNTER} and
      * {@code SEQUENCE#support-request / COUNTER} in User Account Details, created at 0 by migration step 4. Like
      * {@code nextval}, unique and increasing is promised, gapless is not. The runtime role writes PartiQL only, so
      * each number is a strong read of {@code lastAssigned} followed by {@code UPDATE … SET "lastAssigned"=? WHERE
      * "lastAssigned"=?}; a lost race re-reads and retries a few times before the conflict surfaces (409). A missing
      * counter is inserted at 1 (the step is replayable, so a store that was never migrated still numbers from 1).
-     * The cutover does not carry the PostgreSQL sequence value: step 4 seeds 0 and continuation is a later step.
+     * Step 4 seeds 0; the DEV import (step 5, 2026-11-17) raised both to the values the retired PostgreSQL sequences had reached.
      */
     final class Dynamo implements ReviewRecordNumbers {
         static final String REVIEW = "SEQUENCE#review-record", REQUEST = "SEQUENCE#support-request", COUNTER = "COUNTER";
@@ -40,7 +28,7 @@ public interface ReviewRecordNumbers {
             this.client = java.util.Objects.requireNonNull(client, "client"); this.tables = java.util.Objects.requireNonNull(tables, "tables");
             this.retryWait = java.util.Objects.requireNonNull(retryWait, "retryWait");
         }
-        /** The same kind selection as the SQL store: {@code request} is the support-request counter, anything else the review one. */
+        /** {@code request} is the support-request counter, anything else the review one. */
         static String partition(String kind) { return PlatformReviewModels.KIND_REQUEST.equals(kind) ? REQUEST : REVIEW; }
         @Override public long next(String kind) {
             var key = com.lookahead.domain.persistence.dynamodb.DynamoItems.key(partition(kind), COUNTER);

@@ -24,7 +24,6 @@ shared:
     PORT: '@service.port'
     JAVA_TOOL_OPTIONS: '@jvm'
     APP_OAUTH_CLIENT_ID: '@application.oauthClientId'
-    LOOKAHEAD_DOMAIN_JDBC_URL: '@application.domainJdbcUrl'
     LOOKAHEAD_DOMAIN_SEED_ENABLED: 'false'
     LOOKAHEAD_DOMAIN_AUTHOR_ENABLED: 'false'
     AWS_REGION: '@region'
@@ -39,11 +38,9 @@ shared:
     LOOKAHEAD_COGNITO_ISSUER: '@application.cognitoIssuer'
     LOOKAHEAD_COGNITO_SCOPE_PREFIX: '@application.cognitoScopePrefix'
   resourceRefs:
-  - domainDatabase
   - publicationBucket
   - frontendOrigin
   secretRefs:
-  - domainApp
   - domainGateway
   infrastructureRefs:
     cluster: persistent.Cluster
@@ -80,7 +77,6 @@ shared:
       mode: non-blocking
       maxBufferSize: 4m
   secretEnvironment:
-    LOOKAHEAD_DOMAIN_DB_PASSWORD: domainApp
     LOOKAHEAD_DOMAIN_GATEWAY_SECRET: domainGateway
   container:
     name: domain

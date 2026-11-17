@@ -3,7 +3,6 @@ package com.lookahead.learning.content.repository;
 import com.lookahead.learning.content.security.AccountPrincipal;
 import java.util.Set;
 import java.util.UUID;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Repository;
 
@@ -13,13 +12,8 @@ public class AccountRepository {
     private final AccountStore store;
     private final com.lookahead.domain.access.StaffAccessRepository staff;
     private final com.lookahead.learning.content.validator.SnapshotValidator catalog;
-    public AccountRepository(JdbcTemplate jdbc) { this(new JdbcAccountStore(jdbc)); }
     public AccountRepository(AccountStore store) { this.store = store; this.staff=null; this.catalog=null; }
-    public AccountRepository(JdbcTemplate jdbc, com.lookahead.domain.access.StaffAccessRepository staff,
-            com.lookahead.learning.content.validator.SnapshotValidator catalog) {
-        this(new JdbcAccountStore(jdbc),staff,catalog);
-    }
-    /** DLV-970: the store (PostgreSQL or DynamoDB) is selected by {@code app.persistence.store}. */
+    /** DLV-970: the DynamoDB store (PostgreSQL retired 2026-11-17). */
     @org.springframework.beans.factory.annotation.Autowired
     public AccountRepository(AccountStore store, com.lookahead.domain.access.StaffAccessRepository staff,
             com.lookahead.learning.content.validator.SnapshotValidator catalog) {
@@ -29,7 +23,7 @@ public class AccountRepository {
     private com.lookahead.domain.membership.MembershipGrants memberships;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     void memberships(com.lookahead.domain.membership.MembershipGrants value){memberships=value;}
-    // DLV-970 cross-lane: provided by lane C (membership topics in dynamodb mode); the JDBC MembershipGrants stays for postgresql.
+    // DLV-970 cross-lane: provided by lane C (membership topics).
     private MembershipTopicSource membershipTopics;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     void membershipTopics(MembershipTopicSource value){membershipTopics=value;}

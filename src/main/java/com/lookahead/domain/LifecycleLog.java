@@ -44,7 +44,7 @@ public class LifecycleLog {
         if (event.getState() instanceof LivenessState liveness) {
             var line = liveness == LivenessState.BROKEN ? Events.failed(LOG, "availability", "LIVENESS_BROKEN") : Events.success(LOG, "availability");
             line.addKeyValue("availability.liveness", liveness.name()).log("Liveness {}: {}", liveness,
-                    liveness == LivenessState.BROKEN ? "the app reports itself broken and should be restarted" : "the app is running");
+                    liveness == LivenessState.BROKEN ? "the app reports itself broken and should be restarted (LIVENESS_BROKEN)" : "the app is running");
         } else if (event.getState() instanceof ReadinessState state) {
             if (state == ReadinessState.REFUSING_TRAFFIC) beforeRefusing = readiness;
             readiness = state;

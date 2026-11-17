@@ -9,7 +9,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.MockMakers;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.env.MockEnvironment;
 import software.amazon.awssdk.services.s3.S3Client;
 import tools.jackson.databind.json.JsonMapper;
@@ -44,9 +43,11 @@ class PlatformReviewConfigurationTest {
         var plans = configuration.deliveryPlanService(configuration.deliveryPlanStore(settings, local, clients, mapper), access, new ReviewStatusHistory.InMemory(), local);
         assertThat(plans.environment()).isEqualTo("local");
         assertThat(configuration.deliveryPlanService(configuration.deliveryPlanStore(settings, local, clients, mapper), access, new ReviewStatusHistory.InMemory(), cloud).environment()).isEqualTo("dev");
-        var jdbc = mock(JdbcTemplate.class);
-        assertThat(configuration.reviewRecordNumbers(jdbc)).isInstanceOf(ReviewRecordNumbers.Jdbc.class);
-        assertThat(configuration.reviewStatusHistory(jdbc)).isInstanceOf(ReviewStatusHistory.Jdbc.class);
+        var client = mock(software.amazon.awssdk.services.dynamodb.DynamoDbClient.class, withSettings().mockMaker(MockMakers.SUBCLASS));
+        var tables = com.lookahead.domain.persistence.dynamodb.DynamoTableNames.local();
+        assertThat(configuration.reviewRecordNumbers(client, tables)).isInstanceOf(ReviewRecordNumbers.Dynamo.class);
+        assertThat(configuration.reviewStatusHistory(client, tables)).isInstanceOf(ReviewStatusHistory.Dynamo.class);
+        verifyNoInteractions(client);
         verifyNoInteractions(clients);
     }
 

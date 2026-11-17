@@ -7,8 +7,8 @@ import java.util.UUID;
 import java.util.function.Predicate;
 
 /**
- * DLV-970: the free-plan ledgers behind {@link FreePlanAllowance}, which keeps every rule. {@link JdbcFreePlanLedgerStore}
- * holds the PostgreSQL SQL unchanged; {@link DynamoFreePlanLedgerStore} keeps lifetime receipts
+ * DLV-970: the free-plan ledgers behind {@link FreePlanAllowance}, which keeps every rule. {@link DynamoFreePlanLedgerStore}
+ * keeps lifetime receipts
  * ({@code ACCOUNT#id / FREECREATE#planId}) with a counter on the owner META item that never decrements, and the
  * rolling-window deletion receipts ({@code ACCOUNT#id / FREEDELETE#time#planId}), all under the owner revision.
  */

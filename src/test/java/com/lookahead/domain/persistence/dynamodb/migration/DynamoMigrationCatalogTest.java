@@ -53,7 +53,7 @@ class DynamoMigrationCatalogTest {
                 .contains(DomainDynamoCatalog.MembershipCatalog.SEEDED_AT.toString()).contains("CATALOG / META");
         assertThat(catalog.step(4).definition()).contains("SEQUENCE#review-record").contains("SEQUENCE#support-request").contains("lastAssigned 0");
         assertThat(com.lookahead.domain.membership.MembershipCatalogSeed.PLANS).hasSize(10);
-        // Step 5 names its source, what it writes, the counters it raises and what it refuses; its definition is as immutable as the others.
+        // Step 5 keeps the definition the DEV ledger holds (run 44162520740, 2026-11-17) although its PostgreSQL source is retired: a changed text would fail every verify.
         assertThat(catalog.checksum(5)).matches("[0-9a-f]{64}").isNotEqualTo(catalog.checksum(4));
         assertThat(catalog.step(5).definition()).contains("test_account_registry").contains("importedFrom postgresql").contains("IMPORT#account-access / RESULT")
                 .contains("SEQUENCE#review-record").contains("expire event").contains("admitted account unknown to the import is refused").contains("imports nothing");

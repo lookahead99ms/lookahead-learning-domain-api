@@ -11,7 +11,6 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.env.Environment;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -22,11 +21,7 @@ public class DomainFixtureSeeder implements ApplicationRunner {
     private final AccountRepository subjects;
     private final SnapshotValidator catalog;
     private final Environment environment;
-    public DomainFixtureSeeder(JdbcTemplate jdbc, AccountRepository subjects, SnapshotValidator catalog,
-                                 Environment environment, DomainFixtureGuard guard) {
-        this(new JdbcFixtureSeedStore(jdbc, null), subjects, catalog, environment, guard);
-    }
-    /** DLV-970: the store (PostgreSQL or DynamoDB) is selected by {@code app.persistence.store}. */
+    /** DLV-970: the seed writes go to the DynamoDB store ({@link DynamoFixtureSeedStore}). */
     @org.springframework.beans.factory.annotation.Autowired
     public DomainFixtureSeeder(FixtureSeedStore store, AccountRepository subjects, SnapshotValidator catalog,
                                  Environment environment, DomainFixtureGuard guard) {

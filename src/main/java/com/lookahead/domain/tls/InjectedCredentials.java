@@ -19,7 +19,7 @@ public final class InjectedCredentials implements ApplicationContextInitializer<
             for (String name : List.of("LOOKAHEAD_TLS_SCHEMA", "LOOKAHEAD_TLS_SERVER_CERTIFICATE", "LOOKAHEAD_TLS_SERVER_KEY",
                     "LOOKAHEAD_TLS_TRUST", "LOOKAHEAD_TLS_SERVER_NAME", "LOOKAHEAD_TLS_CLIENT_CERTIFICATE", "LOOKAHEAD_TLS_CLIENT_KEY",
                     "APP_OAUTH_CLIENT_ID", "LOOKAHEAD_GATEWAY_CLIENT_SECRET", "LOOKAHEAD_ADMISSION_CLIENT_ID",
-                    "LOOKAHEAD_ADMISSION_CLIENT_SECRET", "LOOKAHEAD_DOMAIN_GATEWAY_SECRET", "LOOKAHEAD_DOMAIN_DB_PASSWORD")) {
+                    "LOOKAHEAD_ADMISSION_CLIENT_SECRET", "LOOKAHEAD_DOMAIN_GATEWAY_SECRET")) {
                 reading = name;
                 inputs.put(name, environment.getProperty(name));
             }

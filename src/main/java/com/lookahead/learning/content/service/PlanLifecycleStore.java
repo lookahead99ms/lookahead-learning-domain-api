@@ -7,7 +7,7 @@ import java.util.UUID;
 
 /**
  * DLV-970: the lifecycle rows behind {@link PlanLifecycle}, which keeps every date and reservation rule.
- * {@link JdbcPlanLifecycleStore} holds the PostgreSQL SQL unchanged; {@link DynamoPlanLifecycleStore} keeps
+ * {@link DynamoPlanLifecycleStore} keeps
  * {@code ACCOUNT#id / LIFECYCLE#planId} items read strongly and written under the owner revision, which is what makes
  * cross-plan course/day reservations safe.
  */

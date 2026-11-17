@@ -4,7 +4,7 @@ import java.util.UUID;
 
 /** DLV-970: the owner's downgrade and Local learner deletion ({@link RealAccountMaintenance}) on one store. */
 public interface AccountMaintenanceStore {
-    /** Runs {@code work} in one store transaction (PostgreSQL); on DynamoDB each write below is its own transaction. */
+    /** Runs {@code work}; on DynamoDB each write below is its own transaction, so the default runs it as it is. */
     default void transaction(Runnable work) { work.run(); }
     void ensureSubject(UUID id);
     boolean subjectExists(UUID id);

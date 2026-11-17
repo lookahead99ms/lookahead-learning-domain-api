@@ -3,7 +3,6 @@ package com.lookahead.learning.content.repository;
 import com.lookahead.domain.access.LearningDataErasure;
 import com.lookahead.domain.access.StudyPlanFacts;
 import com.lookahead.learning.content.model.PlanVersion;
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoItems;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.domain.testaccounts.PlanActivityLookup;
@@ -13,7 +12,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -31,7 +29,6 @@ import tools.jackson.databind.ObjectMapper;
  */
 @Component
 @Profile("accounts")
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoPlanFacts implements LearningDataErasure, PlanErasure, PlanActivityLookup, StudyPlanFacts {
     private final DynamoPlanErasure erasure;
     private final ObjectMapper mapper;

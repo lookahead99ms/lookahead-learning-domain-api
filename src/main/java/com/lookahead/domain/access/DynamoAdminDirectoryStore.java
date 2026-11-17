@@ -3,7 +3,6 @@ package com.lookahead.domain.access;
 import static com.lookahead.domain.cloud.CloudAccountItems.*;
 
 import com.lookahead.domain.cloud.DynamoCloudAccounts;
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import java.time.Clock;
 import java.util.List;
@@ -11,13 +10,11 @@ import java.util.Map;
 import java.util.UUID;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
 /** DLV-970: the owner's directory facts on DynamoDB; test-account and membership facts come from lane C's lookups. */
 @Repository
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoAdminDirectoryStore implements AdminDirectoryStore {
     private final DynamoCloudAccounts accounts;
     private final ObjectProvider<TestAccountRegistryLookup> testAccounts;

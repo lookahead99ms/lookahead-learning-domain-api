@@ -10,8 +10,8 @@ import java.util.function.Function;
 /**
  * DLV-970: the test-account aggregate behind {@link TestAccountsService}, {@link CreatedTestAccounts}, {@link DevTestRoster},
  * {@link DevTestSessions} and {@link UpgradeMarkers}: the registry, the reset ledger, creation reservations and the
- * reads of accounts, identities and staff roles they need. {@link JdbcTestAccountStore} runs the SQL of those classes
- * unchanged; {@link DynamoTestAccountStore} commits each {@link #transact} body under the account revisions it locked.
+ * reads of accounts, identities and staff roles they need. {@link DynamoTestAccountStore} commits each {@link #transact}
+ * body under the account revisions it locked (the PostgreSQL store retired 2026-11-17).
  */
 public interface TestAccountStore {
     record RegistryRow(UUID accountId, String username, String initialization, String creationState, UUID creatorId,
@@ -37,12 +37,11 @@ public interface TestAccountStore {
     Holder holder(String issuer, String subject);
     /** Active DEV test accounts admitted on the test issuer, by username; {@code only} narrows to one id. */
     List<Target> targets(UUID only);
-    /** One transaction (PostgreSQL: joins the caller's when one is open). */
+    /** One transaction. */
     <T> T transact(Function<Work, T> body);
     /**
      * {@link #transact} for a body that may run again from the start: only reads and this store's own writes, nothing
-     * committed through another lane or outside the store. PostgreSQL waits on its row locks and runs it once;
-     * DynamoDB re-reads and re-runs it after a lost revision race (bounded), where a body with side effects keeps the
+     * committed through another lane or outside the store. DynamoDB re-reads and re-runs it after a lost revision race (bounded), where a body with side effects keeps the
      * conflict as its 409.
      */
     default <T> T transactRetrying(Function<Work, T> body) { return transact(body); }

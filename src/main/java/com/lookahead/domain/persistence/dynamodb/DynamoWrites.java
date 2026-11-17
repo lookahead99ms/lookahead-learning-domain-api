@@ -54,8 +54,25 @@ public final class DynamoWrites {
      * the read-side twin ({@code DynamoOwnerUnit.DynamoOwnerUnavailable}) so one handler answers 503 for both.
      */
     public static class Unavailable extends RuntimeException {
-        Unavailable(SdkException cause) { this("DynamoDB write unavailable: " + cause.getClass().getSimpleName(), cause); }
-        protected Unavailable(String message, SdkException cause) { super(message, cause); }
+        private final String operation;
+        private final List<String> tables;
+        Unavailable(SdkException cause) { this(cause, "ExecuteTransaction", List.of()); }
+        Unavailable(SdkException cause, String operation, List<String> tables) {
+            this("DynamoDB write unavailable: " + cause.getClass().getSimpleName(), cause, operation, tables);
+        }
+        protected Unavailable(String message, SdkException cause) { this(message, cause, "read", List.of()); }
+        /** Plain logs (owner, 2026-11-17): the operation and the table(s) addressed, so the ERROR line can name them. */
+        protected Unavailable(String message, SdkException cause, String operation, List<String> tables) {
+            super(message, cause);
+            this.operation = operation == null ? "call" : operation;
+            this.tables = tables == null ? List.of() : List.copyOf(tables);
+        }
+        /** The DynamoDB operation that failed, e.g. {@code ExecuteTransaction}, {@code GetItem}, {@code Query}. */
+        public String operation() { return operation; }
+        /** The table name(s) the operation addressed, in statement order without repeats; empty when not known. */
+        public List<String> tables() { return tables; }
+        /** "DynamoDB ExecuteTransaction on lookahead-dev-user-account-details" (the sentence's dependency, operation and resource). */
+        public String call() { return "DynamoDB " + operation + (tables.isEmpty() ? "" : " on " + String.join(", ", tables)); }
     }
 
     private final DynamoDbClient client;
@@ -175,27 +192,41 @@ public final class DynamoWrites {
         try {
             client.executeTransaction(request.build());
         } catch (SdkException failure) {
-            throw classify(failure);
+            throw classify(failure, tables());
         }
     }
+
+    /** The table names the statements address, in order without repeats (from the quoted name after INSERT INTO, UPDATE, DELETE FROM). */
+    List<String> tables() {
+        var names = new java.util.LinkedHashSet<String>();
+        for (var statement : statements) {
+            var found = TABLE_NAME.matcher(statement.statement());
+            if (found.find()) names.add(found.group(1));
+        }
+        return List.copyOf(names);
+    }
+    private static final java.util.regex.Pattern TABLE_NAME = java.util.regex.Pattern.compile("^(?:INSERT INTO|UPDATE|DELETE FROM) \"([A-Za-z0-9_.-]+)\"");
 
     /**
      * The one mapping from an SDK failure to the store's outcomes, for every library that sends its own
      * {@code ExecuteTransaction}: a cancellation whose reasons include ConditionalCheckFailed, DuplicateItem or
      * TransactionConflict (or a bare ConditionalCheckFailedException) is a {@link Conflict}, which the web layer
-     * answers 409; anything else is {@link Unavailable} (503, outcome unknown) with the SDK exception as its cause,
-     * never its message. A Conflict carries the cancellation reasons and no cause: it is a business outcome.
+     * answers 409; anything else is {@link Unavailable} (503, outcome unknown) with the SDK exception as its cause
+     * (the web layer's ERROR line quotes its message). A Conflict carries the cancellation reasons and no cause: it is a business outcome.
      */
-    public static RuntimeException classify(SdkException failure) {
+    public static RuntimeException classify(SdkException failure) { return classify(failure, List.of()); }
+
+    /** As above, with the table name(s) the transaction addressed, which an {@link Unavailable} carries for the ERROR line. */
+    public static RuntimeException classify(SdkException failure, List<String> tables) {
         if (failure instanceof TransactionCanceledException cancelled) {
             var reasons = cancelled.cancellationReasons() == null ? List.<CancellationReason>of() : cancelled.cancellationReasons();
             var codes = reasons.stream().map(DynamoWrites::code).toList();
             boolean conditional = codes.stream().anyMatch(code -> code.equals("ConditionalCheckFailed") || code.equals("DuplicateItem") || code.equals("TransactionConflict"));
-            if (!conditional) return new Unavailable(cancelled);
+            if (!conditional) return new Unavailable(cancelled, "ExecuteTransaction", tables);
             return new Conflict(codes);
         }
         if (failure instanceof ConditionalCheckFailedException) return new Conflict(List.of("ConditionalCheckFailed"));
-        return new Unavailable(failure);
+        return new Unavailable(failure, "ExecuteTransaction", tables);
     }
 
     public void commit() { commit(null); }

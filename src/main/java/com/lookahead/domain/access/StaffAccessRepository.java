@@ -7,15 +7,15 @@ import java.util.function.Supplier;
 
 /**
  * Staff assignments (roles, topic grants, full curriculum) and pending invitations by email, with their audit events.
- * DLV-970: {@link JdbcStaffAccessRepository} is the PostgreSQL store; {@link DynamoStaffAccessRepository} keeps the
- * same contract on DynamoDB, where {@link #save} is one revision-fenced transaction with its uniqueness sentinels.
+ * DLV-970: {@link DynamoStaffAccessRepository} is the store, where {@link #save} is one revision-fenced transaction with
+ * its uniqueness sentinels (the PostgreSQL store retired 2026-11-17).
  */
 public abstract class StaffAccessRepository {
     public record Assignment(UUID id, UUID accountId, String pendingEmail, Set<String> roles,
             Set<String> topicGrants, boolean fullCurriculum, long revision) {}
-    /** Runs {@code work} in one store transaction (PostgreSQL); on DynamoDB every store method is its own transaction. */
+    /** Runs {@code work}; on DynamoDB every store method is its own transaction, so the default runs it as it is. */
     public <T> T transaction(Supplier<T> work) { return work.get(); }
-    /** The audit actor of the following writes in this transaction (PostgreSQL session setting); a no-op elsewhere. */
+    /** The audit actor of the following writes (a session setting of the retired PostgreSQL store); a no-op on DynamoDB. */
     public abstract void mutationActor(UUID actor);
     public abstract Assignment forAccount(UUID account);
     public abstract List<Assignment> list();

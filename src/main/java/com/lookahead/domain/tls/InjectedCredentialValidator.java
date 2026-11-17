@@ -64,10 +64,7 @@ public final class InjectedCredentialValidator {
                 check.at("LOOKAHEAD_ADMISSION_CLIENT_SECRET", SCALAR);
                 values.put("app.admission.client-secret", scalar(input.get("LOOKAHEAD_ADMISSION_CLIENT_SECRET")));
             } else {
-                check.at("LOOKAHEAD_DOMAIN_DB_PASSWORD", "is missing or is not exactly 48 letters and digits");
-                String password = scalar(input.get("LOOKAHEAD_DOMAIN_DB_PASSWORD"));
-                if (!password.matches("[A-Za-z0-9]{48}")) throw new IllegalArgumentException();
-                values.put("spring.datasource.password", password);
+                // DLV-970 (2026-11-17): the Domain has no database secret any more; its server bundle trusts the Gateway's CA.
                 values.put("spring.ssl.bundle.pem.serving.truststore.certificate", trust);
             }
             return values;

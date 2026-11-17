@@ -11,7 +11,6 @@ import java.time.ZoneOffset;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.context.annotation.Profile;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 /** Free allowances are checked after PlanService takes the owner row lock. DLV-970: the ledgers sit behind {@link FreePlanLedgerStore}. */
@@ -33,17 +32,6 @@ public class FreePlanAllowance {
     public FreePlanAllowance(FreePlanLedgerStore ledger, AccountRepository accounts,
             ProtectedContentPolicy publication, PlanJson json) {
         this(ledger, accounts, publication, json, Clock.systemUTC());
-    }
-
-    /** PostgreSQL callers and tests: the ledgers on this JdbcTemplate. */
-    public FreePlanAllowance(JdbcTemplate jdbc, AccountRepository accounts,
-            ProtectedContentPolicy publication, PlanJson json) {
-        this(new JdbcFreePlanLedgerStore(jdbc, json), accounts, publication, json, Clock.systemUTC());
-    }
-
-    FreePlanAllowance(JdbcTemplate jdbc, AccountRepository accounts,
-            ProtectedContentPolicy publication, PlanJson json, Clock clock) {
-        this(new JdbcFreePlanLedgerStore(jdbc, json), accounts, publication, json, clock);
     }
 
     FreePlanAllowance(FreePlanLedgerStore ledger, AccountRepository accounts,

@@ -37,7 +37,7 @@ final class StatusReason extends HttpServletResponseWrapper {
             Map.entry(415, "Unsupported content type"),
             Map.entry(422, "Understood but rejected: the content broke a rule"),
             Map.entry(429, "Too many requests: a rate limit was reached"),
-            Map.entry(500, "Unexpected server failure: see the ERROR line with the same requestId"),
+            Map.entry(500, "Unexpected server failure: see the failure line with the same request id"),
             Map.entry(501, "Not implemented: this action is not available in this environment"),
             Map.entry(502, "Bad gateway: a service behind this one gave an invalid answer"),
             Map.entry(503, "Unavailable: a service this request needs is down or busy"),

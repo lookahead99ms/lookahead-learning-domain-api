@@ -50,7 +50,6 @@ import tools.jackson.databind.node.ObjectNode;
  */
 @Repository
 @Profile("accounts")
-@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = com.lookahead.domain.persistence.PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoPlanRepository implements PlanRepository {
     static final int INLINE_BYTES = 200 * 1024;
     static final int PROGRESS_BYTES = 300 * 1024;

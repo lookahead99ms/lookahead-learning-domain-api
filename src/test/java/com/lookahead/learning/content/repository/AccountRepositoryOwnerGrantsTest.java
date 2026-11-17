@@ -1,9 +1,6 @@
 package com.lookahead.learning.content.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.contains;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.withSettings;
 import static org.mockito.Mockito.when;
@@ -17,7 +14,6 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * DLV-968 (2026-11-02): the owner (cloud author capability) holds the whole curriculum without a staff assignment,
@@ -25,18 +21,17 @@ import org.springframework.jdbc.core.JdbcTemplate;
  */
 class AccountRepositoryOwnerGrantsTest {
     private static final Set<String> CATALOG = Set.of("learn:docker", "grow:system-design");
-    private final JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    private final AccountStore store = mock(AccountStore.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
     private final StaffAccessRepository staff = mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
     private final SnapshotValidator catalog = mock(SnapshotValidator.class);
     private final UUID account = UUID.randomUUID();
 
     private AccountRepository repository(boolean owner, StaffAccessRepository.Assignment assignment) {
-        when(jdbc.queryForList(anyString(), eq(String.class), eq(account))).thenReturn(List.of());
-        when(jdbc.queryForObject(contains("to_regclass"), eq(Boolean.class))).thenReturn(true);
-        when(jdbc.queryForObject(contains("author_access"), eq(Boolean.class), eq(account))).thenReturn(owner);
+        when(store.grantTopics(account)).thenReturn(List.of());
+        when(store.authorEnabled(account)).thenReturn(owner);
         when(staff.forAccount(account)).thenReturn(assignment);
         when(catalog.allTopicIds()).thenReturn(CATALOG);
-        return new AccountRepository(jdbc, staff, catalog);
+        return new AccountRepository(store, staff, catalog);
     }
 
     private StaffAccessRepository.Assignment assignment(Set<String> roles, Set<String> topics, boolean full) {

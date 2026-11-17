@@ -9,7 +9,7 @@ import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
 import static org.assertj.core.api.Assertions.*;
 
-/** DLV-970: a DynamoDB failure before MVC (bearer authentication) is the same 503, a conflict the same 409, and the SDK message stays out. */
+/** DLV-970: a DynamoDB failure before MVC (bearer authentication) is the same 503, a conflict the same 409; the ERROR line quotes the SDK (plain logs, 2026-11-17). */
 class DynamoStorageFailureFilterTest {
     final DomainStorageFailureFilter filter = new DomainStorageFailureFilter();
 
@@ -21,7 +21,7 @@ class DynamoStorageFailureFilterTest {
         return response;
     }
 
-    @Test void theStoresOutageAndTheSdksFailuresAnswer503WithOneWarnLine() throws Exception {
+    @Test void theStoresOutageAndTheSdksFailuresAnswer503WithOneErrorLine() throws Exception {
         for (RuntimeException failure : new RuntimeException[] {DynamoStorageFailureMappingTest.unavailable(), DynamoStorageFailureMappingTest.readUnavailable(),
                 SdkClientException.builder().message(DynamoStorageFailureMappingTest.SECRET).build(), DynamoDbException.builder().message(DynamoStorageFailureMappingTest.SECRET).build()}) {
             try (var log = LogCapture.start()) {
@@ -32,8 +32,10 @@ class DynamoStorageFailureFilterTest {
                 assertThat(response.getContentAsString()).isEqualTo("{\"status\":503,\"code\":\"ACCOUNT_STORAGE_UNAVAILABLE\",\"message\":\"Account storage is unavailable; retain your work and retry\"}");
                 var line = log.only("request.dependency");
                 assertThat(LogCapture.keys(line)).containsEntry("reason", "ACCOUNT_STORAGE_UNAVAILABLE").containsEntry("http.status", 503).containsEntry("url.path", "/api/v1/account/session");
-                assertThat(line.getFormattedMessage()).startsWith("Account storage unavailable on /api/v1/account/session: ACCOUNT_STORAGE_UNAVAILABLE (").doesNotContain("4400", "do-not-expose");
-                log.containsNone("4400", "do-not-expose");
+                assertThat(line.getLevel()).isEqualTo(ch.qos.logback.classic.Level.ERROR);
+                assertThat(line.getFormattedMessage()).startsWith("Account storage unavailable on /api/v1/account/session: ACCOUNT_STORAGE_UNAVAILABLE (")
+                        .contains(DynamoStorageFailureMappingTest.SECRET + "); answered 503 until it recovers");
+                assertThat(response.getContentAsString()).doesNotContain("4400", "do-not-expose");
             }
         }
     }

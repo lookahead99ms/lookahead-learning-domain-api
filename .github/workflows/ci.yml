@@ -112,10 +112,6 @@
           }
         },
         {
-          "name": "Prepare disposable database fixture password file",
-          "run": "umask 077\nprintf '%s' 'synthetic-disposable-domain-ci' > \"$RUNNER_TEMP/domain-test-password\""
-        },
-        {
           "name": "Fetch contracts from Content",
           "run": "scripts/fetch-contracts.sh",
           "env": {
@@ -123,7 +119,7 @@
           }
         },
         {
-          "name": "Start a disposable in-memory DynamoDB Local for the DynamoDB store tests (DLV-970)",
+          "name": "Start a disposable in-memory DynamoDB Local for the store tests (DLV-970; the one database fixture since the PostgreSQL retirement of 2026-11-17)",
           "run": "docker run -d --rm --name dynamodb-local -p 127.0.0.1:4445:8000 amazon/dynamodb-local:2.6.1@sha256:1856c05cc66a0e49dc1099e483ad2851477eeebe2135250ac11a1d1227db54b1 -jar DynamoDBLocal.jar -inMemory -sharedDb\nfor attempt in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:4445/ && exit 0; sleep 1; done\necho 'DynamoDB Local did not answer on 127.0.0.1:4445' >&2; exit 1"
         },
         {
@@ -131,13 +127,7 @@
           "run": "./mvnw --batch-mode --no-transfer-progress -Pcoverage clean verify",
           "env": {
             "DLV970_DYNAMODB_TEST_ENDPOINT": "http://127.0.0.1:4445",
-            "DLV970_LOCAL_DYNAMODB_ENDPOINT": "http://127.0.0.1:4445",
-            "CLOUD_AUTH_TEST_DATABASE_URL": "jdbc:postgresql://127.0.0.1:4393/lookahead_domain_cloud_auth",
-            "CLOUD_AUTH_TEST_PASSWORD_FILE": "${{ runner.temp }}/domain-test-password",
-            "DLV921_DATABASE_URL": "jdbc:postgresql://127.0.0.1:4392/lookahead_domain_review",
-            "DLV921_DATABASE_PASSWORD_FILE": "${{ runner.temp }}/domain-test-password",
-            "DOMAIN_BOOTSTRAP_TEST_URL": "jdbc:postgresql://127.0.0.1:4394/lookahead_platform",
-            "DOMAIN_BOOTSTRAP_TEST_PASSWORD_FILE": "${{ runner.temp }}/domain-test-password"
+            "DLV970_LOCAL_DYNAMODB_ENDPOINT": "http://127.0.0.1:4445"
           }
         },
         {
@@ -203,44 +193,6 @@
           }
         }
       ],
-      "services": {
-        "cloud-auth-db": {
-          "image": "postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0",
-          "env": {
-            "POSTGRES_USER": "postgres",
-            "POSTGRES_PASSWORD": "synthetic-disposable-domain-ci",
-            "POSTGRES_DB": "lookahead_domain_cloud_auth"
-          },
-          "ports": [
-            "127.0.0.1:4393:5432"
-          ],
-          "options": "--health-cmd \"pg_isready -U postgres\" --health-interval 5s --health-timeout 5s --health-retries 20"
-        },
-        "review-plan-db": {
-          "image": "postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0",
-          "env": {
-            "POSTGRES_USER": "postgres",
-            "POSTGRES_PASSWORD": "synthetic-disposable-domain-ci",
-            "POSTGRES_DB": "lookahead_domain_review"
-          },
-          "ports": [
-            "127.0.0.1:4392:5432"
-          ],
-          "options": "--health-cmd \"pg_isready -U postgres\" --health-interval 5s --health-timeout 5s --health-retries 20"
-        },
-        "bootstrap-db": {
-          "image": "postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0",
-          "env": {
-            "POSTGRES_USER": "postgres",
-            "POSTGRES_PASSWORD": "synthetic-disposable-domain-ci",
-            "POSTGRES_DB": "lookahead_platform"
-          },
-          "ports": [
-            "127.0.0.1:4394:5432"
-          ],
-          "options": "--health-cmd \"pg_isready -U postgres\" --health-interval 5s --health-timeout 5s --health-retries 20"
-        }
-      },
       "env": {
         "CODEQL_ACTION_DIFF_INFORMED_QUERIES": "false",
         "CODEQL_ACTION_OVERLAY_ANALYSIS": "false",

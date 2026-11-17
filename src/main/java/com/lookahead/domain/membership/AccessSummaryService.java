@@ -24,13 +24,6 @@ public class AccessSummaryService {
     public AccessSummaryService(AccessSummaryStore store,StaffAccessService staff,Clock clock) {
         this.store=store;this.staff=staff;this.clock=clock;
     }
-    /** PostgreSQL convenience (existing tests and fixtures): the JDBC store built from the template. */
-    public AccessSummaryService(org.springframework.jdbc.core.JdbcTemplate jdbc,ObjectMapper json,StaffAccessService staff) {
-        this(new JdbcAccessSummaryStore(jdbc,json),staff,Clock.systemUTC());
-    }
-    public AccessSummaryService(org.springframework.jdbc.core.JdbcTemplate jdbc,ObjectMapper json,StaffAccessService staff,Clock clock) {
-        this(new JdbcAccessSummaryStore(jdbc,json),staff,clock);
-    }
     public Summary get(AccountPrincipal actor,UUID target) {
         if(actor==null||!actor.isEnabled()) throw new AccountFailure(401,"AUTHENTICATION_REQUIRED","Sign in to continue");
         if(!actor.accountId().equals(target)) {

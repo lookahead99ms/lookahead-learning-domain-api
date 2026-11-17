@@ -4,9 +4,7 @@ import com.lookahead.domain.access.AccountRemovalService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.MockMakers;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.env.MockEnvironment;
-import org.springframework.transaction.PlatformTransactionManager;
 import software.amazon.awssdk.services.sesv2.SesV2Client;
 import software.amazon.awssdk.services.sesv2.model.SendEmailRequest;
 import static org.assertj.core.api.Assertions.*;
@@ -14,6 +12,7 @@ import static org.mockito.Mockito.*;
 
 /** DLV-969 S36: the merge email's senders and wiring; no AWS call is ever made. */
 class MergeEmailTest {
+    @SuppressWarnings("unchecked") static <T> org.springframework.beans.factory.ObjectProvider<T> cast(org.springframework.beans.factory.ObjectProvider<?> provider){return (org.springframework.beans.factory.ObjectProvider<T>)provider;}
     @Test void sesSendsOnePlainTextEmailFromTheConfiguredAddress(){
         var client=mock(SesV2Client.class,withSettings().mockMaker(MockMakers.SUBCLASS));
         try(var log=com.lookahead.domain.LogCapture.start()){
@@ -86,10 +85,12 @@ class MergeEmailTest {
         for(String from:new String[]{"","Look Ahead","<no-reply@dev.devlookahead.com>","Look Ahead no-reply@dev.devlookahead.com","a@b.c, d@e.f","Look <a@b.c> <d@e.f>",
                 "Look\r\nBcc: x@y.z <a@b.c>","\"Look\" <a@b.c>","no-reply@localhost"})
             assertThat(from.matches(CloudMergeConfiguration.FROM)).as(from).isFalse();
-        var jdbc=mock(JdbcTemplate.class);var manager=mock(PlatformTransactionManager.class);var removal=mock(AccountRemovalService.class,withSettings().mockMaker(MockMakers.SUBCLASS));
-        assertThat(config.cloudMerges(jdbc,manager,removal,new LoggingEmailSender(),new MockEnvironment().withProperty("app.public-url","https://dev.devlookahead.com"))).isNotNull();
+        var client=mock(software.amazon.awssdk.services.dynamodb.DynamoDbClient.class,withSettings().mockMaker(MockMakers.SUBCLASS));var tables=com.lookahead.domain.persistence.dynamodb.DynamoTableNames.local();
+        var removal=mock(AccountRemovalService.class,withSettings().mockMaker(MockMakers.SUBCLASS));
+        @SuppressWarnings("unchecked") org.springframework.beans.factory.ObjectProvider<Object> none=mock(org.springframework.beans.factory.ObjectProvider.class,withSettings().mockMaker(MockMakers.SUBCLASS));
+        assertThat(config.cloudMerges(client,tables,removal,new LoggingEmailSender(),new MockEnvironment().withProperty("app.public-url","https://dev.devlookahead.com"),cast(none),cast(none),cast(none))).isNotNull();
         for(String url:new String[]{"http://dev.devlookahead.com","https://dev.devlookahead.com/path","javascript:alert(1)"})
-            assertThatThrownBy(()->config.cloudMerges(jdbc,manager,removal,new LoggingEmailSender(),new MockEnvironment().withProperty("app.public-url",url))).as(url)
+            assertThatThrownBy(()->config.cloudMerges(client,tables,removal,new LoggingEmailSender(),new MockEnvironment().withProperty("app.public-url",url),cast(none),cast(none),cast(none))).as(url)
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("LOOKAHEAD_PUBLIC_URL");
     }
     /** Unset, the link origin defaults only in dev; elsewhere it is required as soon as the email is sent. */
@@ -131,8 +132,9 @@ class MergeEmailTest {
         assertThatThrownBy(()->config.emailSender(env.apply(java.util.Map.of("LOOKAHEAD_EMAIL_ENABLED","true","AWS_REGION","us-east-2"))))
             .isInstanceOf(IllegalStateException.class).hasMessageContaining("LOOKAHEAD_EMAIL_FROM");
         var removal=mock(AccountRemovalService.class,withSettings().mockMaker(MockMakers.SUBCLASS));
-        assertThatThrownBy(()->config.cloudMerges(mock(JdbcTemplate.class),mock(PlatformTransactionManager.class),removal,new LoggingEmailSender(),
-            env.apply(java.util.Map.of("LOOKAHEAD_PUBLIC_URL","http://dev.devlookahead.com")))).hasMessageContaining("LOOKAHEAD_PUBLIC_URL");
+        @SuppressWarnings("unchecked") org.springframework.beans.factory.ObjectProvider<Object> none=mock(org.springframework.beans.factory.ObjectProvider.class,withSettings().mockMaker(MockMakers.SUBCLASS));
+        assertThatThrownBy(()->config.cloudMerges(mock(software.amazon.awssdk.services.dynamodb.DynamoDbClient.class,withSettings().mockMaker(MockMakers.SUBCLASS)),com.lookahead.domain.persistence.dynamodb.DynamoTableNames.local(),removal,new LoggingEmailSender(),
+            env.apply(java.util.Map.of("LOOKAHEAD_PUBLIC_URL","http://dev.devlookahead.com")),cast(none),cast(none),cast(none))).hasMessageContaining("LOOKAHEAD_PUBLIC_URL");
     }
     @Test void theBodyCarriesTheLinkTheWarningAndTheWayOut(){
         String body=CloudMergeService.body("https://dev.devlookahead.com/account/merge?token=T");

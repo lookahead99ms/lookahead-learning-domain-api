@@ -23,12 +23,17 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * status and time taken, and for every 4xx and 5xx its code and the reason in words ({@link StatusReason}). 403, 429 and
  * 5xx are WARN. Health checks and successful static files stay quiet.
  * <p>A failure that escapes everything else is logged at ERROR with its stack trace and the request ID as its
- * reference; the caller gets that reference and nothing else.
+ * reference; the caller gets that reference and nothing else. Plain logs (owner, 2026-11-17): the ERROR line says
+ * what was being done, why (the exception, where in our code it came from, its message), what the caller got and the
+ * reference: "{@code PUT /api/v1/plans/current failed after 3 ms: unexpected IllegalStateException in Foo.bar
+ * (Foo.java:12): the message; answered 500 UNEXPECTED_ERROR; reference <request id>}".
  */
 @Component @Order(Ordered.HIGHEST_PRECEDENCE)
 public class RequestLog extends OncePerRequestFilter {
     static final String HEADER = "X-Request-Id";
     static final String KEY = "requestId";
+    /** The request attribute holding {@link System#nanoTime()} at the start, so a handler can say "failed after N ms". */
+    public static final String STARTED = "lookahead.requestStarted";
     private static final Logger requests = LoggerFactory.getLogger("lookahead.http");
     private static final Logger failures = LoggerFactory.getLogger(RequestLog.class);
     private static final Set<String> METHODS = Set.of("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS");
@@ -37,6 +42,12 @@ public class RequestLog extends OncePerRequestFilter {
     public static String reference() {
         String id = MDC.get(KEY);
         return id != null ? id : UUID.randomUUID().toString();
+    }
+
+    /** "failed after 41 ms" for a request this filter timed, "failed" when it was not (tests, other entry points). */
+    public static String failedAfter(HttpServletRequest request) {
+        Object started = request == null ? null : request.getAttribute(STARTED);
+        return started instanceof Long nanos ? "failed after " + (System.nanoTime() - nanos) / 1_000_000 + " ms" : "failed";
     }
 
     /** The Gateway's ID when it is a UUID (in its canonical lowercase form), otherwise a new one. */
@@ -57,6 +68,7 @@ public class RequestLog extends OncePerRequestFilter {
             throws ServletException, IOException {
         String id = requestId(request.getHeader(HEADER));
         long started = System.nanoTime();
+        request.setAttribute(STARTED, started);
         MDC.put(KEY, id);
         response.setHeader(HEADER, id);
         var watched = new StatusReason(response);
@@ -79,7 +91,8 @@ public class RequestLog extends OncePerRequestFilter {
             failures.warn("Request ended early: {} {} {}", method(request), path(request), types(failure));
             return response.getStatus() >= 400 ? new StatusReason.Reason("HTTP_" + response.getStatus(), StatusReason.describe(response.getStatus())) : null;
         }
-        failures.error("Unexpected failure reference={} {} {}", id, method(request), path(request), failure);
+        failures.error("{} {} {}: {}; answered 500 UNEXPECTED_ERROR; reference {}", method(request), path(request), failedAfter(request),
+                Events.unexpected(failure), id, failure);
         response.reset();
         response.setHeader(HEADER, id);
         response.setHeader("Cache-Control", "no-store");
@@ -87,7 +100,7 @@ public class RequestLog extends OncePerRequestFilter {
         response.setContentType("application/json");
         response.getWriter().write("{\"code\":\"UNEXPECTED_ERROR\",\"message\":\"Something went wrong. Quote reference "
                 + id + " when you report it.\",\"reference\":\"" + id + "\"}");
-        return new StatusReason.Reason("UNEXPECTED_ERROR", types(failure) + ": see the ERROR line with the same requestId");
+        return new StatusReason.Reason("UNEXPECTED_ERROR", types(failure) + ": see the failure line with the same request id");
     }
 
     /** Successes: "GET /x -> 200 in 3 ms". Failures add the code and why: "POST /x -> 403 DELETE_FORBIDDEN: Only the owner… in 9 ms". */

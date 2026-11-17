@@ -30,18 +30,12 @@ public final class DynamoMigrationRunner {
     private final DynamoMigrationLedger ledger;
     private final DynamoMigrationLock lock;
     private final Clock clock;
-    private final DynamoMigrationSources sources;
 
     public DynamoMigrationRunner(DynamoDbClient client, DynamoTableNames tables, DynamoMigrationCatalog catalog, Clock clock) {
-        this(client, tables, catalog, clock, DynamoMigrationSources.none());
-    }
-
-    public DynamoMigrationRunner(DynamoDbClient client, DynamoTableNames tables, DynamoMigrationCatalog catalog, Clock clock, DynamoMigrationSources sources) {
         this.client = Objects.requireNonNull(client, "client");
         this.tables = Objects.requireNonNull(tables, "tables");
         this.catalog = Objects.requireNonNull(catalog, "catalog");
         this.clock = Objects.requireNonNull(clock, "clock");
-        this.sources = Objects.requireNonNull(sources, "sources");
         this.ledger = new DynamoMigrationLedger(client, tables);
         this.lock = new DynamoMigrationLock(client, tables);
     }
@@ -59,11 +53,14 @@ public final class DynamoMigrationRunner {
                 Events.success(LOG, "migration.apply").addKeyValue("data.version", version).addKeyValue("data.step", step.name())
                         .log("Applying data step {} {}", version, step.name());
                 try {
-                    step.apply(client, tables, sources);
+                    step.apply(client, tables);
                     step.verify(client, tables);
                 } catch (RuntimeException failure) {
-                    Events.failed(LOG, "migration.apply", "STEP_FAILED").addKeyValue("data.version", version).addKeyValue("data.step", step.name())
-                            .addKeyValue("error.type", Events.types(failure)).log("Data step {} {} failed before it was recorded; CURRENT stays at {}", version, step.name(), version - 1);
+                    // Plain logs (owner, 2026-11-17): the ERROR line says which step, why (the dependency's own words), the hint and what happens next.
+                    LOG.atError().addKeyValue("event.action", "migration.apply").addKeyValue("event.outcome", "failure").addKeyValue("reason", "STEP_FAILED")
+                            .addKeyValue("data.version", version).addKeyValue("data.step", step.name()).addKeyValue("error.type", Events.types(failure))
+                            .log("Data step {} {} failed before it was recorded; CURRENT stays at {}: {}{}; the task exits 1 and a rerun resumes from step {}",
+                                    version, step.name(), version - 1, Events.quoted(failure), hint(failure), version);
                     throw failure;
                 }
                 ledger.record(new DynamoMigrationLedger.AppliedStep(version, step.name(), catalog.checksum(version), clock.instant(), runId), lease);
@@ -82,6 +79,15 @@ public final class DynamoMigrationRunner {
         }
         lock.release(lease);
         return outcome;
+    }
+
+    /** "; check …" where the code knows the cause of a failed step: IAM, a missing table, the network. */
+    static String hint(Throwable failure) {
+        if (Events.permissionRefused(Events.status(failure), Events.code(failure))) return "; the migration-task role lacks this DynamoDB permission: fix the IAM policy, then rerun";
+        if ("ResourceNotFoundException".equals(Events.code(failure)) || failure instanceof software.amazon.awssdk.services.dynamodb.model.ResourceNotFoundException)
+            return "; the table does not exist: create it with the Infra stack, then rerun";
+        String network = Events.hint(failure);
+        return network == null ? "" : "; " + network;
     }
 
     /** Read-only: history is contiguous, every known step's checksum matches and its effects hold, CURRENT agrees. */

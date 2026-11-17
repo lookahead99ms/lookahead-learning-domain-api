@@ -22,8 +22,6 @@ execution role, so the application needs no Secrets Manager client.
 | `LOOKAHEAD_PUBLICATION_DIRECTORY` | Private temporary parent beneath `/tmp`; default `/tmp/lookahead-publications` |
 | `LOOKAHEAD_CONTENT_CACHE_BYTES` | Default33554432; allowed0–67108864 |
 | `LOOKAHEAD_CONTENT_CACHE_ENTRIES` | Default256; allowed1–1024 |
-| `LOOKAHEAD_DOMAIN_DB_PASSWORD` | Injected secret value, never its ARN |
-| `LOOKAHEAD_DOMAIN_JDBC_URL` | Regional RDS host, `sslmode=verify-full`, absolute `sslrootcert` referencing a valid CA bundle |
 
 The three release variables are set together or left unset together; a partial pin
 fails startup. A release is identified by its Content calendar release tag (user decision
@@ -38,8 +36,8 @@ serves the single complete release there; the Content publish run writes it and 
 previous folder into `archive/` after readback.
 Infra selects values in its environment YAML and binds the service manifest to
 maintained CloudFormation parameters. Static AWS credentials and custom AWS endpoint
-overrides are rejected. Runtime SQL roles and migrations remain separately owned;
-injecting a password does not provision a database role.
+overrides are rejected. The DynamoDB tables are reached with the task role; no store
+credential is injected.
 
 ## Startup and serving
 
@@ -106,8 +104,8 @@ It makes no AWS calls and mutates no running service. The fixture tests in
 manifest (with or without `contentSha256`) passes; a pinned deployment additionally
 validates the tag format through `PublicationSettings`.
 
-Real ECS injection, S3/IAM/endpoint denial, Linux image startup, RDS CA provenance,
-database-role provisioning, rollout rollback and measured heap/disk use require
+Real ECS injection, S3/IAM/endpoint denial, Linux image startup, DynamoDB grants,
+rollout rollback and measured heap/disk use require
 deployment verification. The Cognito provider and Domain account/session path is
 implemented and locally verified; the inactive cloud candidate now removes custom
 Identity while preserving Local. See [cloud authentication](cloud-authentication.md)

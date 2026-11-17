@@ -6,9 +6,7 @@ import com.lookahead.learning.content.security.AccountPrincipal;
 import com.lookahead.learning.content.security.LocalAuthorAccess;
 import java.util.HashSet;
 import java.util.UUID;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.PlatformTransactionManager;
 
 /**
  * DLV-969 S35 (owner, 2026-11-03): Local's roster in DEV, for the admin and staff videos: the 27 learner scenarios as
@@ -45,12 +43,6 @@ public class DevTestRoster {
     public DevTestRoster(TestAccountStore store, TestAccountPolicy policy, LocalAuthorAccess owner, TestAccountsService service) {
         this.store = store; this.policy = policy; this.owner = owner; this.service = service;
     }
-    /** PostgreSQL convenience (existing tests and fixtures): the JDBC store on the template and manager. */
-    public DevTestRoster(JdbcTemplate jdbc, PlatformTransactionManager transactionManager, TestAccountPolicy policy,
-            LocalAuthorAccess owner, TestAccountsService service) {
-        this(new JdbcTestAccountStore(jdbc, transactionManager), policy, owner, service);
-    }
-
     /** The roster's progress for the owner in DEV; null for everyone and everywhere else, so the page offers nothing. */
     public Status statusFor(AccountPrincipal actor) {
         return policy.cloud() && actor != null && actor.isEnabled() && owner.allowed(actor) ? status() : null;
@@ -72,8 +64,8 @@ public class DevTestRoster {
         var progress = status();
         Events.success(Events.EVENT, "test-roster.create").addKeyValue("account.id", actor.accountId()).addKeyValue("count", batch.size())
                 .addKeyValue("ready", progress.ready()).addKeyValue("total", progress.total())
-                .log("DEV test roster: {} account(s) created in this batch; {} of {} ready, {} deleted, {} still to create",
-                    batch.size(), progress.ready(), progress.total(), progress.deleted(), progress.remaining());
+                .log("{} created {} DEV test roster account(s) in this batch; {} of {} ready, {} deleted, {} still to create",
+                    Events.actor("Owner", actor.accountId()), batch.size(), progress.ready(), progress.total(), progress.deleted(), progress.remaining());
         return progress;
     }
 
@@ -91,7 +83,7 @@ public class DevTestRoster {
                 throw new AccountFailure(422, "ACCOUNT_CONFIRMATION_REQUIRED", "Type the required confirmation word.");
         } catch (AccountFailure refused) {
             Events.refused(Events.EVENT, "test-account.restore", refused.code()).addKeyValue("account.id", actor == null ? null : actor.accountId())
-                    .log("Restore of deleted roster accounts refused: {}", refused.code());
+                    .log("Restore of deleted roster accounts by {} refused: {}", Events.actor("Account", actor == null ? null : actor.accountId()), refused.code());
             throw refused;
         }
         var deleted = store.deletedRosterIds();
@@ -105,7 +97,7 @@ public class DevTestRoster {
                     .log("Roster test account {} restored to its scenario by account {}", entry.accountId(), actor.accountId());
         }
         if (restored == 0) Events.success(Events.EVENT, "test-account.restore").addKeyValue("account.id", actor.accountId()).addKeyValue("count", 0)
-                .log("Restore of deleted roster accounts: nothing to restore");
+                .log("{} ran the restore of deleted roster accounts: nothing to restore", Events.actor("Owner", actor.accountId()));
         return new Restored(restored);
     }
 

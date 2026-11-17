@@ -30,7 +30,6 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
  */
 @Repository
 @Profile("accounts")
-@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = com.lookahead.domain.persistence.PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoFreePlanLedgerStore implements FreePlanLedgerStore {
     private final DynamoDbClient client;
     private final DynamoTableNames tables;

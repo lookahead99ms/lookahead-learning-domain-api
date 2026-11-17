@@ -1,7 +1,6 @@
 package com.lookahead.domain.membership;
 
 import com.lookahead.domain.access.MembershipErasure;
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.repository.MembershipTopicSource;
@@ -12,7 +11,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import tools.jackson.databind.ObjectMapper;
@@ -25,7 +23,6 @@ import tools.jackson.databind.node.ObjectNode;
  * through {@link MembershipItems} and end open purchases through {@link DynamoMembershipStore}'s fenced transaction.
  */
 @Component
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoMembershipFacts implements MembershipTopicSource, MembershipErasure, com.lookahead.domain.access.MembershipFacts {
     private final DynamoDbClient client;
     private final DynamoTableNames tables;

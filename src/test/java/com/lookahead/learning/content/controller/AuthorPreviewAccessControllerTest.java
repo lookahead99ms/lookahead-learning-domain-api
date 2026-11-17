@@ -100,7 +100,7 @@ class AuthorPreviewAccessControllerTest {
 
     @Test void grantStorageFailureCannotAuthorizeAccess() throws Exception {
         when(accounts.findTopicGrants(LocalAuthorAccess.ACCOUNT_ID))
-                .thenThrow(new org.springframework.dao.DataAccessResourceFailureException("synthetic outage"));
+                .thenThrow(software.amazon.awssdk.core.exception.SdkClientException.create("synthetic outage"));
         http.perform(get(PATH).with(identity(author(), "SCOPE_account")))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.code").value("ACCOUNT_STORAGE_UNAVAILABLE"))

@@ -20,11 +20,7 @@ TASK = 'arn:aws:ecs:us-east-2:509614632283:task/lookahead-dev-cluster/0123456789
 REVISION = 'arn:aws:ecs:us-east-2:509614632283:task-definition/lookahead-dev-domain-migrate:4'
 CONFIG = {**WEB_CONFIG, 'app': 'domain', 'service': 'domain', 'sessionPrefix': 'domain-deploy', 'stack': 'lookahead-dev-domain', 'logGroup': '/lookahead/dev/domain',
           'discovery': {'serviceName': 'domain', 'serviceId': 'srv-domain0000000001', 'serviceArn': 'arn:aws:servicediscovery:us-east-2:509614632283:service/srv-domain0000000001'},
-          'parameters': {**WEB_CONFIG['parameters'], 'LogGroupName': '/lookahead/dev/domain', deploy.STORE_PARAMETER: 'postgresql', **deploy.TABLE_PARAMETERS,
-                         'DatabaseAddress': 'lookahead-dev-db.abc123.us-east-2.rds.amazonaws.com',
-                         'DomainAppSecretArn': 'arn:aws:secretsmanager:us-east-2:509614632283:secret:lookahead-dev-db-app-readwrite-h1nqjO', 'DomainAppVersion': 'cd08e527-0e7d-a97f-87dd-f96dcc82d1ef'}}
-IMPORT_URL = 'jdbc:postgresql://lookahead-dev-db.abc123.us-east-2.rds.amazonaws.com:5432/lookahead_platform?sslmode=verify-full&sslrootcert=/opt/lookahead/trust/rds-global-bundle.pem'
-IMPORT_SECRET = 'arn:aws:secretsmanager:us-east-2:509614632283:secret:lookahead-dev-db-app-readwrite-h1nqjO:password::cd08e527-0e7d-a97f-87dd-f96dcc82d1ef'
+          'parameters': {**WEB_CONFIG['parameters'], 'LogGroupName': '/lookahead/dev/domain', **deploy.TABLE_PARAMETERS}}
 
 
 def report(command='migrate', run='12', **extra):
@@ -91,9 +87,9 @@ class FakeAws:
             return {'events': [{'message': message, 'timestamp': 1} for message in self.messages]}
         raise AssertionError('unexpected aws call ' + key)
 
-    def serving(self, store='postgresql'):
+    def serving(self):
         self.stack = {'status': 'UPDATE_COMPLETE', 'parameters': {**CONFIG['parameters'], 'ApplicationImage': self.config['imageRepository'] + '@sha256:' + 'o' * 64,
-                                                                   'DesiredCount': '1', 'RefreshToken': 'none', deploy.STORE_PARAMETER: store}}
+                                                                   'DesiredCount': '1', 'RefreshToken': 'none'}}
 
     def ops(self, service, operation):
         return [c for c in self.calls if c[0] == service and c[1] == operation]
@@ -150,27 +146,26 @@ class PlanTests(MigrateFixture):
                           'org.springframework.boot.loader.launch.PropertiesLauncher'], planned['entryPoint'])
         self.assertEqual({'LOOKAHEAD_ENVIRONMENT': 'dev', 'AWS_REGION': 'us-east-2', 'GITHUB_RUN_ID': '12', 'JAVA_TOOL_OPTIONS': m.JAVA_TOOL_OPTIONS,
                           'LOOKAHEAD_DYNAMODB_USER_ACCOUNT_DETAILS_TABLE': 'lookahead-dev-user-account-details', 'LOOKAHEAD_DYNAMODB_ADMINISTRATOR_AUDIT_EVENTS_TABLE': 'lookahead-dev-administrator-audit-events',
-                          'LOOKAHEAD_DYNAMODB_USER_STUDY_PLAN_DETAILS_TABLE': 'lookahead-dev-user-study-plan-details', 'LOOKAHEAD_DYNAMODB_PROTECTED_OWNER_IDENTITY_TABLE': 'lookahead-dev-protected-owner-identity',
-                          'LOOKAHEAD_IMPORT_JDBC_URL': IMPORT_URL, 'LOOKAHEAD_IMPORT_DB_USER': 'lookahead_platform_app'},
+                          'LOOKAHEAD_DYNAMODB_USER_STUDY_PLAN_DETAILS_TABLE': 'lookahead-dev-user-study-plan-details', 'LOOKAHEAD_DYNAMODB_PROTECTED_OWNER_IDENTITY_TABLE': 'lookahead-dev-protected-owner-identity'},
                          planned['environment'])
-        self.assertEqual({'LOOKAHEAD_IMPORT_DB_PASSWORD': IMPORT_SECRET}, planned['secrets'])
+        # DLV-970 (2026-11-17): no command carries a secret or a PostgreSQL variable since the import source was retired.
+        self.assertEqual({}, planned['secrets'])
         self.assertNotIn('LOOKAHEAD_DYNAMODB_ENDPOINT', planned['environment'])
-        for command in ('verify', 'status'):
+        for command in ('migrate', 'verify', 'status'):
             readOnly = self.planned(command)
-            self.assertEqual({}, readOnly['secrets']); self.assertNotIn('LOOKAHEAD_IMPORT_JDBC_URL', readOnly['environment']); self.assertNotIn('LOOKAHEAD_IMPORT_DB_USER', readOnly['environment'])
+            self.assertEqual({}, readOnly['secrets']); self.assertEqual([], [k for k in readOnly['environment'] if 'IMPORT' in k or 'JDBC' in k])
             self.assertEqual([], [r for r in readOnly['resources'] if r['type'] in ('AWS::RDS::DBInstance', 'AWS::SecretsManager::Secret')])
+            self.assertNotIn('currentPersistenceStore', readOnly)
         self.assertEqual({'table': 'lookahead-dev-protected-owner-identity', 'partition': 'DATA_VERSION#DOMAIN', 'items': ['STEP#<ten-digit version>', 'CURRENT', 'LOCK']}, planned['ledger'])
-        self.assertEqual(('postgresql', '1'), (planned['currentPersistenceStore'], planned['currentDesiredCount']))
+        self.assertEqual('1', planned['currentDesiredCount'])
         self.assertEqual(planned['planDigest'], owner.digest({k: v for k, v in planned.items() if k != 'planDigest'}))
         rows = [(r['action'], r['type'], r['consoleName']) for r in planned['resources']]
         self.assertEqual([('Create', 'AWS::ECS::TaskDefinition', 'lookahead-dev-domain-migrate'), ('Run once', 'AWS::ECS::Task', 'lookahead-dev-domain-migrate on lookahead-dev-cluster'),
                           ('No change', 'AWS::ECS::Service', 'lookahead-dev-domain')], rows[:3])
-        self.assertEqual([('Read only', 'AWS::RDS::DBInstance', 'lookahead-dev-db.abc123.us-east-2.rds.amazonaws.com'), ('Read', 'AWS::SecretsManager::Secret', 'lookahead-dev-db-app-readwrite-h1nqjO')], rows[3:5])
-        self.assertIn('nothing is written to PostgreSQL', planned['resources'][3]['note']); self.assertIn('LOOKAHEAD_IMPORT_DB_PASSWORD', planned['resources'][4]['note'])
-        self.assertEqual([('Modify', 'AWS::DynamoDB::Table', name) for name in deploy.TABLE_PARAMETERS.values()], rows[5:9])
-        self.assertEqual([('Modify', 'AWS::DynamoDB::Table item', 'lookahead-dev-protected-owner-identity · DATA_VERSION#DOMAIN / ' + key) for key in ('STEP#<ten-digit version>', 'CURRENT', 'LOCK')], rows[9:])
+        self.assertEqual([('Modify', 'AWS::DynamoDB::Table', name) for name in deploy.TABLE_PARAMETERS.values()], rows[3:7])
+        self.assertEqual([('Modify', 'AWS::DynamoDB::Table item', 'lookahead-dev-protected-owner-identity · DATA_VERSION#DOMAIN / ' + key) for key in ('STEP#<ten-digit version>', 'CURRENT', 'LOCK')], rows[7:])
         self.assertEqual(('DATA_VERSION#DOMAIN', 'LOCK'), (planned['resources'][-1]['pk'], planned['resources'][-1]['sk']))
-        self.assertIn('the running release keeps serving on the postgresql store', planned['resources'][2]['note'])
+        self.assertIn('the running release keeps serving; deploy this release afterwards', planned['resources'][2]['note'])
         self.assertEqual([], self.aws.ops('ecs', 'register-task-definition'))  # planning changes nothing
 
     def test_verify_and_status_are_read_only_plans_and_the_command_is_bounded(self):
@@ -178,7 +173,7 @@ class PlanTests(MigrateFixture):
             planned = self.planned(command)
             self.assertEqual(command, planned['command'])
             self.assertTrue(all(r['action'] == 'Read only' for r in planned['resources'][3:]), planned['resources'])
-            self.assertEqual((None, None), (planned['currentPersistenceStore'], planned['currentDesiredCount']))  # no stack yet
+            self.assertIsNone(planned['currentDesiredCount'])  # no stack yet
             self.assertEqual('APPROVE ' + command.upper() + ' domain-v2026.10.26.20.00', m.approvalCommand(planned))
             self.assertEqual(m.ACTIONS[command], m.headline(planned)['action'])
             self.assertIn('nothing is written', m.headline(planned)['change'])
@@ -186,18 +181,18 @@ class PlanTests(MigrateFixture):
             self.planned('drop')
         self.assertEqual('migrate', m.command({'MIGRATE_COMMAND': ' '}))
 
-    def test_plan_refuses_a_missing_image_another_application_a_config_without_the_switch_and_placeholders(self):
+    def test_plan_refuses_a_missing_image_another_application_a_config_without_the_tables_and_placeholders(self):
         self.aws.image = None
         with self.assertRaisesRegex(ValueError, 'not found in ECR'):
             self.planned()
         self.aws.image = DIGEST
-        for key in (deploy.STORE_PARAMETER, 'UserAccountDetailsTable'):
+        for key in ('UserAccountDetailsTable', 'ProtectedOwnerIdentityTable'):
             config = json.loads(json.dumps(CONFIG)); del config['parameters'][key]
             (self.root / 'deployment/dev/deploy-config.json').write_text(json.dumps(config))
-            with self.assertRaisesRegex(ValueError, 'PersistenceStore postgresql or dynamodb|store switch required'):
+            with self.assertRaisesRegex(ValueError, 'four DEV DynamoDB table names|four DynamoDB table names required'):
                 self.planned()
         web = json.loads(json.dumps(WEB_CONFIG)); (self.root / 'deployment/dev/deploy-config.json').write_text(json.dumps(web))
-        with self.assertRaisesRegex(ValueError, 'Domain configuration with the persistence store switch required'):
+        with self.assertRaisesRegex(ValueError, 'Domain configuration with the four DynamoDB table names required'):
             m.loadConfig(self.root)
         self.writeConfig()
         with patch.object(m, 'environment', return_value={**m.environment(self.config, '12'), 'AWS_REGION': 'PENDING-S9'}):
@@ -239,9 +234,11 @@ class ApprovalTests(MigrateFixture):
         body = self.issue()['body']
         for phrase in ('APPROVE MIGRATE domain-v2026.10.26.20.00', '### Affected AWS resources', '`AWS::ECS::TaskDefinition`', '`AWS::DynamoDB::Table`', 'DATA_VERSION#DOMAIN / CURRENT',
                        'DATA_VERSION#DOMAIN / LOCK', 'lookahead-dev-migration-task', 'data first, then app', 'ecs register-task-definition', 'ecs run-task', 'logs get-log-events',
-                       '**NO CHANGE** `AWS::ECS::Service` · `lookahead-dev-domain`', 'DesiredCount `1` on the `postgresql` store', 'Approve within 10 minutes',
-                       'a data decision, not a flag', '**currentPersistenceStore** | `postgresql`'):
+                       '**NO CHANGE** `AWS::ECS::Service` · `lookahead-dev-domain`', 'DesiredCount `1`', 'Approve within 10 minutes',
+                       'a new step, not a flag', 'retired on 2026-11-17'):
             self.assertIn(phrase, body, phrase)
+        for phrase in ('currentPersistenceStore', 'postgresql store', 'LOOKAHEAD_IMPORT', 'AWS::RDS', 'AWS::SecretsManager'):
+            self.assertNotIn(phrase, body, phrase)
         for forbidden in ('change set', 'DesiredCount 0', 'rolling update'):
             self.assertNotIn(forbidden, body, forbidden)
         self.assertEqual(['## ' + s for s in issueTemplate.SECTIONS], [line for line in body.splitlines() if line.startswith('## ')])
@@ -302,7 +299,7 @@ class ExecuteTests(MigrateFixture):
         self.assertEqual({'awslogs-group': '/lookahead/dev/domain', 'awslogs-region': 'us-east-2', 'awslogs-stream-prefix': 'migrate'}, container['logConfiguration']['options'])
         self.assertNotIn('mode', container['logConfiguration']['options'])  # blocking: the report line is never dropped
         self.assertEqual(planned['environment'], {e['name']: e['value'] for e in container['environment']})
-        self.assertEqual([{'name': 'LOOKAHEAD_IMPORT_DB_PASSWORD', 'valueFrom': IMPORT_SECRET}], container['secrets']); self.assertNotIn('portMappings', container); self.assertNotIn('tags', definition)
+        self.assertNotIn('secrets', container); self.assertNotIn('portMappings', container); self.assertNotIn('tags', definition)
         self.assertEqual({'awsvpcConfiguration': {'subnets': ['subnet-a', 'subnet-b'], 'securityGroups': ['sg-1'], 'assignPublicIp': 'ENABLED'}}, self.aws.network)
         run = self.aws.ops('ecs', 'run-task')[0]
         self.assertEqual(('migrate-12', '1.4.0'), (run[run.index('--started-by') + 1], run[run.index('--platform-version') + 1]))
@@ -343,9 +340,9 @@ class ExecuteTests(MigrateFixture):
         self.assertTrue(service.get('portMappings') and service.get('secrets'))
         for absent in ('portMappings', 'healthCheck', 'stopTimeout', 'startTimeout'):
             self.assertNotIn(absent, container, absent)
-        # A migrate carries exactly one of the service's secrets (the database password, same ARN, key and version); verify and status carry none.
-        self.assertEqual([{'name': 'LOOKAHEAD_IMPORT_DB_PASSWORD', 'valueFrom': IMPORT_SECRET}], container['secrets'])
-        self.assertNotIn('secrets', m.taskDefinition(self.planned('verify'))['containerDefinitions'][0])
+        # No command carries a secret since the PostgreSQL import source was retired (2026-11-17); the service keeps its TLS and Gateway secrets.
+        for command in ('migrate', 'verify', 'status'):
+            self.assertNotIn('secrets', m.taskDefinition(self.planned(command))['containerDefinitions'][0])
         self.assertEqual(['migrate'], container['command']); self.assertNotIn('entryPoint', service)
 
     def test_a_non_zero_exit_a_missing_report_or_a_failed_report_fails_the_run_and_records_the_reason(self):

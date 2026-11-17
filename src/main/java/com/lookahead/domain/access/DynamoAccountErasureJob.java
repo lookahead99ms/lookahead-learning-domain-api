@@ -1,8 +1,6 @@
 package com.lookahead.domain.access;
 
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.sweeps.MaintenanceJobs;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /**
@@ -11,7 +9,6 @@ import org.springframework.stereotype.Component;
  * ERASE phase ({@link DynamoAccountErasure#resumePage}); a failed erasure stays queued for the next sweep.
  */
 @Component
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoAccountErasureJob implements MaintenanceJobs.Job {
     public static final String NAME = "account-erasure";
     private final DynamoAccountErasure erasure;

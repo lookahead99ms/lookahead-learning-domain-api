@@ -27,7 +27,7 @@ public final class DynamoOwnerReads {
     public static Map<String, AttributeValue> get(DynamoDbClient client, String table, String pk, String sk, String projection) {
         var request = GetItemRequest.builder().tableName(table).key(DynamoItems.key(pk, sk)).consistentRead(true);
         if (projection != null) request.projectionExpression(projection);
-        return read(() -> client.getItem(request.build()).item());
+        return read("GetItem", table, () -> client.getItem(request.build()).item());
     }
 
     /** Every item of {@code pk} whose sort key starts with {@code prefix}, in sort-key order, through all pages. */
@@ -43,7 +43,7 @@ public final class DynamoOwnerReads {
             else query.keyConditionExpression("pk = :pk AND begins_with(sk, :prefix)").expressionAttributeValues(Map.of(":pk", DynamoItems.s(pk), ":prefix", DynamoItems.s(prefix)));
             if (projection != null) query.projectionExpression(projection);
             if (start != null) query.exclusiveStartKey(start);
-            var response = read(() -> client.query(query.build()));
+            var response = read("Query", table, () -> client.query(query.build()));
             items.addAll(response.items());
             start = response.hasLastEvaluatedKey() && !response.lastEvaluatedKey().isEmpty() ? response.lastEvaluatedKey() : null;
         } while (start != null);
@@ -52,5 +52,10 @@ public final class DynamoOwnerReads {
 
     public static <T> T read(Supplier<T> call) {
         try { return call.get(); } catch (SdkException failure) { throw new DynamoOwnerUnit.DynamoOwnerUnavailable(failure); }
+    }
+
+    /** As above, naming the operation and table for the ERROR line a failed read ends in (plain logs, owner 2026-11-17). */
+    public static <T> T read(String operation, String table, Supplier<T> call) {
+        try { return call.get(); } catch (SdkException failure) { throw new DynamoOwnerUnit.DynamoOwnerUnavailable(operation, table, failure); }
     }
 }

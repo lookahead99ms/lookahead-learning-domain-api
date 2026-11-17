@@ -18,8 +18,8 @@ import static com.lookahead.domain.review.platform.PlatformReviewModels.*;
 /**
  * DLV-971 (owner, 2026-11-06): one runtime record store in the assets bucket, {@code reviews/} or
  * {@code support-requests/}: a record is {@code records/YYYY/MM/DD/<ID>.json} (the day of its creation, UTC), its
- * attachments {@code attachments/<ID>/NN-name.ext}. Ids are {@code REV-000001} / {@code SUP-000001} from a Postgres
- * sequence. A change reads the record, applies the edit and writes it back only if nobody else wrote it in between;
+ * attachments {@code attachments/<ID>/NN-name.ext}. Ids are {@code REV-000001} / {@code SUP-000001} from a
+ * {@link ReviewRecordNumbers} counter. A change reads the record, applies the edit and writes it back only if nobody else wrote it in between;
  * a create uses a fresh id, so it never conflicts. Storage failures answer 503 and a damaged record is explained
  * once a minute without its contents.
  */

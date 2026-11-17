@@ -8,7 +8,6 @@ import java.util.Map;
 import java.util.UUID;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
@@ -18,8 +17,7 @@ public class AccountDirectory {
     private final IdentitySettings identity;
     private final RestClient http;
     private final AccountDirectoryStore store;
-    public AccountDirectory(ObjectProvider<IdentitySettings> settings, JdbcTemplate jdbc) { this(settings, new JdbcAccountDirectoryStore(jdbc)); }
-    /** DLV-970: the store (PostgreSQL or DynamoDB) is selected by {@code app.persistence.store}. */
+    /** DLV-970: the DynamoDB store (PostgreSQL retired 2026-11-17). */
     @org.springframework.beans.factory.annotation.Autowired
     public AccountDirectory(ObjectProvider<IdentitySettings> settings, AccountDirectoryStore store) {
         this.identity=settings.getIfAvailable();this.store=store;

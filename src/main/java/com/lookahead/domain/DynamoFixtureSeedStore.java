@@ -2,14 +2,12 @@ package com.lookahead.domain;
 
 import static com.lookahead.domain.cloud.CloudAccountItems.*;
 
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
 import com.lookahead.learning.content.repository.DynamoAccountStore;
 import java.time.Clock;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -17,7 +15,6 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 /** DLV-970: the local-test seed on DynamoDB: {@code ACCOUNT#id / META} subjects and {@code GRANT#topic} items, insert-only. */
 @Component
 @Profile("accounts & local-test")
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoFixtureSeedStore implements FixtureSeedStore {
     private final DynamoDbClient client;
     private final DynamoTableNames tables;

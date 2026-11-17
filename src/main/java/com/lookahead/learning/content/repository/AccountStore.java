@@ -4,8 +4,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * DLV-970: the subject row and curriculum grants behind {@link AccountRepository}. {@link JdbcAccountStore} keeps the
- * PostgreSQL statements; {@link DynamoAccountStore} reads {@code ACCOUNT#id / META} and {@code GRANT#topic} items.
+ * DLV-970: the subject item and curriculum grants behind {@link AccountRepository}. {@link DynamoAccountStore} reads
+ * {@code ACCOUNT#id / META} and {@code GRANT#topic} items (the PostgreSQL store retired 2026-11-17).
  */
 public interface AccountStore {
     void ensureSubject(UUID subject);

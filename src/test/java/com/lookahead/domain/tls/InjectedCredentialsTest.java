@@ -75,7 +75,7 @@ class InjectedCredentialsTest {
             Map.entry("LOOKAHEAD_TLS_TRUST",text("ca.pem")),Map.entry("LOOKAHEAD_TLS_CLIENT_CERTIFICATE",text("client.pem")),Map.entry("LOOKAHEAD_TLS_CLIENT_KEY",text("client.key")),
             Map.entry("LOOKAHEAD_DOMAIN_GATEWAY_SECRET","synthetic-gateway-secret"),Map.entry("APP_OAUTH_CLIENT_ID","SyntheticClient1"),
             Map.entry("LOOKAHEAD_GATEWAY_CLIENT_SECRET","synthetic-oauth-secret"),Map.entry("LOOKAHEAD_ADMISSION_CLIENT_ID","SyntheticClient2"),
-            Map.entry("LOOKAHEAD_ADMISSION_CLIENT_SECRET","synthetic-admission-secret"),Map.entry("LOOKAHEAD_DOMAIN_DB_PASSWORD","a".repeat(48))));
+            Map.entry("LOOKAHEAD_ADMISSION_CLIENT_SECRET","synthetic-admission-secret")));
     }
     @Test void positiveBundlesAreConsumedBySpringWithoutFiles() throws Exception {
         for(String service:List.of("gateway","domain")) {
@@ -113,7 +113,6 @@ class InjectedCredentialsTest {
         for(String service:List.of("gateway","domain")) {
             var keys=new ArrayList<>(input().keySet());
             if(service.equals("domain"))keys.removeAll(List.of("LOOKAHEAD_TLS_CLIENT_CERTIFICATE","LOOKAHEAD_TLS_CLIENT_KEY","APP_OAUTH_CLIENT_ID","LOOKAHEAD_GATEWAY_CLIENT_SECRET","LOOKAHEAD_ADMISSION_CLIENT_ID","LOOKAHEAD_ADMISSION_CLIENT_SECRET"));
-            else keys.remove("LOOKAHEAD_DOMAIN_DB_PASSWORD");
             for(String key:keys) {
                 var values=input();values.remove(key);
                 var failure=assertThrows(IllegalStateException.class,()->InjectedCredentialValidator.properties(values,service),key);
@@ -197,8 +196,9 @@ class InjectedCredentialsTest {
             assertThrows(IllegalStateException.class,()->InjectedCredentialValidator.properties(values,"domain"));
         }
         for(String id:List.of("invalid-id","a".repeat(129)))assertThrows(IllegalArgumentException.class,()->InjectedCredentialValidator.clientId(id));
+        // DLV-970 (2026-11-17): the Domain has no database secret; a leftover LOOKAHEAD_DOMAIN_DB_PASSWORD is neither required nor read.
         var values=input();values.put("LOOKAHEAD_DOMAIN_DB_PASSWORD","wrongshape-but-long-enough");
-        assertThrows(IllegalStateException.class,()->InjectedCredentialValidator.properties(values,"domain"));
+        assertFalse(InjectedCredentialValidator.properties(values,"domain").containsKey("spring.datasource.password"));
         assertThrows(IllegalStateException.class,()->InjectedCredentialValidator.properties(values,"web"));
     }
 
@@ -212,14 +212,13 @@ class InjectedCredentialsTest {
         cases.put(new String[]{"LOOKAHEAD_TLS_TRUST",text("server.pem")},"LOOKAHEAD_TLS_TRUST is missing, or is not 1 to 8 valid self-signed CA certificates in PEM");
         cases.put(new String[]{"LOOKAHEAD_TLS_SERVER_CERTIFICATE","not a certificate"},"LOOKAHEAD_TLS_SERVER_CERTIFICATE is missing, is not 1 to 8 PEM certificates");
         cases.put(new String[]{"LOOKAHEAD_DOMAIN_GATEWAY_SECRET","short"},"LOOKAHEAD_DOMAIN_GATEWAY_SECRET is missing, shorter than 16");
-        cases.put(new String[]{"LOOKAHEAD_DOMAIN_DB_PASSWORD","synthetic-database-password-of-wrong-shape"},"LOOKAHEAD_DOMAIN_DB_PASSWORD is missing or is not exactly 48 letters and digits");
         for(var entry:cases.entrySet()) {
             var values=input();values.put(entry.getKey()[0],entry.getKey()[1]);
             try(var log=com.lookahead.domain.LogCapture.start("lookahead.startup")) {
                 var failure=assertThrows(IllegalStateException.class,()->InjectedCredentialValidator.properties(values,"domain"));
                 assertEquals(InjectedCredentialValidator.DENIED,failure.getMessage());assertNull(failure.getCause());
                 var line=log.only("startup.check");
-                assertEquals(ch.qos.logback.classic.Level.WARN,line.getLevel());
+                assertEquals(ch.qos.logback.classic.Level.ERROR,line.getLevel());
                 assertTrue(line.getFormattedMessage().startsWith("Startup refused: "+entry.getValue()),line.getFormattedMessage());
                 assertEquals("INJECTED_CREDENTIAL_INVALID",com.lookahead.domain.LogCapture.keys(line).get("reason"));
                 log.containsNone("wrong.example.com","dev.example.com","-----BEGIN","synthetic-gateway-secret","synthetic-database-password","lookahead-tls/v0");

@@ -9,9 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.PlatformTransactionManager;
 
 /**
  * A pending reservation precedes Identity; only a completed Domain record may be activated.
@@ -69,11 +67,6 @@ public class CreatedTestAccounts {
             StaffAccessRepository staff, LocalAuthorAccess owner, TestIdentityOperator local) {
         this.store=store; this.policy=policy; this.staff=staff; this.owner=owner; this.local=local;
     }
-    /** PostgreSQL convenience (existing tests and fixtures): the JDBC store on the template and manager. */
-    public CreatedTestAccounts(JdbcTemplate jdbc, PlatformTransactionManager transactionManager, TestAccountPolicy policy,
-            StaffAccessRepository staff, LocalAuthorAccess owner, TestIdentityOperator local) {
-        this(new JdbcTestAccountStore(jdbc, transactionManager), policy, staff, owner, local);
-    }
     /** Writes the scenarios and the DEV admitted row (DLV-969 S35). */
     @org.springframework.beans.factory.annotation.Autowired
     public void configureAccounts(TestAccountsService accounts) { this.accounts=accounts; }
@@ -106,7 +99,7 @@ public class CreatedTestAccounts {
         } catch(AccountFailure refused) {
             if(!"TEST_ACCOUNT_LIMIT".equals(refused.code()))
                 Events.refused(Events.EVENT,"test-account.create",refused.code()).addKeyValue("account.id",actor==null?null:actor.accountId())
-                    .log("Test account creation refused: {}",refused.code());
+                    .log("Test account creation by {} refused: {}",Events.actor("Account",actor==null?null:actor.accountId()),refused.code());
             throw refused;
         }
     }
@@ -184,7 +177,7 @@ public class CreatedTestAccounts {
                 .log("deleted".equals(target.state())?"Test account {} was already deleted; nothing more to do":"Test account {} deleted by account {}",id,actor.accountId());
         } catch(AccountFailure refused) {
             Events.refused(Events.EVENT,"test-account.delete",refused.code()).addKeyValue("account.id",actor==null?null:actor.accountId()).addKeyValue("target.id",id)
-                .log("Deleting test account {} refused: {}",id,refused.code());
+                .log("Deleting test account {} by {} refused: {}",id,Events.actor("Account",actor==null?null:actor.accountId()),refused.code());
             throw refused;
         }
     }

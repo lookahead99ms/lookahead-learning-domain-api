@@ -2,53 +2,33 @@
 
 ## DynamoDB persistence (DLV-970)
 
-The Domain runs on one of two stores, chosen at startup by `app.persistence.store`
-(`LOOKAHEAD_PERSISTENCE_STORE`): `postgresql`, the default and today's running backend,
-or `dynamodb`, four tables (**User Account Details**, **Administrator Audit Events**,
-**User Study Plan Details**, **Protected Owner Identity**). Every aggregate has a store
-per backend behind the same interface (`Jdbc*` with the SQL as it always was, `Dynamo*`
-with PartiQL transactions fenced on the owner's `ACCOUNT#id / META` revision); in
-`dynamodb` mode the context starts without a JDBC bean and never falls back. Accounts,
-identities, sessions, admission, the e-mailed account merge, staff access and labels,
-plans/versions/progress/receipts/lifecycle, memberships, test accounts, author reviews,
-record numbers and the sweeps all run on either store. Study-plan snapshots stay
-complete, account-owned copies (≤ 200 KiB inline, larger ones as verified chunked
-documents with atomic publication, retirement and bounded cleanup). Data changes are
-numbered steps applied by the migration entrypoint before a deploy that needs them
-(`DomainDynamoCatalog`); readiness refuses to serve a store that is behind. See
-[docs/dynamodb-persistence.md](docs/dynamodb-persistence.md) (design, item families,
+The Domain runs on one store: DynamoDB, four tables (**User Account Details**, **Administrator
+Audit Events**, **User Study Plan Details**, **Protected Owner Identity**) read and written through
+`Dynamo*` stores with PartiQL transactions fenced on the owner's `ACCOUNT#id / META` revision.
+Accounts, identities, sessions, admission, the e-mailed account merge, staff access and labels,
+plans/versions/progress/receipts/lifecycle, memberships, test accounts, author reviews, record
+numbers and the sweeps all live there. Study-plan snapshots stay complete, account-owned copies
+(≤ 200 KiB inline, larger ones as verified chunked documents with atomic publication, retirement
+and bounded cleanup). Data changes are numbered steps applied by the migration entrypoint before a
+deploy that needs them (`DomainDynamoCatalog`); readiness refuses to serve a store that is behind.
+See [docs/dynamodb-persistence.md](docs/dynamodb-persistence.md) (design, item families,
 libraries) and [docs/dynamodb-runtime.md](docs/dynamodb-runtime.md) (settings, local run,
-migration entrypoint, sweeps). The AWS DEV cutover (tables, IAM, `07 · Migrate DEV data`,
-deploy with `persistence_store=dynamodb`) stays user-run and is described in the Infra
-cutover guide; local tests do not establish AWS permissions. On DynamoDB the
-`CloudAccountAdministration` command-line tool is not needed: the protected owner identity
-admits itself at first contact (or at its next sign-in, when its `OWNER / ROOT` binding was
-written after that contact) and every other account action is an owner endpoint.
+migration entrypoint, sweeps). The protected owner identity admits itself at first contact (or at
+its next sign-in, when its `OWNER / ROOT` binding was written after that contact) and every other
+account action is an owner endpoint; there is no command-line account administration.
 
-## Audit retention and Local fixture provisioning
+PostgreSQL (history): the Domain served Local and DEV from a PostgreSQL database (RDS `lookahead-dev-db`
+on DEV, Flyway migrations V1–V22, the `Jdbc*` stores) until 2026-11-17. That day the real accounts were imported
+into DynamoDB (data step 5, run 44162520740), a final manual snapshot of the instance was kept, and PostgreSQL
+was retired under DLV-970 (owner: "delete all Postgres things"): the store switch, the `Jdbc*` stores, Flyway,
+the driver, the SQL migrations, the RDS CA bundle, the database settings and secret, their tests and the CI
+PostgreSQL services are gone from this repository. The RDS instance, its stacks, secrets, subnets and IAM rows
+are retired by Infra and the owner's console steps (Content evidence `DLV-970-dynamodb-migration-20261102`,
+`postgresql-retirement-plan.md`).
 
-The local source candidate adds forward migration V15; V1–V14 remain immutable.
-Runtime UPDATE, DELETE and TRUNCATE are revoked on purchase, author-review, staff
-and account-maintenance audit tables, including PUBLIC grants. Unexpected effective
-inherited or column-level audit mutation rights fail the migration. Cloud connection
-initialization also rejects audit mutation privileges and executable public-schema
-SECURITY DEFINER functions; the existing runtime role/ownership checks remain.
-
-Managed-account data erasure can retain purchase audit without attempting audit
-DELETE, and preserves subject/lifetime-creation records. Local synthetic purge
-requires an explicit migrator job setting `LOOKAHEAD_LOCAL_AUDIT_PURGE=true` with
-`LOOKAHEAD_ENVIRONMENT=local`, the `lookahead_platform` database, and an allowed
-loopback or `domain-api-db` host. Infra's generated Local migration job supplies
-this setting; cloud templates do not. The provisioner restores only membership
-audit DELETE, still limited by the existing synthetic-account trigger. A Local
-job without that opt-in retains audit and account cleanup still succeeds.
-
-DEV managed identities and owner deletion remain disabled pending the reviewed
-Cognito operator/permissions and cross-system recovery work. This SQL preparation
-does not activate them, implement PROD self-deletion, or change HTTP payloads.
-Run the documented database-backed coverage gate below; new audit tests exercise
-V14→V15, unchanged checksums, denied audit mutation, retained audit during cleanup,
-retry, purchase dependencies and inherited/function privilege bypasses.
+Audit items (purchases, author reviews, staff access, account maintenance) are insert-only on
+DynamoDB: the application role holds `PartiQLInsert` on the audit table and nothing that changes
+or removes an item. The Local audit purge of the PostgreSQL era has no equivalent and none is needed.
 
 This independently packaged Java/Spring Boot application owns learning business
 rules: content access, current course grants, plans, progress, support receipts
@@ -57,13 +37,6 @@ Local uses the separate Identity application. DEV/PROD use Cognito and Domain-ow
 durable sign-ins; see [cloud authentication](docs/cloud-authentication.md). Domain
 has no browser login controller, authorization-server library, OAuth state
 repository, signing private key, or Identity database connection.
-
-The candidate does not migrate an existing combined database automatically.
-Legacy migrations and the running application remain separate. Infrastructure
-provisions separate runtime and migration roles with access only to the Domain
-API database. Runtime credentials must not own tables, create schemas, or connect
-to the Identity database. Installed storage identifiers are retained through the
-explicit [legacy storage adapter](docs/storage-compatibility.md).
 
 Build from this repository with Java21 and `./mvnw verify` (Windows:
 `mvnw.cmd verify`). The Maven wrapper downloads the pinned Maven distribution;
@@ -80,19 +53,8 @@ Maven build failures are not retried. To diagnose a download failure, run
 The Boot parent still owns the dependency baseline; temporary Jackson 2/3 patch
 BOM overrides are documented in [Security CI](docs/security-ci.md).
 The executable service artifact is `target/lookahead-domain-api-<version>.jar`;
-its main class remains `com.lookahead.domain.DomainApiApplication`. The old
-`DomainApiMigration` and `DomainApiBootstrap` executable entrypoints are retired:
-they reject invocation before reading credentials or connecting to PostgreSQL.
-Use Infra's separately approved **Flyway Utils · Run** workflow for DEV, and its
-explicit Flyway utility selection for Local orchestration. Runtime Flyway remains
-disabled in the application service.
-
-Domain still owns the unchanged SQL sources in `db/domain` and the Java V5 migration.
-Retiring a launcher does not move/delete migration sources or change installed
-history. `DomainApiMigration.configure`, role/target validation and bootstrap
-fixture helpers remain for existing tests and account administration. Their presence
-is not a supported standalone migration command. Historical cutover fixtures use a
-retained pre-retirement Domain JAR; new artifacts cannot run the old launcher.
+its main class remains `com.lookahead.domain.DomainApiApplication`. The data
+migration entrypoint ships in the same jar (`DomainDynamoMigration`, below).
 
 ## Blaze catalog ID (DLV-931)
 
@@ -109,16 +71,9 @@ such as `look-ahead.study-plan.v1` are unchanged.
   grants, and plan create, import, activity and version bodies. Prose such as plan names,
   goals, titles and notes is never rewritten. Retry receipts still hash the request exactly
   as sent, so an old tab retrying the same request gets its original response.
-- `V5__blaze_catalog_id` (Java, `com.lookahead.domain.migration`) moves stored
-  `account_grants` (an account holding both forms keeps the longer-lasting grant) and
-  rewrites `plans.progress`, `plan_versions.snapshot/membership/provenance/recovery`,
-  `plan_activity.payload` and `mutation_receipts.response`. A rewritten snapshot gets its
-  `snapshot_digest` recomputed with `PlanJson`, so the stored digest still matches. Rows
-  without catalog IDs are untouched; `request_hash`, `catalogVersion` pins and the
-  append-only author review events are left as they are.
-- `BlazeCatalogMigrationDatabaseTest` runs the production Flyway configuration on the
-  disposable review fixture: V1–V4, legacy data, then V5, and checks the migrated plan through
-  `PlanService`. `CatalogIdsTest` and `LegacyCatalogPlanTest` cover the request rules.
+- The stored PostgreSQL rows were rewritten once by the Java migration `V5__blaze_catalog_id`
+  (2026-10); it retired with PostgreSQL on 2026-11-17. DynamoDB items were written after the
+  rename and carry `blaze` ids. `CatalogIdsTest` and `LegacyCatalogPlanTest` cover the request rules.
 - The platform review page "Look Ahead Catalog" is now "Blaze Catalog"; an old tab's value
   is accepted and stored items read with the new name.
 
@@ -126,8 +81,7 @@ The local folder and GitHub repository are `lookahead-learning-domain-api`:
 [lookahead99ms/lookahead-learning-domain-api](https://github.com/lookahead99ms/lookahead-learning-domain-api).
 Java packages, artifact
 names, health identifiers and environment variables now use Domain API naming.
-Existing database objects and grants remain unchanged; no data migration or
-runtime deployment is implied by the source rename.
+No data migration or runtime deployment is implied by the source rename.
 
 ## Independent build and container
 
@@ -141,14 +95,14 @@ behavior from pending cloud startup and cross-service verification.
 docker build -t lookahead-domain-api:local .
 ```
 
-The Docker build runs the default test suite before packaging; database suites
-require their explicit disposable fixtures. Its context is this repository only. The image runs Java as UID10001, serves on port8080 and checks
+The Docker build runs the default test suite before packaging; the DynamoDB suites
+run only with the disposable DynamoDB Local fixture (below) and skip in the image build. Its context is this repository only. The image runs Java as UID10001, serves on port8080 and checks
 `/actuator/health/readiness`. Configuration and data are mounted or supplied at
 runtime; the image contains no curriculum or credentials. Transport records are
 owned by this application, with JSON contract tests preserving their API shape.
 
-An independent build is not a database-free service. To run the JAR or container,
-provide the Domain PostgreSQL database with its migrated schema/restricted role,
+An independent build is not a store-free service. To run the JAR or container,
+provide the DynamoDB store (the four tables, migrated to `DomainDynamoCatalog.REQUIRED`),
 the Local Identity verification/JWKS endpoint or cloud Cognito settings, secrets and a validated account catalog
 using the configuration below. The redistributable synthetic catalog is in
 `src/test/resources/accounts/`; it is sufficient for tests, not a production
@@ -156,60 +110,41 @@ curriculum. Integrated local orchestration remains infrastructure-owned.
 
 ## Required release coverage gate
 
-Database fixture maintenance: the Blaze migration test explicitly targets V5
-(after seeding V4 data), so later migrations do not change its one-migration
-assertion. The author-review HTTP fixture installs V6 and imports the real staff
-access repository/service required by account and preview authorization. Keep
-these test contexts aligned with application dependencies; do not bypass staff
-checks to make isolated contexts start.
-
 DynamoDB test-account fixtures share one controllable clock across scenario creation,
 membership evaluation and store timestamps. `TestAccountsService` defaults to the UTC
 system clock in production; database tests inject their fixture clock and verify creation,
 expiry and reset at fixed dates, so memberships do not become future-dated as CI ages.
 
-
-CI and release validation run `./mvnw -Pcoverage clean verify` with both disposable
-PostgreSQL fixtures configured. JaCoCo 0.8.15 measures every production class,
-without source exclusions, and fails verification below **85% line coverage**.
-Branch coverage is reported separately. Reports are written to
-`target/site/jacoco/index.html` and `target/site/jacoco/jacoco.xml`.
-
-Infrastructure owns fixture startup and shutdown. Use its
-`scripts/cloud_auth_test_database.py` and
-`scripts/author_document_review_test_database.py` helpers to prepare the isolated
-loopback databases before running:
+CI and release validation run `./mvnw -Pcoverage clean verify` against one disposable,
+in-memory DynamoDB Local. JaCoCo 0.8.15 measures every production class, without source
+exclusions, and fails verification below **85% line coverage**. Branch coverage is reported
+separately. Reports are written to `target/site/jacoco/index.html` and
+`target/site/jacoco/jacoco.xml`.
 
 ```sh
-CLOUD_AUTH_TEST_DATABASE_URL=jdbc:postgresql://127.0.0.1:4393/lookahead_domain_cloud_auth \
-CLOUD_AUTH_TEST_PASSWORD_FILE=/absolute/path/to/cloud-auth-test/postgres-password \
-DLV921_DATABASE_URL=jdbc:postgresql://127.0.0.1:4392/lookahead_domain_review \
-DLV921_DATABASE_PASSWORD_FILE=/absolute/path/to/author-document-review-test/postgres-password \
+docker run -d --rm --name dynamodb-local -p 127.0.0.1:4445:8000 amazon/dynamodb-local:2.6.1 -jar DynamoDBLocal.jar -inMemory -sharedDb
+DLV970_DYNAMODB_TEST_ENDPOINT=http://127.0.0.1:4445 DLV970_LOCAL_DYNAMODB_ENDPOINT=http://127.0.0.1:4445 \
 ./mvnw --batch-mode --no-transfer-progress -Pcoverage clean verify
 ```
 
-The file paths above are placeholders for the helper-created password files;
-never use application or production database credentials. The coverage profile
-fails when either fixture URL or password file is absent, rather than silently
-skipping persistence validation. Tests use unique schemas and remove their own
-schema after execution. GitHub CI supplies two pinned PostgreSQL services with
-synthetic disposable credentials. The ordinary `./mvnw verify` and Docker build
-remain independently executable, but do not certify the required coverage gate.
+Both variables must name a loopback endpoint; the coverage profile fails
+(`CoverageFixtureAvailabilityTest`) when either is absent, rather than silently skipping
+persistence validation. Every `*DatabaseTest` creates the four tables when absent and purges the
+key prefixes it writes; never point the variables at the persistent laptop store. GitHub CI starts
+the same pinned image as a step. The ordinary `./mvnw verify` and Docker build remain
+independently executable, but do not certify the required coverage gate.
 
 The suite checks Local provider preservation, DEV/PROD Cognito and publication
-bean selection, invalid configuration rejection, and real PostgreSQL sign-in,
-review and plan lifecycle behavior. AWS provider calls remain mocked; coverage
-and local database passes do not certify live Cognito, S3 IAM, ECS secret injection
-or RDS TLS behavior.
+bean selection, invalid configuration rejection, and the real sign-in, review and plan
+lifecycle behaviour on DynamoDB Local. AWS provider calls remain mocked; coverage and
+local store passes do not certify live Cognito, S3 IAM, DynamoDB IAM or ECS secret injection.
 
 ## Configuration
 
 | Property | Environment convenience | Purpose |
 | --- | --- | --- |
 | `app.deployment-environment` | `LOOKAHEAD_ENVIRONMENT` | Explicit `local`, `dev` or `prod` |
-| `spring.datasource.url` | `LOOKAHEAD_DOMAIN_JDBC_URL` | Domain API PostgreSQL URL |
-| `spring.datasource.username` | Adapter default | Only the exact runtime role in `LegacyStorageNames` |
-| `spring.datasource.password` | `LOOKAHEAD_DOMAIN_DB_PASSWORD` | Domain API runtime credential |
+| `app.dynamodb.*` | `AWS_REGION`, `LOOKAHEAD_DYNAMODB_*_TABLE`, `LOOKAHEAD_DYNAMODB_ENDPOINT` (local only) | The DynamoDB store; see [docs/dynamodb-runtime.md](docs/dynamodb-runtime.md) |
 | `app.identity.issuer` | `LOOKAHEAD_OAUTH_ISSUER` | Expected public token issuer |
 | `app.identity.upstream` | `LOOKAHEAD_IDENTITY_UPSTREAM` | Fixed internal Identity origin |
 | `app.identity.gateway-client-id` | `APP_OAUTH_CLIENT_ID` | Expected originating OAuth client |
@@ -229,29 +164,10 @@ HTTP and fixed internal names `identity`, `identity-api`, `lookahead-identity`.
 Public issuer HTTP remains loopback-only. `accounts` and `resource` roles are
 always activated; mixed gateway/authorization-server roles fail startup.
 
-Database URLs require an explicit single host and permit only `sslmode` and an
-absolute `sslrootcert` path as URL parameters. Credentials, session options,
-schema and timeout overrides are rejected. Runtime connections verify their
-actual restricted role before being lent to application code. Migration jobs
-verify their separate role before Flyway. Readiness checks each required DML
-privilege individually; retaining SELECT alone does not mark a broken writer UP.
-
-Runtime, migration and account-administration cloud connections share the same
-JDBC transport validator. DEV/PROD require database `lookahead_platform`, an RDS
-hostname in `AWS_REGION`, `sslmode=verify-full`, and an absolute readable,
-non-symlink CA bundle containing current CA certificates. The CA bundle's trusted
-provenance and image packaging are separate release checks; accepting its file
-format does not establish an AWS handshake. No application AWS SDK fetches the CA.
-
-For migration and account-administration commands, explicitly set
-`LOOKAHEAD_ENVIRONMENT=dev` or `prod` and `AWS_REGION` alongside the Flyway
-variables above. Existing Local commands retain `local` when
-`LOOKAHEAD_ENVIRONMENT` is absent; explicitly empty or unknown modes fail.
-Local JDBC URLs and password-file defaults are preserved. Every runtime,
-migration and administration connection uses three-second connect,
-five-second socket and two-second cancellation timeouts, including connections
-opened after the initial migration-role check. URL parameters cannot override
-these bounds.
+The store settings are checked once at startup (`DynamoSettings`): Local needs a loopback
+`LOOKAHEAD_DYNAMODB_ENDPOINT`; dev and prod need `AWS_REGION` and the four approved table names
+and refuse an endpoint override. Every DynamoDB call is bounded (2 s per call, 1 s per attempt on
+readiness) and readiness checks the data-version watermark against the build's requirement.
 
 DEV/PROD also require `server.address=127.0.0.1`
 (`LOOKAHEAD_BIND_ADDRESS=127.0.0.1`). The Service Connect proxy terminates encrypted
@@ -282,15 +198,15 @@ permission to bypass current Domain API grants.
 
 Only a freshly verified subject may create its credential-free
 local subject reference. This operation is idempotent and never grants
-access. Existing account UUIDs must be preserved during data transfer. Product
-foreign keys point to this local subject table; no cross-database SQL exists.
+access. Existing account UUIDs were preserved by the DEV import of 2026-11-17. Every
+product item is keyed by the account (`ACCOUNT#id / …`); nothing joins another store.
 Domain API does not persist a stale copy of Identity's enabled state.
 
 An account disable blocks newly verified requests, but cannot atomically cancel
-an already admitted Domain API transaction across databases. Plan/version/activity/
+an already admitted Domain API transaction. Plan/version/activity/
 mutation-receipt writes remain one Domain API transaction. Support receipt
-reservation and per-account limits lock the Domain API subject row (PostgreSQL) or commit under the
-owner's `ACCOUNT#id / META` revision, answering 409 after three lost fences (DynamoDB); uncertain
+reservation and per-account limits commit under the owner's `ACCOUNT#id / META` revision,
+answering 409 after three lost fences; uncertain
 SMTP delivery is never automatically resent by replaying a request key.
 DLV-971: a support request is recorded for Team Reviews first (see Platform reviews),
 then emailed. Receipt statuses: `accepted` (email sent, 202), `recorded` (recorded for
@@ -315,9 +231,8 @@ and commercial/age policies are not introduced by this boundary change.
 
 Module tests cover product validation and access regressions, configuration
 guards, authoritative verification, response rejection and account ownership.
-Mocked JDBC tests do not certify real PostgreSQL permissions, migration transfer,
-cross-replica transaction behavior, backup/restore or the three-application login
-flow. Those require the isolated infrastructure integration gate before cutover.
+Tests on DynamoDB Local do not certify the IAM grants of the real tables, point-in-time
+recovery or the three-application login flow. Those require the isolated infrastructure integration gate before cutover.
 
 ## Contracts with other repositories
 
@@ -347,14 +262,13 @@ this repository and these two tests as consumers; Content compares nothing with 
 
 ## Author review decisions
 
-The local DLV-921 candidate records immutable, version-bound author review events. Identical concurrent retries return the original receipt in either configured store; changed payloads and stale decisions retain their distinct conflict codes. See [API, manifest configuration, migration and verification](docs/author-review-api.md) and [OpenAPI source](docs/author-review-openapi.json). Recording a decision does not update delivery status or Git.
+The local DLV-921 candidate records immutable, version-bound author review events. Identical concurrent retries return the original receipt; changed payloads and stale decisions retain their distinct conflict codes. See [API, manifest configuration, migration and verification](docs/author-review-api.md) and [OpenAPI source](docs/author-review-openapi.json). Recording a decision does not update delivery status or Git.
 
 ### Study-plan naming
 
-Migration `V3__plan_names.sql` adds names and stable per-account plan numbers,
-preserving legacy display labels from `goal`. The subject row holds the last
-allocated number; transactional increments serialize concurrent creates and
-deletion does not reuse a number. Create accepts an optional `name`; omission
+Plans carry names and stable per-account plan numbers (legacy display labels came from
+`goal`). The account's `META` item holds the last allocated number (`lastPlanNumber`); the
+owner-fenced transaction serializes concurrent creates and deletion does not reuse a number. Create accepts an optional `name`; omission
 generates `Study plan #N_DDMMYYYY_HXDays` using UTC creation date and configured
 `dailyHours`/`days`. Names are independent of goals and immutable schedule versions.
 
@@ -384,15 +298,15 @@ AWS candidate `deployment/service.yaml` now references the shared application ta
 
 ## Cloud publication application candidate
 
-DEV/PROD now select a verified S3 startup publication; Local retains mounted files and creates no AWS client beans. Domain alone uses the pinned S3 SDK with ECS task credentials. A bounded byte/entry cache preserves per-request authorization. Readiness includes publication initialization and existing database checks; cloud startup requires injected database secret values and verified RDS TLS. Since 2026-10-27 a content release is identified by its Content calendar release tag `vYYYY.MM.DD.HH.NN` (S3 keys `releases/<tag>/…` and `live/<tag>/…`, pin `LOOKAHEAD_PUBLICATION_RELEASE_ID=<tag>`), not by a content hash; live mode serves the complete `live/` folder with the highest tag. See [cloud publication configuration and validation](docs/cloud-publication.md). Local fixture checks do not certify AWS/IAM/ECS behavior. Cognito consumers and Domain durable sign-ins are implemented and locally tested. The inactive cloud candidate removes Identity and retains one Domain RDS; Local Identity is preserved. See [cloud authentication, database admission and remaining activation gates](docs/cloud-authentication.md).
+DEV/PROD now select a verified S3 startup publication; Local retains mounted files and creates no AWS client beans. Domain alone uses the pinned S3 SDK with ECS task credentials. A bounded byte/entry cache preserves per-request authorization. Readiness includes publication initialization and the DynamoDB store check; cloud startup requires the ECS task role and the default AWS endpoints. Since 2026-10-27 a content release is identified by its Content calendar release tag `vYYYY.MM.DD.HH.NN` (S3 keys `releases/<tag>/…` and `live/<tag>/…`, pin `LOOKAHEAD_PUBLICATION_RELEASE_ID=<tag>`), not by a content hash; live mode serves the complete `live/` folder with the highest tag. See [cloud publication configuration and validation](docs/cloud-publication.md). Local fixture checks do not certify AWS/IAM/ECS behavior. Cognito consumers and Domain durable sign-ins are implemented and locally tested. The cloud candidate removes Identity; Local Identity is preserved. See [cloud authentication, database admission and remaining activation gates](docs/cloud-authentication.md).
 
-The container now includes [checksum-pinned public RDS trust roots](tools/container/trust/README.md) at `/opt/lookahead/trust/rds-global-bundle.pem`. The build validates certificates and excludes private key material. This supplies the cloud JDBC trust file; real RDS connectivity/restore and ECS Service Connect encryption still need provider verification.
+The RDS CA bundle the container carried for the PostgreSQL connection (`/opt/lookahead/trust/rds-global-bundle.pem`, verified at build) was removed with PostgreSQL on 2026-11-17; the image trusts the JVM's CA set for AWS endpoints.
 
 The container readiness probe is `com.lookahead.domain.health.ContainerHealthcheck`
 under `src/main/java`, included in the normal production coverage inventory.
 Its tests cover real loopback success/failure responses, strict readiness payloads,
 request timeout configuration and interruption. Docker compiles that same measured
-source for the standalone JVM probe. The RDS trust verifier remains build-only.
+source for the standalone JVM probe.
 Wrapper distribution setup has a source-independent Docker layer; dependency
 versions and checksum verification are unchanged.
 
@@ -414,29 +328,69 @@ beyond the container health check. With the setting empty, today's `live/<tag>/`
 (`PublicationBootstrap`) is unchanged, so the current DEV keeps running until the cutover.
 Tests: `LivePublicationLoaderTest`.
 
-### Why a task failed: the log explains it (DLV-969)
+### Reading the log (plain lines, owner decision 2026-11-17)
 
-The health answer carries no details, so the reason is written to the log instead
-(names, codes and exception types only; never values, hosts, tokens or exception
-messages). Search these loggers in CloudWatch:
+The application log is for one person troubleshooting in CloudWatch, not for dashboards. Every
+line is one plain sentence with no schema to learn: no JSON, no key=value block, no logger name,
+thread, PID or service name. The same pattern serves every profile (set once as
+`logging.pattern.console` in `application.yml`; `PlainLoggingTest` renders it and asserts the
+exact lines):
 
-- `lookahead.health`: `Readiness DOWN: …` with a `reason` (for example
-  `MIGRATIONS_MISSING`, `GRANTS_DIFFER`, `CATALOG_MISSING`) and `health.component`
-  (`database` or `content publication`) when a readiness check fails, again every
-  minute while it lasts, and `Readiness UP: …` once on recovery.
-- `lookahead.startup`: `Startup refused: <setting> <what is wrong>` names the
-  environment variable, property or file that stopped startup (for example
-  `LOOKAHEAD_TLS_SERVER_KEY does not belong to LOOKAHEAD_TLS_SERVER_CERTIFICATE`), and
-  `Content release <tag> loaded …` or `… could not be loaded while <step>: …` for the
-  S3 content release.
-- `lookahead.lifecycle`: every liveness/readiness state change, one `Started: version …`
-  line when the task first accepts traffic, and one `Stopping: shutdown requested …`
-  line with the uptime, the readiness before the stop and the last readiness checks, so
-  an exit code 143 (SIGTERM after a failed container health check) is explained.
-- `lookahead.event`: fail-closed and fallback paths on hot request paths (content 503s,
-  storage and sign-in check outages, refused bearer tokens by reason code such as
-  `ISSUER_MISMATCH` or `GATEWAY_SECRET_MISMATCH`, refused Gateway client certificates)
-  are logged once per reason when they start and at most once a minute while they last.
+```
+<UTC timestamp with millis> <LEVEL padded to 5> <sentence>  [request <first 8 chars of the request id>]
+```
+
+```
+2026-11-17T20:41:18.144Z INFO  POST /api/v1/plans -> 200 in 371 ms  [request 5e17c0aa]
+2026-11-17T20:44:12.300Z WARN  Free plan limit hit for account faaac829-…: at most 2 active free plans at once  [request 7a51d9e0]
+2026-11-17T18:52:30.004Z ERROR Readiness DOWN for dynamodb: the DynamoDB data is at version 4 but this release requires 5 (DATA_VERSION_BEHIND); run 07 · Migrate DEV data with this release, then deploy again; the container health check fails until then
+2026-11-17T21:03:14.221Z ERROR POST /api/v1/plans failed after 41 ms: DynamoDB ExecuteTransaction on lookahead-dev-user-study-plan-details was refused (DynamoDbException: User arn:aws:sts::…:assumed-role/lookahead-dev-app-task/… is not authorized to perform: dynamodb:PartiQLInsert …); answered 503 ACCOUNT_STORAGE_UNAVAILABLE; reference e2b8f14c-…  [request e2b8f14c]
+java.lang.… (the stack trace follows an ERROR line of the unexpected-failure handlers, and only those)
+```
+
+- The request bracket is there only while a request is being served; lines written outside a
+  request (startup, readiness, sweeps, the migration task) end after the sentence.
+- Levels: INFO is normal progress. WARN is an expected refusal (wrong password, limit hit,
+  locked content, waiting account, validation) in short wording, never with a stack trace.
+  ERROR is something an operator must act on: misconfiguration, permission denied, dependency
+  down, a bug. The word `ERROR` appears on a line only as the level of an ERROR line; the deploy
+  and restart tools scan the log group for it (`deployment/dev/deploy-config.json`
+  `logFailurePatterns`, also `startup denied`, `AccessDeniedException`, `Unable to create tempDir`).
+- Every ERROR line answers five questions in one sentence: what was being done (request or
+  job), which dependency and operation on which resource failed (table, bucket/key, host), why
+  (exception type and the dependency's own message, HTTP status, AWS error code), what the
+  caller got (status and code), and the reference of the stack trace that follows. A hint is
+  added where the code knows the cure: readiness `DATA_VERSION_BEHIND` → run 07 · Migrate DEV
+  data; connection refused / connect timeout → the VPC endpoint and security group; a permission
+  refusal → the IAM policy; a missing table → the Infra stack. On ERROR lines the dependency's
+  message IS quoted (IAM denials and AWS request ids help); secrets, tokens, passwords, cookies,
+  Authorization headers and request bodies never are (`Events.scrub`). Startup refusals name the
+  setting and the problem but do not quote the validation exception, which could echo the value.
+- Owner and admin actions name the actor in the sentence: `Owner 1a2b3c4d downgraded account …`,
+  `Admin 2b7d9e44 …`, or `Account 3c8f1a2b …` when the role is not known at the call site.
+  Counts and codes a reader needs are in the sentence too (delivery plan import counts, legacy
+  review import counts, the readiness component and reason code, lifecycle reason codes).
+- The `Events`/`addKeyValue` calls stay in the code (tests assert on them with `LogCapture`,
+  and a log pipeline could render them again); they do not appear on the line.
+
+How to search in CloudWatch Logs Insights (log group `/lookahead/dev/domain`):
+
+- One request end to end, in Domain and in the Gateway (the same id travels in `X-Request-Id`):
+  `fields @timestamp, @message | filter @message like /\[request 5e17c0aa\]/ | sort @timestamp asc`.
+  The reference a caller quotes from a 500 answer is the full request id; search its first 8
+  characters.
+- Everything an operator must act on: `filter @message like / ERROR /` (the level word with its
+  spaces, so a code such as `UNEXPECTED_ERROR` in a WARN summary does not match).
+- One route: `filter @message like /POST \/api\/v1\/plans /`; refusals of one kind:
+  `filter @message like /-> 403 /` or `/limit hit/`.
+- Why a task failed to start or stay healthy: `filter @message like /Readiness DOWN|Startup refused|Started:|Stopping:/`.
+  `Readiness DOWN for <component>: … (<REASON>)` repeats every minute while it lasts and
+  `Readiness UP for <component>` is written once on recovery; `Startup refused: <setting> <what
+  is wrong>; the app stops before it takes traffic` names the environment variable, property or
+  file; `Started: version … (release tag …, revision …)` and `Stopping: shutdown requested …
+  after N s; readiness before the stop …; last readiness checks: …` explain an exit code 143.
+- The migration task: `filter @message like /Data step|Migration /`; its one JSON report line
+  on stdout is parsed by `tools/release/migrate.py` and is not a log line.
 
 ## SAST gate diagnostics
 
@@ -531,14 +485,6 @@ image published locally. Configure approved settings and action allowlists befor
 activation; private content and AWS credentials are never bundled in the image.
 
 
-The old Domain bootstrap launcher is retired. Running it returns a fixed message
-pointing to Infra Flyway Utils `prepare`, without inspecting arguments, secrets or
-SQL state. The legacy bootstrap helper and its PostgreSQL/credential-file fixtures
-remain as compatibility evidence. Supported database preparation is owned by Infra;
-its separately approved utility prepares roles/grants without starting the Domain
-server or automatically applying migrations. Old image/task revisions remain
-historical artifacts and are not deleted by this source change.
-
 Publication explicitly pushes only the verified `linux/amd64` manifest (Docker API
 1.46 or newer). The registry receipt checks its config digest against the saved
 archive; Docker Desktop index IDs are kept separate from that config identity.
@@ -550,7 +496,7 @@ feedback without a database table. DLV-971 (owner, 2026-11-06): one JSON record 
 runtime stores of the assets bucket, `reviews/records/YYYY/MM/DD/REV-000001.json` and
 `support-requests/records/YYYY/MM/DD/SUP-000001.json` (the day is the record's creation day, UTC),
 with the images beside each record under `<store>/attachments/<ID>/NN-name.ext`. Ids come from two
-Postgres sequences (`review_record_seq`, `support_request_seq`, V22). Sequence selection uses a bound PostgreSQL `regclass` parameter; the sequence name is never concatenated into SQL. `PlatformReviewObjects` is the
+DynamoDB counters (`SEQUENCE#review-record` and `SEQUENCE#support-request / COUNTER`, data step 4; `ReviewRecordNumbers.Dynamo`), unique and increasing, not gapless. `PlatformReviewObjects` is the
 storage boundary, one instance per store root; implementations are the Local filesystem store (the
 roots are sub-folders of `LOOKAHEAD_PLATFORM_REVIEW_DIRECTORY`) and the S3 store (GetObject,
 conditional PutObject, ListObjectsV2 with and without a delimiter, DeleteObject, SSE-KMS with the
@@ -777,9 +723,9 @@ supplies the bucket and key, and the deploy tool refuses to plan while a placeho
 (DLV-968). Infra must supply least-privilege S3/KMS permissions before deployment.
 
 Cloud account preference/link routes use the current Cognito sign-in proof and
-Domain account lock, preserving Local request shapes. `CloudSignInRegistryDatabaseTest`
-checks persistence, account isolation and revocation against the documented
-disposable PostgreSQL fixture; `S3PlatformReviewObjectsTest` checks concurrent
+Domain account lock, preserving Local request shapes. `DynamoCloudSignInRegistryDatabaseTest`
+checks persistence, account isolation and revocation against the disposable DynamoDB Local
+fixture; `S3PlatformReviewObjectsTest` checks concurrent
 conditional writes with a stubbed SDK client. Neither is live AWS certification.
 
 ### Lower-cost DEV candidate
@@ -793,22 +739,14 @@ unencrypted PKCS8 PEM block with line-separated boundaries; incomplete envelopes
 extra blocks and surrounding material are rejected before startup. `InjectedCredentials`
 validates certificate validity, remaining lifetime, SAN, EKU, chain and matching
 PKCS8 keys before context refresh, then installs inline Spring PEM and scalar
-properties. Inputs are `LOOKAHEAD_TLS_{SCHEMA,SERVER_CERTIFICATE,SERVER_KEY,TRUST}`,
-`LOOKAHEAD_DOMAIN_DB_PASSWORD` and `LOOKAHEAD_DOMAIN_GATEWAY_SECRET`;
-`LOOKAHEAD_TLS_SERVER_NAME` is public configuration. Validation errors reveal no
-input values and deny startup. Database connections retain `sslmode=verify-full`.
-Local jobs and the reviewed DEV database operations use Flyway Utils. The legacy
-Domain launcher rejects execution even if an old credential directory is supplied.
+properties. Inputs are `LOOKAHEAD_TLS_{SCHEMA,SERVER_CERTIFICATE,SERVER_KEY,TRUST}` and
+`LOOKAHEAD_DOMAIN_GATEWAY_SECRET` (`LOOKAHEAD_DOMAIN_DB_PASSWORD` left with PostgreSQL on
+2026-11-17 and is neither required nor read); `LOOKAHEAD_TLS_SERVER_NAME` is public
+configuration. Validation errors reveal no input values and deny startup.
 
 This is local candidate code, not AWS deployment evidence. The standard Local
 configuration and preserved Service Connect mode remain separate. Infra owns
-orchestration, runtime templates and operation runbooks; SQL migrations stay here.
-
-The retained historical bootstrap fixture helper requires an absolute, private credential directory
-(mode0700). Its three fixed credential files must be regular, non-symlink,
-mode0400 files, matching the initializer's output. Reads are bounded to128bytes;
-duplicate environment/file sources and invalid password bytes fail before any
-connection. `BootstrapCredentialFilesTest` preserves these helper checks; the retired launcher does not call the helper.
+orchestration, runtime templates and operation runbooks; the data steps stay here.
 
 Lower-cost DEV security events use the dedicated `lookahead.security.audit` logger
 with fixed outcome names and random event IDs. The filter preserves HTTP responses
@@ -864,11 +802,11 @@ Ready-made account persistence remains the DLV-705 dependency: the existing
 preparation mapper is read-only and must not be treated as an enabled save
 capability. Existing author and learner records have not been reset by this work.
 
-Saved-plan mutation transactions now lock the owning `platform_subjects` row before
-request-key and plan locks, including retries. This serializes distinct mutation
-keys for the same account across instances, while other owners remain independent.
-`PlanLifecycleDatabaseTest` checks lock contention and rollback against the documented
-disposable PostgreSQL fixture. This source change is not yet activated and does not
+Saved-plan mutation transactions are fenced on the owner's `ACCOUNT#id / META` revision,
+including retries. This serializes distinct mutation keys for the same account across
+instances, while other owners remain independent. `DynamoPlanServiceDatabaseTest` and
+`DynamoPlanLifecycleStoreDatabaseTest` check the fence and the lost-fence 409 against the
+disposable DynamoDB Local fixture. This source change is not yet activated and does not
 advertise ready-made adoption or enforce the unfinished DLV-705 reservation policy.
 
 
@@ -998,15 +936,6 @@ The central Content/Infra approval flows retain this snapshot with the approval
 receipt and disclose lookup failures or bounded/truncated results. Runtime APIs,
 workflow triggers, AWS grants and existing approval commands are unchanged.
 
-### Initial DEV migration guard
-
-The retained `InitialMigrationGuard` and database tests document the original DEV
-empty-schema/session-lock boundary. They remain compatibility helpers; the retired
-Domain launcher cannot activate them. Infra Flyway Utils owns supported execution,
-including exact expected/target versions, empty-schema initial installation,
-verification and rejection of stale state. No historical SQL migration was edited.
-
-
 ### Calendar image releases
 
 DEV image releases use one shared `lookahead-dev-ecr` repository and `domain-vyyyy.mm.dd.hh.<00-nn>` tags. The source Git tag omits `domain-`. UTC counters start at `00` each hour independently per app. Run `python3 tools/release/release_version.py next --app domain` to suggest the next version from remote Git tags; this does not create or reserve a tag. Publish the exact source tag through the user-owned Git cycle, then supply it as `release-version` to the manual release workflow on main. CI verifies the tag/source before building and retains app/version/source/config/archive/manifest provenance. Deployment still selects an immutable digest. Prefixes organize images; IAM upload scope covers the shared repository.
@@ -1022,45 +951,37 @@ workflow changes do not install IAM policies or publish an image.
 
 ## DynamoDB store and DEV data migration
 
-DLV-970 (lane F, 2026-11-10). The DEV task definition carries a store switch and a new workflow moves
-the data ahead of the application: `07 · Migrate DEV data` runs the migration entrypoint of a release's
-own image as a one-off Fargate task, then `04 · Deploy DEV` serves that release on the DynamoDB store.
-Nothing here is activated by merging: DEV stays on PostgreSQL until the owner dispatches both runs.
+DLV-970 (lane F, 2026-11-10; PostgreSQL retired 2026-11-17). `07 · Migrate DEV data` runs the migration
+entrypoint of a release's own image as a one-off Fargate task, then `04 · Deploy DEV` serves that release
+("data first, then app"). DEV has served DynamoDB since the cutover of 2026-11-17; the store switch that
+carried the cutover (`PersistenceStore`, `LOOKAHEAD_PERSISTENCE_STORE`, the `persistence_store` input)
+was removed with PostgreSQL the same day, so a deploy never names a store any more.
 
-### The store switch
+### The task definition
 
-`deployment/dev/service.template.json` has the parameter `PersistenceStore` (`postgresql`, the
-default, or `dynamodb`) and four table parameters pinned by `AllowedPattern` to the DEV names
+`deployment/dev/service.template.json` has four table parameters pinned by `AllowedPattern` to the DEV names
 (`UserAccountDetailsTable` = `lookahead-dev-user-account-details`, `AdministratorAuditEventsTable`,
-`UserStudyPlanDetailsTable`, `ProtectedOwnerIdentityTable`). The container reads them as
-`LOOKAHEAD_PERSISTENCE_STORE` and the four `LOOKAHEAD_DYNAMODB_*_TABLE` variables beside the unchanged
-`AWS_REGION` and `LOOKAHEAD_ENVIRONMENT=dev`; the JDBC settings stay in the task definition and are
-ignored in dynamodb mode. `deployment/dev/deploy-config.json` carries the standing value
-(`PersistenceStore: dynamodb` since the DEV cutover of 2026-11-17; `postgresql` before it) and the four names. `04 · Deploy DEV` has a new input
-`persistence_store`: `as-configured` (the default, also what `01 · Full` passes) renders the
-configuration's value, `postgresql` or `dynamodb` overrides it for that one run. The plan, the approval
-issue (title, `persistenceStore` / `currentPersistenceStore` fields, the stack and service resource
-rows) and the result name the store; a store change on the same image is a change, not a duplicate.
-After the cutover the standing value was changed to `dynamodb` in `deploy-config.json` by a PR, so that
-later deploys need no input.
+`UserStudyPlanDetailsTable`, `ProtectedOwnerIdentityTable`). The container reads them as the four
+`LOOKAHEAD_DYNAMODB_*_TABLE` variables beside `AWS_REGION` and `LOOKAHEAD_ENVIRONMENT=dev`; it carries no
+database URL, user or secret. `deployment/dev/deploy-config.json` carries the four names;
+`test_dev_persistence_store.py` pins both files.
 
 ### Order: migrate, then deploy
 
 The migration entrypoint ships in the application image
 (`java -cp /opt/lookahead/app.jar -Dloader.main=com.lookahead.domain.persistence.dynamodb.migration.DomainDynamoMigration org.springframework.boot.loader.launch.PropertiesLauncher migrate|verify|status`)
 and must run under `lookahead-dev-migration-task` before the application of the same release is
-deployed on `dynamodb` ("data first, then app"). There is no pipeline gate: the running release keeps
-serving while the data moves ahead; a release deployed on `dynamodb` before its migration reports
+deployed when the release adds a data step ("data first, then app"). There is no pipeline gate: the running
+release keeps serving while the data moves ahead; a release deployed before its migration reports
 `DATA_VERSION_BEHIND` in readiness and never becomes healthy, and the ECS circuit breaker rolls it back.
 
-A `migrate` run also receives the PostgreSQL import source of data step 5 (`account-access-import`,
-owner decision 2026-11-17): the service's own JDBC URL as `LOOKAHEAD_IMPORT_JDBC_URL`,
-`LOOKAHEAD_IMPORT_DB_USER=lookahead_platform_app` and, as the task's one ECS secret, the runtime database
-password (`LOOKAHEAD_IMPORT_DB_PASSWORD`, the same secret ARN, key and version the service template
-injects, so the execution role needs no new grant). The step only reads PostgreSQL; `verify` and `status`
-receive none of the three. The import expects the store out of service (switch DEV back to `postgresql`
-with `04 · Deploy DEV` first): it removes the sign-in waiting rows the store recorded since the cutover
-and refuses an admitted account it does not know. See [docs/dynamodb-runtime.md](docs/dynamodb-runtime.md).
+Data step 5 (`account-access-import`, owner decision 2026-11-17) read the PostgreSQL platform database once on
+DEV (run 44162520740) and wrote every real account with its PostgreSQL id into the store; its result is the
+`IMPORT#account-access / RESULT` marker. The source was retired the same day: the step keeps its number, name
+and definition (the DEV ledger holds that checksum), leaves a store that carries the marker as it is, writes
+the empty marker on a store without one (a fresh local store, PROD) and `verify` still checks every account
+the marker names. A `migrate` task carries no secret and reads nothing but the four tables.
+See [docs/dynamodb-runtime.md](docs/dynamodb-runtime.md).
 
 ### Dispatching `07 · Migrate DEV data` (one step at a time)
 
@@ -1071,7 +992,7 @@ and refuses an admitted account it does not know. See [docs/dynamodb-runtime.md]
 5. Open the approval issue the run created (its link is the last line of "Approve DEV data migration") and read it.
 6. Post one new comment with exactly the command the issue shows: `APPROVE MIGRATE domain-vYYYY.MM.DD.HH.NN` (`APPROVE VERIFY …` / `APPROVE STATUS …` for the other commands), within 10 minutes of the issue opening (`APPROVAL_WAIT_MINUTES`), or `REJECT`.
 7. Wait for "Migrate DEV data" to finish; it closes the issue with the outcome and keeps `migrate-result/result.json` and one `migrate-record-<tag>-<run>` artifact.
-8. On success, dispatch `04 · Deploy DEV` with the same `release_version` and `persistence_store` = `dynamodb`.
+8. On success, dispatch `04 · Deploy DEV` with the same `release_version`.
 
 The workflow shares the `deploy-dev` concurrency group, so it never runs beside a deploy, recovery or
 restart. The approval is the same owner mechanism as a deploy (v2 issue, `owner_approval` windows, a
@@ -1085,7 +1006,7 @@ applies the data steps of this release to the four DynamoDB tables; the service 
 the five steps in order; "Affected AWS resources" has one row per resource with its type and physical
 name: the task definition family `lookahead-dev-domain-migrate` (CREATE, a new revision), the one-off
 `AWS::ECS::Task` on `lookahead-dev-cluster` (RUN ONCE), the service `lookahead-dev-domain` (NO CHANGE,
-with the store and DesiredCount it serves now), the four tables (MODIFY for `migrate`, READ ONLY
+with the DesiredCount it serves now), the four tables (MODIFY for `migrate`, READ ONLY
 otherwise) and the three ledger items in `lookahead-dev-protected-owner-identity` under
 `DATA_VERSION#DOMAIN`: `STEP#<ten-digit version>`, `CURRENT`, `LOCK`. The "Migration task" table names
 the image digest, roles, session and source commits; "Tables the task reads" maps each variable to its
@@ -1109,15 +1030,11 @@ stream of the task is `migrate/migrate/<task id>` in `/lookahead/dev/domain`.
 
 ### Rollback rule
 
-The line is the application's first write on DynamoDB. The seed rows a `migrate` writes (staff counters and
-markers, the membership catalog, the sequence counters, the ledger) are not application data and PostgreSQL
-stays complete until that first application write, so until then the store parameter goes back: run
-`04 · Deploy DEV` with `persistence_store` = `postgresql` (the input must name the store; `as-configured`
-is refused while deploy-config.json and the stack disagree). After the first application write the way
-back is a data decision, not a flag: PostgreSQL no longer holds what DynamoDB holds, so switching the
-parameter back would serve stale data; from then on a rollback is a reviewed data operation, not a deploy
-input. Right after the cutover, merge the deploy-config pull request (`PersistenceStore=dynamodb`) before
-any further Domain merge or deploy.
+A recorded data step is never undone and there is no other store to fall back to: the way back from a
+data step is a new step, reviewed and recorded like any other, not a deploy input. (Until 2026-11-17 the
+way back was the PostgreSQL store, which stayed complete until the application's first write on DynamoDB;
+that store and the `persistence_store` input that selected it are retired.) A release that must not serve
+is rolled back by deploying the previous tag; its data steps stay recorded and are backward compatible.
 
 ### AWS actions of the workflow and the role each needs (IAM candidate for Infra)
 
@@ -1128,7 +1045,7 @@ admit them as it admits `domain-deploy-*`. Calls, in order:
 | Stage | AWS API call | Role that makes it | Resource |
 | --- | --- | --- | --- |
 | plan | `ecr:BatchGetImage` | `lookahead-dev-deploy` (already granted) | `lookahead-dev-ecr` |
-| plan | `cloudformation:DescribeStacks` | `lookahead-dev-deploy` (already granted) | stack `lookahead-dev-domain` (read: current store and DesiredCount) |
+| plan | `cloudformation:DescribeStacks` | `lookahead-dev-deploy` (already granted) | stack `lookahead-dev-domain` (read: current DesiredCount and image) |
 | execute | `sts:GetCallerIdentity` | `lookahead-dev-deploy` | — |
 | execute | `ecs:RegisterTaskDefinition` | `lookahead-dev-deploy` (new) | family `lookahead-dev-domain-migrate` |
 | execute | `iam:PassRole` | `lookahead-dev-deploy` (new) | `lookahead-dev-migration-task` and `lookahead-dev-ecs-execution`, to `ecs-tasks.amazonaws.com` |
@@ -1136,7 +1053,7 @@ admit them as it admits `domain-deploy-*`. Calls, in order:
 | execute | `ecs:DescribeTasks` | `lookahead-dev-deploy` (already granted for the service's tasks; needs the migrate tasks too) | tasks of `lookahead-dev-cluster` |
 | execute | `logs:GetLogEvents` | `lookahead-dev-deploy` (new; the deploy has `logs:FilterLogEvents` only) | log group `/lookahead/dev/domain`, streams `migrate/migrate/*` |
 | the task | `ecr:GetAuthorizationToken`, `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `logs:CreateLogStream`, `logs:PutLogEvents` | `lookahead-dev-ecs-execution` (already granted for the service) | the image and the log group above |
-| the task | reads `dynamodb:DescribeTable` (all four tables), `GetItem` (also authorises `TransactGetItems`) and `Query` on the account and audit tables, `Scan` on the audit table only (the bootstrap's empty-namespace check); PartiQL writes through `ExecuteTransaction`: `dynamodb:PartiQLInsert` on the account and audit tables (staff counters and markers, `CATALOG / PLAN#<id>` + `META`, `SEQUENCE#* / COUNTER`, the imported account, access and audit items of step 5), `dynamodb:PartiQLUpdate` and `dynamodb:PartiQLDelete` on the account table only (step 5 raises the counters and removes the pre-import waiting rows; the audit table stays append-only); the ledger on the protected table, partition `DATA_VERSION#DOMAIN` only: `GetItem`, `Query`, `PartiQLInsert`, `PartiQLUpdate` (corrected 2026-11-17, transition `dev-dynamodb-ledger-partiql`). Nothing on `OWNER/ROOT`. A `migrate` task also reads the platform database as `lookahead_platform_app` with the runtime secret its execution role already injects. The running application's role: `ExecuteTransaction` (PartiQL `INSERT` / `UPDATE` / `DELETE`; `PartiQLInsert` only on the audit table) plus `GetItem`, `Query`, `Scan`, `BatchGetItem`, `TransactGetItems`, `DescribeTable`; no native write anywhere | `lookahead-dev-migration-task` | the four `lookahead-dev-*` tables |
+| the task | reads `dynamodb:DescribeTable` (all four tables), `GetItem` (also authorises `TransactGetItems`) and `Query` on the account and audit tables, `Scan` on the audit table only (the bootstrap's empty-namespace check); PartiQL writes through `ExecuteTransaction`: `dynamodb:PartiQLInsert` on the account and audit tables (staff counters and markers, `CATALOG / PLAN#<id>` + `META`, `SEQUENCE#* / COUNTER`, the imported account, access and audit items of step 5), `dynamodb:PartiQLUpdate` and `dynamodb:PartiQLDelete` on the account table only (step 5 raises the counters and removes the pre-import waiting rows; the audit table stays append-only); the ledger on the protected table, partition `DATA_VERSION#DOMAIN` only: `GetItem`, `Query`, `PartiQLInsert`, `PartiQLUpdate` (corrected 2026-11-17, transition `dev-dynamodb-ledger-partiql`). Nothing on `OWNER/ROOT`. A `migrate` task reads nothing outside the four tables (the PostgreSQL import source of step 5 was retired on 2026-11-17). The running application's role: `ExecuteTransaction` (PartiQL `INSERT` / `UPDATE` / `DELETE`; `PartiQLInsert` only on the audit table) plus `GetItem`, `Query`, `Scan`, `BatchGetItem`, `TransactGetItems`, `DescribeTable`; no native write anywhere | `lookahead-dev-migration-task` | the four `lookahead-dev-*` tables |
 
 The task definition is registered without tags (no `ecs:TagResource`), with a read-only root file
 system, `/tmp` as a volume and blocking `awslogs` (the report line is never dropped). The service's

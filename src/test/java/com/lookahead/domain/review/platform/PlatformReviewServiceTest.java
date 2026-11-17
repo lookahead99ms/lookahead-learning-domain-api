@@ -163,7 +163,7 @@ class PlatformReviewServiceTest {
         assertThat(reviews.list(first, null).items()).isEmpty();
         try (var log = com.lookahead.domain.LogCapture.start()) {
             reviews.triage(owner, reviews.list(owner, null).items().getFirst().id(), "done", "");
-            assertThat(log.only("platform-review.status").getFormattedMessage()).endsWith("status changed by the owner: new -> done");
+            assertThat(log.only("platform-review.status").getFormattedMessage()).endsWith("status changed by Owner " + owner.accountId().toString().substring(0, 8) + ": new -> done");
         }
     }
 
@@ -416,7 +416,7 @@ class PlatformReviewServiceTest {
                     .containsEntry("review.category", "problem");
             reviews.triage(owner, item.id(), "planned", "private owner note");
             assertThat(log.only("platform-review.status").getFormattedMessage())
-                    .isEqualTo("Platform review item " + item.id() + " status changed by the owner: new -> planned");
+                    .isEqualTo("Platform review item " + item.id() + " status changed by Owner " + owner.accountId().toString().substring(0, 8) + ": new -> planned");
             var other = create(second, "Another");
             reviews.delete(second, other.id());
             assertThat(log.only("platform-review.delete").getFormattedMessage())
@@ -471,7 +471,7 @@ class PlatformReviewServiceTest {
         try (var log = com.lookahead.domain.LogCapture.start()) {
             promoted = reviews.promote(owner, review.id());
             var line = log.only("platform-review.promote");
-            assertThat(line.getFormattedMessage()).isEqualTo("Platform review item " + review.id() + " promoted by the owner to delivery ticket DLV-2 (plan version 8)");
+            assertThat(line.getFormattedMessage()).isEqualTo("Platform review item " + review.id() + " promoted by Owner " + owner.accountId().toString().substring(0, 8) + " to delivery ticket DLV-2 (plan version 8)");
             log.containsNone("Search misses Kafka");
         }
         assertThat(promoted.ticketId()).isEqualTo("DLV-2");

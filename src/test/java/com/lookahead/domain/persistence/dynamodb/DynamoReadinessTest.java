@@ -41,7 +41,7 @@ class DynamoReadinessTest {
             assertThat(result.getStatus()).isEqualTo(Status.DOWN);
             assertThat(result.getDetails()).isEmpty();
             assertThat(LogCapture.keys(logs.only("readiness"))).containsEntry("reason", reason);
-            assertThat(logs.only("readiness").getLevel()).isEqualTo(Level.WARN);
+            assertThat(logs.only("readiness").getLevel()).isEqualTo(Level.ERROR);
             logs.containsNone("private-secret", "person@example.test", "Bearer");
         }
     }
@@ -81,7 +81,8 @@ class DynamoReadinessTest {
             version(null); readiness.health(); // Same reason, changed version details: log now.
             version("2"); readiness.health(); readiness.health();
             now.updateAndGet(t -> t.plusSeconds(120)); readiness.health();
-            assertThat(logs.lines("readiness")).extracting(l -> l.getLevel()).containsExactly(Level.WARN, Level.WARN, Level.WARN, Level.INFO);
+            assertThat(logs.lines("readiness")).extracting(l -> l.getLevel()).containsExactly(Level.ERROR, Level.ERROR, Level.ERROR, Level.INFO);
+            assertThat(logs.messages().getFirst()).startsWith("Readiness DOWN for dynamodb: ").contains("(DATA_VERSION_BEHIND); run 07 · Migrate DEV data with this release, then deploy again; the container health check fails until then");
             assertThat(logs.messages().getFirst()).contains("data is at 1", "needs 2", "2 plan-index", "run the migration before deploying");
             assertThat(HealthReport.last()).contains("dynamodb UP");
         }

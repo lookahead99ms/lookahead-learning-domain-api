@@ -143,9 +143,9 @@ with the existing fixed review/support sequence selection. Database privilege
 tests bind the sequence name and privilege argument too. No SAST exception,
 severity change or scanner suppression is added.
 
-`ReviewRecordNumbersTest` checks both sequences, hostile-looking/unrecognized
-kinds, and the existing null-result fallback. `ReviewRecordsDatabaseTest` runs
-these queries against the disposable PostgreSQL fixture and checks sequence
-numbering, runtime privileges and append-only status history. The production
-schema, API and sequence naming remain unchanged. Local tests establish query
-behavior; fresh hosted CodeQL is still required to verify its finding inventory.
+`ReviewRecordNumbersTest` checked both sequences, hostile-looking/unrecognized
+kinds and the null-result fallback; `ReviewRecordsDatabaseTest` ran the queries against the
+disposable PostgreSQL fixture. Since 2026-11-17 (PostgreSQL retired, DLV-970) the SQL and both
+sequences are gone: record numbers come from two DynamoDB counters (`ReviewRecordNumbers.Dynamo`,
+`DynamoReviewRecordsDatabaseTest`) and the kind selection is still unit-tested. No query is built
+from request text anywhere in the repository.

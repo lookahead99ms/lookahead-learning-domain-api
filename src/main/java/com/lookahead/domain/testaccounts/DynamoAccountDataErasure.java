@@ -18,8 +18,8 @@ import tools.jackson.databind.ObjectMapper;
  * the staff assignment through lane A's {@link AccountRecordsMaintenance} (each its own committed operation). Then the
  * membership purchases, their owner pointers, provider-event receipts and fixture mock payments are deleted in bounded
  * transactions, every one fenced on the account's {@code ACCOUNT#id / META} revision as this erasure read it (after
- * the other lanes ran) and moving it: PostgreSQL serialised erasure and checkout behind {@code FOR UPDATE} on
- * {@code platform_subjects}; here a checkout that commits a purchase in between moves the same revision, so the delete
+ * the other lanes ran) and moving it: the retired PostgreSQL store serialised erasure and checkout behind a row lock;
+ * here a checkout that commits a purchase in between moves the same revision, so the delete
  * fails with {@link DynamoWrites.Conflict} and a rerun deletes the new purchase too (deletes are idempotent, so a crash
  * resumes by rerunning as well). Audit events are insert-only: the Local fixture purge of {@code membership_audit} has
  * no DynamoDB equivalent and {@code localFixturePurge} is ignored. Lifetime counters and permanent labels stay.

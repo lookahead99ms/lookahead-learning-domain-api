@@ -22,7 +22,6 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
  */
 @Repository
 @Profile("accounts")
-@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = com.lookahead.domain.persistence.PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoSupportReceiptRepository implements SupportReceiptStore {
     static final int PER_HOUR = 5;
     static final int RETRIES = 3;

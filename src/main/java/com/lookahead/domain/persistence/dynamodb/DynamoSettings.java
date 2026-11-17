@@ -19,7 +19,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
  * DLV-970: how this process reaches DynamoDB. Local talks to a loopback DynamoDB Local container with synthetic
  * credentials and must name its endpoint; DEV and PROD talk to the Region's service with the task role's
  * credentials and must not name an endpoint. The four table names come from {@link DynamoTableNames}.
- * Nothing here creates a table or chooses the persistence store.
+ * Nothing here creates a table.
  */
 public record DynamoSettings(String environment, Region region, URI endpoint, DynamoTableNames tables) {
     public static final String ENDPOINT_SETTING = "app.dynamodb.endpoint (LOOKAHEAD_DYNAMODB_ENDPOINT)";

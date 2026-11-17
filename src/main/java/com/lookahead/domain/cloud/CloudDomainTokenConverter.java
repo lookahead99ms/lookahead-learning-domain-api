@@ -38,11 +38,10 @@ public final class CloudDomainTokenConverter implements Converter<Jwt,AbstractAu
      */
     private static final com.lookahead.domain.Throttle THROTTLE=new com.lookahead.domain.Throttle();
     private static void unavailable(String code,RuntimeException failure){
-        String types=failure==null?null:com.lookahead.domain.Events.types(failure),state=failure==null?null:com.lookahead.domain.Events.sqlState(failure);
+        String types=failure==null?null:com.lookahead.domain.Events.types(failure);
         if(!THROTTLE.due("failed|"+code+"|"+types))return;
         var line=com.lookahead.domain.Events.failed(com.lookahead.domain.Events.EVENT,"sign-in.check",code);
         if(types!=null)line=line.addKeyValue("error.type",types);
-        if(state!=null)line=line.addKeyValue("db.sqlState",state);
-        line.log("API call answered 503: the sign-in check could not complete ({}{})",types==null?code:types,state==null?"":", SQL state "+state);
+        line.log("API call answered 503: the sign-in check could not complete ({})",types==null?code:types);
     }
 }

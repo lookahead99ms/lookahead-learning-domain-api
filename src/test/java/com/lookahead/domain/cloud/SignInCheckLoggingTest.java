@@ -4,12 +4,9 @@ import ch.qos.logback.classic.Level;
 import com.lookahead.domain.LogCapture;
 import com.lookahead.domain.security.IdentityUnavailableException;
 import com.lookahead.learning.content.exception.AccountFailure;
-import java.sql.SQLException;
 import java.time.Instant;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
-import org.springframework.dao.DataAccessResourceFailureException;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -97,14 +94,14 @@ class SignInCheckLoggingTest {
             when(registry.authenticate(any(), anyString())).thenThrow(new AccountFailure(503, "ACCOUNT_STORAGE_UNAVAILABLE", "Retry."));
             assertThatThrownBy(() -> converter.convert(api)).isInstanceOf(IdentityUnavailableException.class);
             reset(registry);
-            when(registry.authenticate(any(), anyString())).thenThrow(new DataAccessResourceFailureException("db.internal password=hunter2",
-                    new SQLException("refused", "08006")));
+            when(registry.authenticate(any(), anyString())).thenThrow(software.amazon.awssdk.core.exception.SdkClientException.create("db.internal password=hunter2",
+                    new java.net.ConnectException("refused")));
             assertThatThrownBy(() -> converter.convert(api)).isInstanceOf(IdentityUnavailableException.class);
             assertThatThrownBy(() -> converter.convert(api)).isInstanceOf(IdentityUnavailableException.class);
             assertThat(log.lines("sign-in.check")).extracting(line -> line.getFormattedMessage()).containsExactly(
                     "API call answered 503: the sign-in check could not complete (ACCOUNT_STORAGE_UNAVAILABLE)",
-                    "API call answered 503: the sign-in check could not complete (DataAccessResourceFailureException < SQLException, SQL state 08006)");
-            assertThat(LogCapture.keys(log.lines("sign-in.check").getLast())).containsEntry("reason", "UNEXPECTED").containsEntry("db.sqlState", "08006");
+                    "API call answered 503: the sign-in check could not complete (SdkClientException < ConnectException)");
+            assertThat(LogCapture.keys(log.lines("sign-in.check").getLast())).containsEntry("reason", "UNEXPECTED").containsEntry("error.type", "SdkClientException < ConnectException");
             log.containsNone("hunter2", "db.internal", "synthetic-access-token");
         }
     }
@@ -116,13 +113,11 @@ class SignInCheckLoggingTest {
             var line = log.only("merge.candidates");
             assertThat(line.getLevel()).isEqualTo(Level.WARN);
             assertThat(line.getFormattedMessage()).startsWith("A study plan's progress could not be read for the merge page (").endsWith("); it shows 0%");
-            var jdbc = mock(JdbcTemplate.class);
-            when(jdbc.queryForObject(anyString(), eq(Boolean.class), any(Object[].class)))
-                    .thenThrow(new DataAccessResourceFailureException("password=hunter2", new SQLException("down", "57P01")));
-            var manager = mock(PlatformTransactionManager.class, withSettings().mockMaker(org.mockito.MockMakers.PROXY));
-            new CloudAdmissionCleanup(jdbc, manager).run();
+            var store = mock(AdmissionCleanupStore.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
+            when(store.expire()).thenThrow(software.amazon.awssdk.core.exception.SdkClientException.create("password=hunter2", new java.net.ConnectException("down")));
+            new CloudAdmissionCleanup(store).run();
             assertThat(log.only("admission.cleanup").getFormattedMessage())
-                    .isEqualTo("Admission cleanup skipped this run: DataAccessResourceFailureException < SQLException (SQL state 57P01); the next run tries again");
+                    .isEqualTo("Admission cleanup skipped this run: SdkClientException < ConnectException; the next run tries again");
             log.containsNone("hunter2");
         }
     }

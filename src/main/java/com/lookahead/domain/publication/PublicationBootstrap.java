@@ -146,16 +146,18 @@ public final class PublicationBootstrap {
 
     /**
      * DLV-969 (owner, 2026-11-04): why the release could not load, before startup stops: the step, then this class's own
-     * check text, or S3's HTTP status and error code, or the exception types. Never a bucket, key, path or message.
+     * check text, or S3's HTTP status and error code with S3's own message (plain logs, owner 2026-11-17: an ERROR line
+     * quotes the dependency; an IAM denial names the role it refused, which is what the reader needs).
      */
     private static void refused(String release, String step, Exception failure) {
         boolean ours = failure instanceof Rejected;
         Integer status = Events.status(failure);
         String code = Events.code(failure);
         String detail = ours ? failure.getMessage()
-                : status != null ? "S3 answered HTTP " + status + (code == null ? "" : " " + code) + " (" + Events.types(failure) + ")"
-                : Events.types(failure);
-        var line = Events.failed(StartupChecks.LOG, "publication.load", ours ? "PUBLICATION_INVALID" : "PUBLICATION_UNAVAILABLE")
+                : status != null ? "S3 answered HTTP " + status + (code == null ? "" : " " + code) + " (" + Events.quoted(failure) + ")"
+                : Events.quoted(failure);
+        var line = StartupChecks.LOG.atError().addKeyValue("event.action", "publication.load").addKeyValue("event.outcome", "failure")
+                .addKeyValue("reason", ours ? "PUBLICATION_INVALID" : "PUBLICATION_UNAVAILABLE")
                 .addKeyValue("release.tag", release).addKeyValue("error.type", Events.types(failure));
         if (status != null) line = line.addKeyValue("upstream.status", status);
         if (code != null) line = line.addKeyValue("upstream.code", code);

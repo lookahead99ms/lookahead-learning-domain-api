@@ -1,12 +1,10 @@
 package com.lookahead.domain.membership;
 
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoItems;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
 import java.util.Map;
 import java.util.Objects;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
@@ -17,7 +15,6 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
  * A Local/DEV fixture concern only, never production membership data.
  */
 @Component
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoMockPaymentStore implements MockPaymentStore {
     private final DynamoDbClient client;
     private final DynamoTableNames tables;
