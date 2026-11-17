@@ -25,9 +25,9 @@ import software.amazon.awssdk.services.dynamodb.model.TableStatus;
  */
 public final class DomainDynamoCatalog {
     /** The release requirement: every step below. A deploy whose data is behind reports DATA_VERSION_BEHIND. */
-    public static final int REQUIRED = 4;
+    public static final int REQUIRED = 5;
 
-    private static final DynamoMigrationCatalog CATALOG = new DynamoMigrationCatalog(List.of(new BaseTables(), new StaffAliasCounters(), new MembershipCatalog(), new ReviewRecordCounters()));
+    private static final DynamoMigrationCatalog CATALOG = new DynamoMigrationCatalog(List.of(new BaseTables(), new StaffAliasCounters(), new MembershipCatalog(), new ReviewRecordCounters(), new AccountAccessImport()));
 
     private DomainDynamoCatalog() { }
 

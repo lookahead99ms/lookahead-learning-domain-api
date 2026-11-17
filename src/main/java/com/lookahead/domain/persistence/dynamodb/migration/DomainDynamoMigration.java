@@ -15,7 +15,8 @@ import java.util.UUID;
  *      org.springframework.boot.loader.launch.PropertiesLauncher migrate|verify|status
  * </pre>
  * Inputs are process variables: LOOKAHEAD_ENVIRONMENT, AWS_REGION, the four LOOKAHEAD_DYNAMODB_*_TABLE names
- * (dev/prod) or LOOKAHEAD_DYNAMODB_ENDPOINT (local), and GITHUB_RUN_ID for the run identity. Exit 0 means the
+ * (dev/prod) or LOOKAHEAD_DYNAMODB_ENDPOINT (local), GITHUB_RUN_ID for the run identity and, for {@code migrate}, the
+ * optional PostgreSQL import source of {@link DynamoMigrationSources} (LOOKAHEAD_IMPORT_JDBC_URL, _DB_USER, _DB_PASSWORD). Exit 0 means the
  * command succeeded, 1 that it failed and the ledger is unchanged past the last recorded step, 2 a usage error.
  * The migration-task role alone may write the ledger; the running app's role only reads it.
  */
@@ -35,8 +36,9 @@ public final class DomainDynamoMigration {
         try {
             var settings = DynamoSettings.fromVariables(variables);
             String runId = variables.getOrDefault("GITHUB_RUN_ID", "").isBlank() ? "local-" + UUID.randomUUID() : "github-" + variables.get("GITHUB_RUN_ID").trim();
+            var sources = command.equals("migrate") ? DynamoMigrationSources.fromVariables(variables, settings.environment(), variables.get("AWS_REGION")) : DynamoMigrationSources.none();
             try (var client = settings.client()) {
-                var runner = new DynamoMigrationRunner(client, settings.tables(), DomainDynamoCatalog.catalog(), clock);
+                var runner = new DynamoMigrationRunner(client, settings.tables(), DomainDynamoCatalog.catalog(), clock, sources);
                 DynamoMigrationRunner.Outcome outcome = switch (command) {
                     case "migrate" -> runner.migrate(runId);
                     case "verify" -> runner.verify();

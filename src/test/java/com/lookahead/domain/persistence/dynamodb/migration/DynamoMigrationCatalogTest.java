@@ -40,7 +40,7 @@ class DynamoMigrationCatalogTest {
     @Test void theDomainCatalogIsBoundToTheReleaseRequirement() {
         var catalog = DomainDynamoCatalog.catalog();
         assertThat(catalog.latestVersion()).isEqualTo(DomainDynamoCatalog.REQUIRED);
-        assertThat(catalog.requirement().stepNames()).containsExactly("base-tables", "staff-alias-counters", "membership-catalog", "review-record-counters");
+        assertThat(catalog.requirement().stepNames()).containsExactly("base-tables", "staff-alias-counters", "membership-catalog", "review-record-counters", "account-access-import");
         // Applied definitions are immutable: a changed checksum here means a numbered step was edited, which the ledger refuses.
         assertThat(catalog.checksum(1)).matches("[0-9a-f]{64}");
         assertThat(catalog.checksum(2)).matches("[0-9a-f]{64}").isNotEqualTo(catalog.checksum(1));
@@ -53,5 +53,9 @@ class DynamoMigrationCatalogTest {
                 .contains(DomainDynamoCatalog.MembershipCatalog.SEEDED_AT.toString()).contains("CATALOG / META");
         assertThat(catalog.step(4).definition()).contains("SEQUENCE#review-record").contains("SEQUENCE#support-request").contains("lastAssigned 0");
         assertThat(com.lookahead.domain.membership.MembershipCatalogSeed.PLANS).hasSize(10);
+        // Step 5 names its source, what it writes, the counters it raises and what it refuses; its definition is as immutable as the others.
+        assertThat(catalog.checksum(5)).matches("[0-9a-f]{64}").isNotEqualTo(catalog.checksum(4));
+        assertThat(catalog.step(5).definition()).contains("test_account_registry").contains("importedFrom postgresql").contains("IMPORT#account-access / RESULT")
+                .contains("SEQUENCE#review-record").contains("expire event").contains("admitted account unknown to the import is refused").contains("imports nothing");
     }
 }

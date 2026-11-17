@@ -20,6 +20,9 @@ public interface DynamoMigrationStep {
     /** Idempotent: safe to repeat after a crash or lost reply; must protect concurrent application writes. */
     void apply(DynamoDbClient client, DynamoTableNames tables);
 
+    /** The same, for a step that also reads another source ({@link DynamoMigrationSources}); the runner calls this one. */
+    default void apply(DynamoDbClient client, DynamoTableNames tables, DynamoMigrationSources sources) { apply(client, tables); }
+
     /** Throws when the step's postconditions do not hold in the real store; read-only. */
     void verify(DynamoDbClient client, DynamoTableNames tables);
 }

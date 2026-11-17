@@ -20,7 +20,11 @@ TASK = 'arn:aws:ecs:us-east-2:509614632283:task/lookahead-dev-cluster/0123456789
 REVISION = 'arn:aws:ecs:us-east-2:509614632283:task-definition/lookahead-dev-domain-migrate:4'
 CONFIG = {**WEB_CONFIG, 'app': 'domain', 'service': 'domain', 'sessionPrefix': 'domain-deploy', 'stack': 'lookahead-dev-domain', 'logGroup': '/lookahead/dev/domain',
           'discovery': {'serviceName': 'domain', 'serviceId': 'srv-domain0000000001', 'serviceArn': 'arn:aws:servicediscovery:us-east-2:509614632283:service/srv-domain0000000001'},
-          'parameters': {**WEB_CONFIG['parameters'], 'LogGroupName': '/lookahead/dev/domain', deploy.STORE_PARAMETER: 'postgresql', **deploy.TABLE_PARAMETERS}}
+          'parameters': {**WEB_CONFIG['parameters'], 'LogGroupName': '/lookahead/dev/domain', deploy.STORE_PARAMETER: 'postgresql', **deploy.TABLE_PARAMETERS,
+                         'DatabaseAddress': 'lookahead-dev-db.abc123.us-east-2.rds.amazonaws.com',
+                         'DomainAppSecretArn': 'arn:aws:secretsmanager:us-east-2:509614632283:secret:lookahead-dev-db-app-readwrite-h1nqjO', 'DomainAppVersion': 'cd08e527-0e7d-a97f-87dd-f96dcc82d1ef'}}
+IMPORT_URL = 'jdbc:postgresql://lookahead-dev-db.abc123.us-east-2.rds.amazonaws.com:5432/lookahead_platform?sslmode=verify-full&sslrootcert=/opt/lookahead/trust/rds-global-bundle.pem'
+IMPORT_SECRET = 'arn:aws:secretsmanager:us-east-2:509614632283:secret:lookahead-dev-db-app-readwrite-h1nqjO:password::cd08e527-0e7d-a97f-87dd-f96dcc82d1ef'
 
 
 def report(command='migrate', run='12', **extra):
@@ -146,17 +150,25 @@ class PlanTests(MigrateFixture):
                           'org.springframework.boot.loader.launch.PropertiesLauncher'], planned['entryPoint'])
         self.assertEqual({'LOOKAHEAD_ENVIRONMENT': 'dev', 'AWS_REGION': 'us-east-2', 'GITHUB_RUN_ID': '12', 'JAVA_TOOL_OPTIONS': m.JAVA_TOOL_OPTIONS,
                           'LOOKAHEAD_DYNAMODB_USER_ACCOUNT_DETAILS_TABLE': 'lookahead-dev-user-account-details', 'LOOKAHEAD_DYNAMODB_ADMINISTRATOR_AUDIT_EVENTS_TABLE': 'lookahead-dev-administrator-audit-events',
-                          'LOOKAHEAD_DYNAMODB_USER_STUDY_PLAN_DETAILS_TABLE': 'lookahead-dev-user-study-plan-details', 'LOOKAHEAD_DYNAMODB_PROTECTED_OWNER_IDENTITY_TABLE': 'lookahead-dev-protected-owner-identity'},
+                          'LOOKAHEAD_DYNAMODB_USER_STUDY_PLAN_DETAILS_TABLE': 'lookahead-dev-user-study-plan-details', 'LOOKAHEAD_DYNAMODB_PROTECTED_OWNER_IDENTITY_TABLE': 'lookahead-dev-protected-owner-identity',
+                          'LOOKAHEAD_IMPORT_JDBC_URL': IMPORT_URL, 'LOOKAHEAD_IMPORT_DB_USER': 'lookahead_platform_app'},
                          planned['environment'])
+        self.assertEqual({'LOOKAHEAD_IMPORT_DB_PASSWORD': IMPORT_SECRET}, planned['secrets'])
         self.assertNotIn('LOOKAHEAD_DYNAMODB_ENDPOINT', planned['environment'])
+        for command in ('verify', 'status'):
+            readOnly = self.planned(command)
+            self.assertEqual({}, readOnly['secrets']); self.assertNotIn('LOOKAHEAD_IMPORT_JDBC_URL', readOnly['environment']); self.assertNotIn('LOOKAHEAD_IMPORT_DB_USER', readOnly['environment'])
+            self.assertEqual([], [r for r in readOnly['resources'] if r['type'] in ('AWS::RDS::DBInstance', 'AWS::SecretsManager::Secret')])
         self.assertEqual({'table': 'lookahead-dev-protected-owner-identity', 'partition': 'DATA_VERSION#DOMAIN', 'items': ['STEP#<ten-digit version>', 'CURRENT', 'LOCK']}, planned['ledger'])
         self.assertEqual(('postgresql', '1'), (planned['currentPersistenceStore'], planned['currentDesiredCount']))
         self.assertEqual(planned['planDigest'], owner.digest({k: v for k, v in planned.items() if k != 'planDigest'}))
         rows = [(r['action'], r['type'], r['consoleName']) for r in planned['resources']]
         self.assertEqual([('Create', 'AWS::ECS::TaskDefinition', 'lookahead-dev-domain-migrate'), ('Run once', 'AWS::ECS::Task', 'lookahead-dev-domain-migrate on lookahead-dev-cluster'),
                           ('No change', 'AWS::ECS::Service', 'lookahead-dev-domain')], rows[:3])
-        self.assertEqual([('Modify', 'AWS::DynamoDB::Table', name) for name in deploy.TABLE_PARAMETERS.values()], rows[3:7])
-        self.assertEqual([('Modify', 'AWS::DynamoDB::Table item', 'lookahead-dev-protected-owner-identity · DATA_VERSION#DOMAIN / ' + key) for key in ('STEP#<ten-digit version>', 'CURRENT', 'LOCK')], rows[7:])
+        self.assertEqual([('Read only', 'AWS::RDS::DBInstance', 'lookahead-dev-db.abc123.us-east-2.rds.amazonaws.com'), ('Read', 'AWS::SecretsManager::Secret', 'lookahead-dev-db-app-readwrite-h1nqjO')], rows[3:5])
+        self.assertIn('nothing is written to PostgreSQL', planned['resources'][3]['note']); self.assertIn('LOOKAHEAD_IMPORT_DB_PASSWORD', planned['resources'][4]['note'])
+        self.assertEqual([('Modify', 'AWS::DynamoDB::Table', name) for name in deploy.TABLE_PARAMETERS.values()], rows[5:9])
+        self.assertEqual([('Modify', 'AWS::DynamoDB::Table item', 'lookahead-dev-protected-owner-identity · DATA_VERSION#DOMAIN / ' + key) for key in ('STEP#<ten-digit version>', 'CURRENT', 'LOCK')], rows[9:])
         self.assertEqual(('DATA_VERSION#DOMAIN', 'LOCK'), (planned['resources'][-1]['pk'], planned['resources'][-1]['sk']))
         self.assertIn('the running release keeps serving on the postgresql store', planned['resources'][2]['note'])
         self.assertEqual([], self.aws.ops('ecs', 'register-task-definition'))  # planning changes nothing
@@ -290,7 +302,7 @@ class ExecuteTests(MigrateFixture):
         self.assertEqual({'awslogs-group': '/lookahead/dev/domain', 'awslogs-region': 'us-east-2', 'awslogs-stream-prefix': 'migrate'}, container['logConfiguration']['options'])
         self.assertNotIn('mode', container['logConfiguration']['options'])  # blocking: the report line is never dropped
         self.assertEqual(planned['environment'], {e['name']: e['value'] for e in container['environment']})
-        self.assertNotIn('secrets', container); self.assertNotIn('portMappings', container); self.assertNotIn('tags', definition)
+        self.assertEqual([{'name': 'LOOKAHEAD_IMPORT_DB_PASSWORD', 'valueFrom': IMPORT_SECRET}], container['secrets']); self.assertNotIn('portMappings', container); self.assertNotIn('tags', definition)
         self.assertEqual({'awsvpcConfiguration': {'subnets': ['subnet-a', 'subnet-b'], 'securityGroups': ['sg-1'], 'assignPublicIp': 'ENABLED'}}, self.aws.network)
         run = self.aws.ops('ecs', 'run-task')[0]
         self.assertEqual(('migrate-12', '1.4.0'), (run[run.index('--started-by') + 1], run[run.index('--platform-version') + 1]))
@@ -303,7 +315,7 @@ class ExecuteTests(MigrateFixture):
     def test_the_migrate_task_definition_keeps_the_container_shape_of_the_service(self):
         """S6: migrate.taskDefinition() is built apart from deployment/dev/service.template.json; its container must keep the service's
         hardening and runtime shape (user, read-only root, dropped capabilities, the /tmp volume, JAVA_TOOL_OPTIONS, the log group and
-        region, cpu/memory/platform) and differ only where the migration must: family, task role, entry point, blocking logs, no ports or secrets."""
+        region, cpu/memory/platform) and differ only where the migration must: family, task role, entry point, blocking logs, no ports, one secret for a migrate."""
         def camel(value):
             if isinstance(value, dict):
                 return {k[0].lower() + k[1:]: camel(v) for k, v in value.items()}
@@ -329,8 +341,11 @@ class ExecuteTests(MigrateFixture):
         self.assertEqual(({'ref': 'ExecutionRoleArn'}, self.config['parameters']['ExecutionRoleArn']), (task['executionRoleArn'], definition['executionRoleArn']))
         self.assertEqual(('non-blocking', None), (service['logConfiguration']['options'].get('mode'), options.get('mode')))
         self.assertTrue(service.get('portMappings') and service.get('secrets'))
-        for absent in ('portMappings', 'secrets', 'healthCheck', 'stopTimeout', 'startTimeout'):
+        for absent in ('portMappings', 'healthCheck', 'stopTimeout', 'startTimeout'):
             self.assertNotIn(absent, container, absent)
+        # A migrate carries exactly one of the service's secrets (the database password, same ARN, key and version); verify and status carry none.
+        self.assertEqual([{'name': 'LOOKAHEAD_IMPORT_DB_PASSWORD', 'valueFrom': IMPORT_SECRET}], container['secrets'])
+        self.assertNotIn('secrets', m.taskDefinition(self.planned('verify'))['containerDefinitions'][0])
         self.assertEqual(['migrate'], container['command']); self.assertNotIn('entryPoint', service)
 
     def test_a_non_zero_exit_a_missing_report_or_a_failed_report_fails_the_run_and_records_the_reason(self):

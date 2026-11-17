@@ -30,12 +30,18 @@ public final class DynamoMigrationRunner {
     private final DynamoMigrationLedger ledger;
     private final DynamoMigrationLock lock;
     private final Clock clock;
+    private final DynamoMigrationSources sources;
 
     public DynamoMigrationRunner(DynamoDbClient client, DynamoTableNames tables, DynamoMigrationCatalog catalog, Clock clock) {
+        this(client, tables, catalog, clock, DynamoMigrationSources.none());
+    }
+
+    public DynamoMigrationRunner(DynamoDbClient client, DynamoTableNames tables, DynamoMigrationCatalog catalog, Clock clock, DynamoMigrationSources sources) {
         this.client = Objects.requireNonNull(client, "client");
         this.tables = Objects.requireNonNull(tables, "tables");
         this.catalog = Objects.requireNonNull(catalog, "catalog");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.sources = Objects.requireNonNull(sources, "sources");
         this.ledger = new DynamoMigrationLedger(client, tables);
         this.lock = new DynamoMigrationLock(client, tables);
     }
@@ -53,7 +59,7 @@ public final class DynamoMigrationRunner {
                 Events.success(LOG, "migration.apply").addKeyValue("data.version", version).addKeyValue("data.step", step.name())
                         .log("Applying data step {} {}", version, step.name());
                 try {
-                    step.apply(client, tables);
+                    step.apply(client, tables, sources);
                     step.verify(client, tables);
                 } catch (RuntimeException failure) {
                     Events.failed(LOG, "migration.apply", "STEP_FAILED").addKeyValue("data.version", version).addKeyValue("data.step", step.name())

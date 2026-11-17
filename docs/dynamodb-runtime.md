@@ -72,8 +72,14 @@ java -cp /opt/lookahead/app.jar -Dloader.main=com.lookahead.domain.persistence.d
 ```
 
 Inputs are process variables: `LOOKAHEAD_ENVIRONMENT`, `AWS_REGION`, the four
-`LOOKAHEAD_DYNAMODB_*_TABLE` names (dev/prod) or `LOOKAHEAD_DYNAMODB_ENDPOINT` (local), and
-`GITHUB_RUN_ID` for the run identity (`github-<id>`, else `local-<uuid>`). It prints one JSON
+`LOOKAHEAD_DYNAMODB_*_TABLE` names (dev/prod) or `LOOKAHEAD_DYNAMODB_ENDPOINT` (local),
+`GITHUB_RUN_ID` for the run identity (`github-<id>`, else `local-<uuid>`) and, for `migrate`
+only, the optional PostgreSQL import source of step 5 (`DynamoMigrationSources`):
+`LOOKAHEAD_IMPORT_JDBC_URL` (validated like the runtime's URL: in dev and prod a regional RDS
+endpoint with verify-full TLS), `LOOKAHEAD_IMPORT_DB_USER` (`lookahead_platform_app` by
+default; the step only reads) and `LOOKAHEAD_IMPORT_DB_PASSWORD` (an ECS secret, the same
+database password the service receives). Without the URL a local store has nothing to import;
+dev and prod refuse step 5. It prints one JSON
 line (`command`, `environment`, `runId`, `before`, `after`, `required`, `applied`, `verified`,
 `ahead`, or `failed` with the failure's type). Exit 0: the command succeeded; 1: it failed and
 the ledger is unchanged past the last recorded step (a held lock is `LOCKED`, a changed
@@ -85,8 +91,18 @@ on, and records it in the ledger (`DATA_VERSION#DOMAIN` in Protected Owner Ident
 catalog (`DomainDynamoCatalog`) is append-only: step 1 `base-tables` verifies the four
 tables, step 2 `staff-alias-counters` seeds the permanent label counters, step 3
 `membership-catalog` seeds the ten membership plans and the catalog revision, step 4
-`review-record-counters` initialises the two record-number counters at 0. The migration-task
-role alone may write the ledger; the running app's role only reads it.
+`review-record-counters` initialises the two record-number counters at 0, step 5
+`account-access-import` (owner decision 2026-11-17) reads the PostgreSQL platform database
+once and writes every real account with its PostgreSQL id (control and subject items,
+identities, email carriers, directory and waiting projections, the staff assignment and its
+events, admission events at their recorded times, permanent label claims), live pending staff
+invitations, raises the label counters to the highest imported number and the two record
+counters to the PostgreSQL sequence values, removes the sign-in waiting rows the store recorded
+before the import, and refuses an admitted account it does not know; one transaction per
+account, a rerun skips imported accounts (`IMPORT#account-access / RESULT` records the
+outcome). Managed test accounts are not imported: the roster is created again from the Test
+accounts page. The migration-task role alone may write the ledger; the running app's role only
+reads it.
 
 ## Sweeps in dynamodb mode
 

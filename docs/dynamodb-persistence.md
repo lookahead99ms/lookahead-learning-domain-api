@@ -43,10 +43,12 @@ audit purge (an insert-only audit has no equivalent). The author flag is bound f
 Owner Identity at first contact rather than re-checked on every request. Cross-lane facts for the
 merge page: `MembershipFacts.hasPaidMembership` and `StudyPlanFacts.cards` (`DynamoPlanFacts`).
 
-Data steps shipped by this build (`DomainDynamoCatalog.REQUIRED = 4`): 1 `base-tables`, 2 `staff-alias-counters`,
+Data steps shipped by this build (`DomainDynamoCatalog.REQUIRED = 5`): 1 `base-tables`, 2 `staff-alias-counters`,
 3 `membership-catalog` (the ten catalog plans and `CATALOG / META`; a replay accepts the seeded ids), 4
-`review-record-counters` (`SEQUENCE#review-record` and `SEQUENCE#support-request` at 0; the DEV cutover sets them
-to the PostgreSQL sequence values through a later step if numbering must continue).
+`review-record-counters` (`SEQUENCE#review-record` and `SEQUENCE#support-request` at 0), 5 `account-access-import`
+(the real PostgreSQL accounts with their identities, admissions, roles and labels, written in the application's own
+item shapes with their PostgreSQL ids; the record counters continue from the PostgreSQL sequence values; see
+[docs/dynamodb-runtime.md](dynamodb-runtime.md)).
 
 Validation (2026-11-10, integrated tree): `./mvnw -o -q test-compile` clean; the Infra DynamoDB Local wrapper with
 every `*Dynamo*Test` plus the foundation tests: 340 tests, 0 failures, 1 environment-gated skip; line coverage
@@ -222,5 +224,5 @@ after the six-role transition, user-run.
 - Where PostgreSQL waited on a row lock, DynamoDB tells the loser to reload (409): plans of one owner, a
   creator's simultaneous test-account creates, concurrent checkouts; `DynamoTestAccountStore.transact`
   retries re-runnable bodies three times.
-- The recording-account import tool for the DEV cutover is not built; `DomainDynamoCatalog` step 4 seeds
-  the record counters at 0 and a later step continues the PostgreSQL sequence values if numbering must go on.
+- Study plans, purchases, receipts, reviews and audit history are not imported from PostgreSQL (owner decision
+  2026-11-17: accounts and access only, by `DomainDynamoCatalog` step 5; none of the real accounts had plans).
