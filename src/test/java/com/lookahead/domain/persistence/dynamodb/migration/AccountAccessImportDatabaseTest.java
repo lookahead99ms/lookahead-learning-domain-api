@@ -73,8 +73,8 @@ class AccountAccessImportDatabaseTest {
         schema = "import_" + UUID.randomUUID().toString().replace("-", "");
         var admin = new JdbcTemplate(new DriverManagerDataSource(url, "postgres", password));
         admin.execute("CREATE SCHEMA " + schema);
-        for (String role : List.of("lookahead_platform_app", "lookahead_platform_migrator"))
-            if (admin.queryForObject("SELECT count(*) FROM pg_roles WHERE rolname='" + role + "'", Integer.class) == 0) admin.execute("CREATE ROLE " + role + " NOLOGIN");
+        if (admin.queryForObject("SELECT count(*) FROM pg_roles WHERE rolname = ?", Integer.class, "lookahead_platform_app") == 0) admin.execute("CREATE ROLE lookahead_platform_app NOLOGIN");
+        if (admin.queryForObject("SELECT count(*) FROM pg_roles WHERE rolname = ?", Integer.class, "lookahead_platform_migrator") == 0) admin.execute("CREATE ROLE lookahead_platform_migrator NOLOGIN");
         source = new DriverManagerDataSource(url + "?currentSchema=" + schema, "postgres", password);
         jdbc = new JdbcTemplate(source);
         jdbc.execute("GRANT USAGE ON SCHEMA " + schema + " TO lookahead_platform_app");
