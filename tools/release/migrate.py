@@ -84,33 +84,23 @@ def command(env):
 
 
 def loadConfig(root):
-    """The service's configuration; a migration needs the store switch (the four pinned table names) in it."""
+    """The service's configuration; a migration needs the four pinned table names in it."""
     config = deploy.loadConfig(root)
-    require(config['app'] == 'domain' and deploy.STORE_PARAMETER in config['parameters'], 'Domain configuration with the persistence store switch required')
+    require(config['app'] == 'domain' and all(key in config['parameters'] for key in deploy.TABLE_PARAMETERS), 'Domain configuration with the four DynamoDB table names required')
     return config
 
 
-IMPORT_URL_VARIABLE, IMPORT_USER_VARIABLE, IMPORT_PASSWORD_VARIABLE = 'LOOKAHEAD_IMPORT_JDBC_URL', 'LOOKAHEAD_IMPORT_DB_USER', 'LOOKAHEAD_IMPORT_DB_PASSWORD'
-IMPORT_USER = 'lookahead_platform_app'
-JDBC_URL = 'jdbc:postgresql://{host}:5432/lookahead_platform?sslmode=verify-full&sslrootcert=/opt/lookahead/trust/rds-global-bundle.pem'
-
-
 def environment(config, runId, mode='migrate'):
-    """What the entrypoint reads: the environment, the region, the four tables and the run identity it records in the ledger. A `migrate`
-    also gets the PostgreSQL import source of data step 5 (the service's own JDBC URL and read-write role; the step only reads)."""
+    """What the entrypoint reads: the environment, the region, the four tables and the run identity it records in the ledger. Since the
+    PostgreSQL retirement (2026-11-17) no command reads anything else: data step 5 kept its number but lost its import source."""
     variables = {'LOOKAHEAD_ENVIRONMENT': 'dev', 'AWS_REGION': config['region'], 'GITHUB_RUN_ID': runId, 'JAVA_TOOL_OPTIONS': JAVA_TOOL_OPTIONS}
     variables.update({variable: config['parameters'][parameter] for parameter, variable in TABLE_VARIABLES.items()})
-    if mode == 'migrate':
-        variables[IMPORT_URL_VARIABLE] = JDBC_URL.format(host=config['parameters']['DatabaseAddress'])
-        variables[IMPORT_USER_VARIABLE] = IMPORT_USER
     return variables
 
 
 def secrets(config, mode):
-    """The one ECS secret of a `migrate`: the runtime database password, as the service template injects it (secret ARN, key, version)."""
-    if mode != 'migrate':
-        return {}
-    return {IMPORT_PASSWORD_VARIABLE: config['parameters']['DomainAppSecretArn'] + ':password::' + config['parameters']['DomainAppVersion']}
+    """The migration task carries no ECS secret: the PostgreSQL import secret of step 5 was retired with its source (2026-11-17)."""
+    return {}
 
 
 def ledgerRows(mode, table):
@@ -128,14 +118,7 @@ def resourceRows(planned):
             {'action': 'Run once', 'type': 'AWS::ECS::Task', 'consoleName': FAMILY + ' on ' + planned['clusterName'],
              'note': 'one Fargate task in the service\'s subnets and security group; it runs ' + mode + ' to completion and stops; no service is created or changed'},
             {'action': 'No change', 'type': 'AWS::ECS::Service', 'consoleName': planned['stack'],
-             'note': 'the running release keeps serving' + (' on the ' + planned['currentPersistenceStore'] + ' store' if planned.get('currentPersistenceStore') else '')
-                     + '; deploy this release with persistence_store dynamodb afterwards (04 · Deploy DEV)'}]
-    if mode == 'migrate':
-        rows.append({'action': 'Read only', 'type': 'AWS::RDS::DBInstance', 'consoleName': planned['environment'][IMPORT_URL_VARIABLE].split('//', 1)[1].split(':', 1)[0],
-                     'note': 'data step 5 reads the real accounts and their access (cloud_accounts, cloud_identities, cloud_admission_events, staff_access, staff_aliases)'
-                             ' as ' + IMPORT_USER + '; nothing is written to PostgreSQL'})
-        rows.append({'action': 'Read', 'type': 'AWS::SecretsManager::Secret', 'consoleName': planned['secrets'][IMPORT_PASSWORD_VARIABLE].split(':secret:', 1)[1].split(':', 1)[0],
-                     'note': 'the runtime database password, injected by the execution role as ' + IMPORT_PASSWORD_VARIABLE + ' (the same secret and version the service uses)'})
+             'note': 'the running release keeps serving; deploy this release afterwards (04 · Deploy DEV)'}]
     for parameter, variable in TABLE_VARIABLES.items():
         name = tables[variable]
         if mode == 'migrate':
@@ -164,7 +147,7 @@ def plan(env, call, root, get=owner.api, now=None):
               'logGroup': config['logGroup'], 'logStreamPrefix': LOG_PREFIX, 'entryPoint': ENTRY_POINT, 'environment': variables, 'secrets': secrets(config, mode),
               'tables': {variable: variables[variable] for variable in TABLE_VARIABLES.values()},
               'ledger': {'table': variables['LOOKAHEAD_DYNAMODB_PROTECTED_OWNER_IDENTITY_TABLE'], 'partition': LEDGER_PARTITION, 'items': [key for key, _ in LEDGER_ITEMS]},
-              'currentPersistenceStore': current.get(deploy.STORE_PARAMETER), 'currentDesiredCount': current.get('DesiredCount'), 'currentImage': current.get('ApplicationImage'),
+              'currentDesiredCount': current.get('DesiredCount'), 'currentImage': current.get('ApplicationImage'),
               'configSha256': hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest(), 'plannedAt': deploy.utc(now).isoformat()}
     for key, value in result['environment'].items():
         require(not str(value).startswith('PENDING-'), 'Configuration still carries a placeholder for ' + key)
@@ -209,7 +192,7 @@ def gist(planned, env=None):
     t = issueTemplate.text
     mode = planned['command']
     head = {'migrate': '**Business change:** the data steps the ' + t(planned['app']) + ' release `' + t(planned['imageTag']) + '` needs are applied to the four DEV DynamoDB tables '
-                       'and recorded in the migration ledger, so that `04 · Deploy DEV` can then serve this release on the dynamodb store (data first, then app). '
+                       'and recorded in the migration ledger, so that `04 · Deploy DEV` can then serve this release (data first, then app). '
                        'The running release keeps serving throughout; no pipeline gate stops it.',
             'verify': '**Business change:** none. The migration entrypoint re-verifies every recorded data step of the DEV ledger against this release; nothing is written.',
             'status': '**Business change:** none. The migration entrypoint reports the ledger\'s CURRENT data version against what this release requires; nothing is written.'}[mode]
@@ -218,23 +201,21 @@ def gist(planned, env=None):
              + MIGRATION_TASK_ROLE + '`, execution role `' + t(planned['executionRoleArn'].rsplit('/', 1)[-1]) + '`, awslogs to `' + t(planned['logGroup']) + '`, entry point '
              '`java -cp /opt/lookahead/app.jar -Dloader.main=…DomainDynamoMigration org.springframework.boot.loader.launch.PropertiesLauncher ' + mode + '`.',
              '3. `ecs run-task`: one Fargate task on `' + t(planned['clusterName']) + '` in the service\'s subnets and security group, with LOOKAHEAD_ENVIRONMENT=dev, AWS_REGION, '
-             'the four table names and GITHUB_RUN_ID=' + t(planned['runId']) + ' (recorded in the ledger as `github-' + t(planned['runId']) + '`)'
-             + (', plus the PostgreSQL import source of data step 5: ' + IMPORT_URL_VARIABLE + ' (the service\'s JDBC URL), ' + IMPORT_USER_VARIABLE + '=' + IMPORT_USER
-                + ' and the secret ' + IMPORT_PASSWORD_VARIABLE + ' (the runtime database password the execution role already injects into the service).' if mode == 'migrate' else '.'),
+             'the four table names and GITHUB_RUN_ID=' + t(planned['runId']) + ' (recorded in the ledger as `github-' + t(planned['runId']) + '`); no secret.',
              '4. Wait at most ' + str(STOP_SECONDS // 60) + ' minutes for the task to stop (`ecs describe-tasks`), read its exit code, then the one JSON report line from the log stream '
              '`' + LOG_PREFIX + '/' + CONTAINER + '/<task id>` (`logs get-log-events`): `{"command":"' + mode + '","before":N,"after":M,"required":R,"applied":[…],"verified":[…],"ahead":…}`.',
              '5. The run succeeds only with exit code 0, a report line without `failed`, the command and run identity it names'
              + (' and `after` at `required`.' if mode == 'migrate' else ' and an empty `applied` list (no ledger change).')
              + ' The result artifact of this run holds every step; the issue is closed with the outcome.']
     tail = ('Exit code 1 means the entrypoint failed and the ledger is unchanged past the last recorded step: fix the cause and run again with the same release (the entrypoint '
-            'continues from CURRENT). No service, stack, IAM, network or secret changes (a migrate reads the runtime database secret; it changes none). Approve within ' + owner.minutesText(window(planned, env))
+            'continues from CURRENT). No service, stack, IAM, network or secret changes. Approve within ' + owner.minutesText(window(planned, env))
             + ' minutes of this issue being created; the approval comment is then valid for ' + owner.minutesText(owner.approvalValid(env)) + ' minutes.')
     return head + '\n\n' + '\n'.join(steps) + '\n\n' + tail
 
 
 def body(planned, receipt, env=None):
     t = issueTemplate.text
-    fields = ('releaseVersion', 'imageTag', 'image', 'command', 'family', 'taskRoleArn', 'executionRoleArn', 'sourceSha', 'workflowSha', 'stack', 'currentPersistenceStore',
+    fields = ('releaseVersion', 'imageTag', 'image', 'command', 'family', 'taskRoleArn', 'executionRoleArn', 'sourceSha', 'workflowSha', 'stack',
               'currentDesiredCount', 'sessionName', 'repository', 'account', 'region')
     shown = [('**' + key + '**', owner.commitLink(planned, planned[key]) if key in ('sourceSha', 'workflowSha') else '`' + t(str(planned[key])) + '`')
              for key in fields if planned.get(key) is not None]
@@ -243,18 +224,16 @@ def body(planned, receipt, env=None):
     return issueTemplate.render(
         headline=headline(planned), gist=gist(planned, env), resources=planned['resources'],
         overview='**' + ACTIONS[mode] + ' with the published DEV image**\n\nAuthorize the one migration task described above inside this run. Without approval nothing runs in AWS.'
-                 + (' The service keeps serving the running release; switch it to the dynamodb store with `04 · Deploy DEV` only after this run succeeded.' if mode == 'migrate' else ''),
+                 + (' The service keeps serving the running release; deploy this release with `04 · Deploy DEV` only after this run succeeded.' if mode == 'migrate' else ''),
         scope='### Migration task\n\n' + issueTemplate.table(('Field', 'Value'), shown) + '\n### Tables the task reads\n\n' + tables,
         validation=[('Release tag ' + t(planned['releaseVersion']), 'resolved to source commit ' + owner.commitLink(planned, planned['sourceSha'])),
                     ('Image', 'ECR tag `' + t(planned['imageTag']) + '` read back as `' + t(planned['image'].rsplit('@', 1)[-1]) + '`'),
                     ('Configuration', '`' + planned['configSha256'][:16] + '…` rechecked before execution'),
                     ('Command', '`' + mode + '`: ' + ('writes data steps and the ledger' if mode == 'migrate' else 'reads only; an applied step in the report fails the run')),
-                    ('Service', 'not touched; currently ' + ('DesiredCount `' + t(planned['currentDesiredCount']) + '` on the `' + t(planned['currentPersistenceStore'] or 'unknown') + '` store'
-                                                            if planned.get('currentDesiredCount') is not None else 'no stack'))],
+                    ('Service', 'not touched; currently ' + ('DesiredCount `' + t(planned['currentDesiredCount']) + '`' if planned.get('currentDesiredCount') is not None else 'no stack'))],
         evidence='Review the plan artifact of this run before approving.',
-        risks='A failed step leaves the ledger unchanged past the last recorded step and the service unaffected; the task is not retried. The rows a data step writes are '
-              "seeds, not application data: until the application's first write on DynamoDB the store parameter goes back to postgresql with 04 · Deploy DEV (PostgreSQL "
-              'stays complete); after the first application write the way back is a data decision, not a flag (DLV-970 rollback rule). '
+        risks='A failed step leaves the ledger unchanged past the last recorded step and the service unaffected; the task is not retried. A recorded step is never '
+              'undone: the way back from a data step is a new step, not a flag (DLV-970; PostgreSQL, the former way back, was retired on 2026-11-17). '
               'This is owner approval enforced by workflow code, not independent review.',
         repository=planned['repository'], runId=planned['runId'], owner=owner.OWNER, expires=receipt['expiresAt'], created=receipt.get('createdAt'),
         permissionDeadline='The migration session lasts at most 60 minutes; IAM is not changed.',
@@ -453,7 +432,7 @@ def main(argv=None, env=None, call=None, get=owner.api, sleep=time.sleep):
         result = plan(env, call, args.root, get)
         deploy.write(args.output, result)
         deploy.output(env, plan_digest=result['planDigest'], command=result['command'])
-        print(json.dumps({k: result[k] for k in ('releaseVersion', 'image', 'command', 'family', 'currentPersistenceStore', 'planDigest')}, sort_keys=True))
+        print(json.dumps({k: result[k] for k in ('releaseVersion', 'image', 'command', 'family', 'planDigest')}, sort_keys=True))
         return result
     require(bool(args.plan and args.receipt), '--plan and --receipt required')
     planned = deploy.readJson(args.plan)

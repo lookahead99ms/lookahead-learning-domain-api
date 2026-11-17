@@ -1,5 +1,7 @@
 package com.lookahead.learning.content.handler;
 
+import com.lookahead.domain.Events;
+import com.lookahead.domain.RequestLog;
 import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.repository.DynamoOwnerUnit;
@@ -10,11 +12,8 @@ import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
-import org.springframework.dao.DataAccessException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
-import org.springframework.transaction.CannotCreateTransactionException;
-import org.springframework.transaction.TransactionSystemException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.slf4j.Logger;
@@ -62,28 +61,30 @@ public class AccountErrorHandler {
                         .collect(java.util.stream.Collectors.joining(".")).replace(".[", "[");
         return "";
     }
-    // Connection acquisition and failed commit/rollback can bypass JdbcTemplate's translation.
-    @ExceptionHandler({DataAccessException.class, CannotCreateTransactionException.class,
-            TransactionSystemException.class})
-    ResponseEntity<?> unavailable(RuntimeException ex, HttpServletRequest request) {
-        // The caller never sees the driver's detail; the log keeps it so an outage can be diagnosed.
-        log.warn("Account storage unavailable: {} {}", GlobalExceptionHandler.forLog(request.getMethod()),
-                GlobalExceptionHandler.forLog(request.getRequestURI()), ex);
-        return failure(new AccountFailure(503, "ACCOUNT_STORAGE_UNAVAILABLE", "Account storage is unavailable; retain your draft and retry the same request"), request);
-    }
-
     /**
-     * DLV-970: the DynamoDB store's outage is the same answer as the PostgreSQL one. {@link DynamoWrites.Unavailable}
-     * (a transaction whose outcome is unknown), its read-side twin {@link DynamoOwnerUnit.DynamoOwnerUnavailable} and
-     * the SDK's own failures (no connection, throttling, a service error) reaching the web layer answer 503
-     * {@code ACCOUNT_STORAGE_UNAVAILABLE}; the log line names the failure's types only, never the SDK message, which
-     * may carry an endpoint or a request ID.
+     * DLV-970: the store's outage answers 503. {@link DynamoWrites.Unavailable} (a transaction whose outcome is unknown),
+     * its read-side twin {@link DynamoOwnerUnit.DynamoOwnerUnavailable} and the SDK's own failures (no connection,
+     * throttling, a service error) reaching the web layer answer 503 {@code ACCOUNT_STORAGE_UNAVAILABLE}. Plain logs
+     * (owner, 2026-11-17): a dependency down is an ERROR an operator acts on; the caller sees only the safe message, the
+     * ERROR line names the operation and the
+     * table(s) when the store knows them, quotes the SDK's own message (IAM denials, request IDs and endpoints help the
+     * one person reading these private logs) and ends with the reference of the stack trace that follows.
      */
     @ExceptionHandler({DynamoWrites.Unavailable.class, DynamoOwnerUnit.DynamoOwnerUnavailable.class, SdkClientException.class, DynamoDbException.class})
     ResponseEntity<?> storeUnavailable(RuntimeException ex, HttpServletRequest request) {
-        log.warn("Account storage unavailable: {} {} ({})", GlobalExceptionHandler.forLog(request.getMethod()),
-                GlobalExceptionHandler.forLog(request.getRequestURI()), com.lookahead.domain.Events.types(ex));
+        String reference = RequestLog.reference();
+        String call = ex instanceof DynamoWrites.Unavailable store ? store.call() : "DynamoDB call";
+        String code = Events.code(ex);
+        boolean refused = Events.permissionRefused(Events.status(ex), code);
+        log.error("{} {} {}: {} {} ({}); answered 503 ACCOUNT_STORAGE_UNAVAILABLE; reference {}{}",
+                GlobalExceptionHandler.forLog(request.getMethod()), GlobalExceptionHandler.forLog(request.getRequestURI()),
+                RequestLog.failedAfter(request), call, refused ? "was refused" : "failed", Events.quoted(ex), reference, hint(ex), ex);
         return failure(new AccountFailure(503, "ACCOUNT_STORAGE_UNAVAILABLE", "Account storage is unavailable; retain your draft and retry the same request"), request);
+    }
+
+    private static String hint(Throwable failure) {
+        String hint = Events.hint(failure);
+        return hint == null ? "" : "; " + hint;
     }
 
     /** DLV-970: a condition that did not hold after the store's own retries is the existing revision conflict answer. */

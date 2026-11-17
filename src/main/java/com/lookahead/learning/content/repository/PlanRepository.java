@@ -10,9 +10,8 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Account-scoped plan persistence. DLV-970: {@link JdbcPlanRepository} is the PostgreSQL implementation (transactions
- * owned by the calling plan service); {@link DynamoPlanRepository} serves {@code app.persistence.store=dynamodb}, where
- * every call inside one PlanService transaction is collected by {@link DynamoOwnerUnit} and committed as one conditional
+ * Account-scoped plan persistence. DLV-970: {@link DynamoPlanRepository} is the one implementation (PostgreSQL retired
+ * 2026-11-17), where every call inside one PlanService transaction is collected by {@link DynamoOwnerUnit} and committed as one conditional
  * DynamoDB transaction under the owner's {@code ACCOUNT#id / META} revision.
  */
 public interface PlanRepository {

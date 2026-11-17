@@ -119,7 +119,8 @@ class LivePublicationLoaderTest {
                 assertThat(health.health().getStatus().getCode()).isEqualTo("DOWN");
                 assertThat(health.health().getDetails()).isEmpty();
                 assertThat(LogCapture.keys(log.lines("readiness").getFirst())).containsEntry("reason", entry.getValue()[0]);
-                assertThat(log.lines("readiness").getFirst().getFormattedMessage()).startsWith("Readiness DOWN: " + entry.getValue()[1]);
+                assertThat(log.lines("readiness").getFirst().getFormattedMessage()).startsWith("Readiness DOWN for content publication: " + entry.getValue()[1])
+                        .contains(" (" + entry.getValue()[0] + ");");
             }
             try (var files = Files.list(directory)) { assertThat(files.filter(p -> p.getFileName().toString().startsWith("publication-")).toList()).isEmpty(); }
         }

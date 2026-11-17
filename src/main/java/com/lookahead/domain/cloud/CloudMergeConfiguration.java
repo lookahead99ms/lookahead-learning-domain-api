@@ -4,17 +4,13 @@ import com.lookahead.domain.access.AccountRemovalService;
 import com.lookahead.domain.access.MembershipFacts;
 import com.lookahead.domain.access.StudyPlanFacts;
 import com.lookahead.domain.access.TestAccountRegistryLookup;
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.transaction.PlatformTransactionManager;
 import java.util.Set;
 
 /**
@@ -38,13 +34,8 @@ public class CloudMergeConfiguration {
             throw new IllegalStateException("LOOKAHEAD_EMAIL_ENABLED=true needs AWS_REGION (app.email.region) for SES");
         return new SesEmailSender(SesEmailSender.taskRoleClient(region),from);
     }
-    /** DLV-970: one merge service per persistence store, the same policy, email and log lines. */
-    @Bean @ConditionalOnProperty(name=PersistenceStore.PROPERTY,havingValue="postgresql",matchIfMissing=true)
-    CloudMergeService cloudMerges(JdbcTemplate jdbc,PlatformTransactionManager manager,AccountRemovalService removal,EmailSender email,Environment env){
-        return new JdbcCloudMergeService(jdbc,manager,removal,email,publicUrl(env));
-    }
-    @Bean @ConditionalOnProperty(name=PersistenceStore.PROPERTY,havingValue="dynamodb")
-    CloudMergeService dynamoCloudMerges(DynamoDbClient client,DynamoTableNames tables,AccountRemovalService removal,EmailSender email,Environment env,
+    /** DLV-970: the merge service on the DynamoDB store (PostgreSQL retired 2026-11-17). */
+    @Bean CloudMergeService cloudMerges(DynamoDbClient client,DynamoTableNames tables,AccountRemovalService removal,EmailSender email,Environment env,
             ObjectProvider<TestAccountRegistryLookup> testAccounts,ObjectProvider<MembershipFacts> memberships,ObjectProvider<StudyPlanFacts> plans){
         return new DynamoCloudMergeService(client,tables,removal,email,publicUrl(env),testAccounts,memberships,plans);
     }

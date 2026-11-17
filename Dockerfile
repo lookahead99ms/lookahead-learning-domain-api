@@ -14,12 +14,6 @@ COPY mvnw ./
 RUN ./mvnw --batch-mode --no-transfer-progress --version
 COPY pom.xml ./
 COPY src src
-COPY tools/container/VerifyRdsTrust.java tools/container/VerifyRdsTrust.java
-COPY tools/container/trust/rds-global-bundle.pem tools/container/trust/rds-global-bundle.sha256 tools/container/trust/
-WORKDIR /workspace/tools/container/trust
-RUN sha256sum --check rds-global-bundle.sha256
-WORKDIR /workspace
-RUN java tools/container/VerifyRdsTrust.java tools/container/trust/rds-global-bundle.pem
 # DLV-914: the jar is lookahead-domain-api-<version>.jar and /actuator/info reports version, release tag and commit.
 # DLV-968: the fetched-contract tests read files that scripts/fetch-contracts.sh takes from Content on the pull
 # request; the build context carries no fetched file and the CI Maven step has already run them, so they are excluded here.
@@ -43,7 +37,6 @@ RUN groupadd --gid 10001 lookahead && useradd --uid 10001 --gid 10001 --no-creat
     && chown 10001:10001 /tmp && chmod 1777 /tmp
 COPY --from=build --chown=10001:10001 /workspace/target/lookahead-domain-api-${BUILD_VERSION}.jar /opt/lookahead/app.jar
 COPY --from=build --chown=10001:10001 /workspace/health /opt/lookahead/health
-COPY --from=build --chown=10001:10001 /workspace/tools/container/trust/rds-global-bundle.pem /opt/lookahead/trust/rds-global-bundle.pem
 COPY deployment/container/dns.security /opt/lookahead/dns.security
 # ECS copies a VOLUME path's ownership into the task's empty bind mount; without it the Fargate
 # mount at /tmp is root-owned 0755 and Tomcat (UID 10001) cannot create its tempDir (DLV-968). /tmp keeps the

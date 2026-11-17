@@ -12,7 +12,7 @@ class TestAccountPolicyTest {
         return env;
     }
     @Test void scenarioWritesRefuseBeforeAnyDatabaseCallWhenDisabled() {
-        var jdbc=org.mockito.Mockito.mock(org.springframework.jdbc.core.JdbcTemplate.class);
+        var jdbc=org.mockito.Mockito.mock(ScenarioPurchaseStore.class, org.mockito.Mockito.withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
         var fixture=new ScenarioPurchases(jdbc,new tools.jackson.databind.ObjectMapper(),new TestAccountPolicy(new MockEnvironment()));
         assertThatThrownBy(()->fixture.populate(java.util.UUID.randomUUID(),java.util.UUID.randomUUID(),LearnerScenario.of(17),java.time.Instant.now()))
                 .isInstanceOf(com.lookahead.learning.content.exception.AccountFailure.class);

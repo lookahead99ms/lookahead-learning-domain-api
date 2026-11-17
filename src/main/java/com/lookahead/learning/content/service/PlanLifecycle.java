@@ -3,7 +3,6 @@ package com.lookahead.learning.content.service;
 import com.lookahead.learning.content.exception.AccountFailure;
 import com.lookahead.learning.content.validator.PlanReservationPolicy;
 import org.springframework.context.annotation.Profile;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -26,9 +25,6 @@ public class PlanLifecycle {
     @org.springframework.beans.factory.annotation.Autowired
     public PlanLifecycle(PlanLifecycleStore store,ObjectMapper json){this(store,json,Clock.systemUTC());}
     public PlanLifecycle(PlanLifecycleStore store,ObjectMapper json,Clock clock){this.store=store;this.json=json;this.clock=clock;}
-    /** PostgreSQL callers and tests: the rows on this JdbcTemplate. */
-    public PlanLifecycle(JdbcTemplate jdbc,ObjectMapper json){this(new JdbcPlanLifecycleStore(jdbc,json),json);}
-    public PlanLifecycle(JdbcTemplate jdbc,ObjectMapper json,Clock clock){this(new JdbcPlanLifecycleStore(jdbc,json),json,clock);}
     private LocalDate today(){return LocalDate.now(clock.withZone(ZoneOffset.UTC));}
     private List<Entry> entries(UUID owner){return store.entries(owner);}
     public ObjectNode view(UUID owner,UUID id){

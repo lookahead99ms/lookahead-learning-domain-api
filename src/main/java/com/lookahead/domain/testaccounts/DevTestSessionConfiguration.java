@@ -74,10 +74,10 @@ public class DevTestSessionConfiguration {
             catch (AccountFailure refused) { refuse(response); return; }
             catch (RuntimeException unavailable) {
                 // DLV-969 (owner, 2026-11-04): the 503 names its cause once a minute at most.
-                String types = com.lookahead.domain.Events.types(unavailable), state = com.lookahead.domain.Events.sqlState(unavailable);
+                String types = com.lookahead.domain.Events.types(unavailable);
                 if (UNAVAILABLE.due(types)) com.lookahead.domain.Events.failed(com.lookahead.domain.Events.EVENT, "test-session.request", "TEST_SESSION_UNAVAILABLE")
-                        .addKeyValue("error.type", types).addKeyValue("db.sqlState", state)
-                        .log("Test session check failed ({}{}); answered 503 IDENTITY_UNAVAILABLE", types, state == null ? "" : ", SQL state " + state);
+                        .addKeyValue("error.type", types)
+                        .log("Test session check failed ({}); answered 503 IDENTITY_UNAVAILABLE", types);
                 response.setStatus(503); response.setHeader("Cache-Control", "no-store"); response.setContentType("application/json");
                 response.getWriter().write("{\"status\":503,\"code\":\"IDENTITY_UNAVAILABLE\",\"message\":\"Identity verification is unavailable; retain your work and retry\"}");
                 return;

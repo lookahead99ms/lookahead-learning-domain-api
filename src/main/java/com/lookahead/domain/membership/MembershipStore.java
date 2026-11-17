@@ -9,8 +9,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * DLV-970: the membership aggregate behind {@link MembershipService}. One method is one transaction with all its
- * conditions; the service keeps validation, pricing and policy. PostgreSQL behaviour lives verbatim in
- * {@link JdbcMembershipStore}; {@link DynamoMembershipStore} commits the same aggregate under the account's
+ * conditions; the service keeps validation, pricing and policy. {@link DynamoMembershipStore} commits the aggregate under the account's
  * {@code ACCOUNT#id / META} revision and the catalog revision.
  */
 public interface MembershipStore {

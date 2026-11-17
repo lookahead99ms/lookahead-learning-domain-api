@@ -114,7 +114,6 @@ public class SupportFeedbackService {
             }
             return receipt;
         } catch (AccountFailure failure) { throw failure; }
-        catch (org.springframework.dao.DataAccessException unavailable) { throw unavailable; }
         catch (org.springframework.transaction.TransactionException unavailable) { throw unavailable; }
         // DLV-970: the DynamoDB store's own outcomes are not a damaged request. An outage or an unanswered read is the
         // 503 ACCOUNT_STORAGE_UNAVAILABLE of the handler (DynamoOwnerUnavailable is one of them); a lost owner fence after the store's retries is its 409.

@@ -2,11 +2,9 @@ package com.lookahead.domain.testaccounts;
 
 import com.lookahead.domain.access.TestAccountRegistryLookup;
 import com.lookahead.domain.membership.MembershipItems;
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoItems;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import java.util.UUID;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
@@ -16,7 +14,6 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
  * {@code ACCOUNT#id / TEST} row, whatever its creation state.
  */
 @Component
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoTestAccountRegistry implements TestAccountRegistryLookup {
     private final DynamoDbClient client;
     private final DynamoTableNames tables;

@@ -15,7 +15,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
 /**
- * Permanent account+role numbers ({@code staff_aliases} on PostgreSQL), independent of the caller's transaction:
+ * Permanent account+role numbers, independent of the caller's transaction:
  * one PartiQL transaction advances the role's {@code STAFF_ROLE#role / COUNTER} under its exact value and revision
  * and inserts the two immutable audit claims. {@code access.DynamoStaffAliasStore} is the Spring adapter over it;
  * this class is not a role grant or identity projection. A counter race is retried with a re-read; a lost

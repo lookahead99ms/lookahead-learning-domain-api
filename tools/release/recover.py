@@ -94,19 +94,13 @@ def plan(env, call, root, get=owner.api, now=None):
     envs = {key: releaseEnv(env, key) for key in ('target', 'fallback')}
     require(envs['fallback']['RELEASE_VERSION'] and envs['fallback']['RELEASE_VERSION'] != envs['target']['RELEASE_VERSION'],
             'A fallback release other than the target is required')
-    # DLV-970 (S2): a recovery keeps the persistence store the stack serves, whatever the configuration or the environment says; every
-    # stage names it explicitly, so deploy.plan's as-configured guard never refuses a recovery and no stage can switch the store.
-    config = deploy.loadConfig(root)
-    serving = ((deploy.stackState(call, config['stack']) or {}).get('parameters') or {}).get(deploy.STORE_PARAMETER)
-    keep = {'DEPLOY_PERSISTENCE_STORE': serving} if serving and deploy.STORE_PARAMETER in config['parameters'] else {}
-    stages = [deploy.plan({**envs[key], 'DEPLOY_DESIRED_COUNT': str(count), **keep}, call, root, get, now, stage=name, session=session, recovery=True)
+    stages = [deploy.plan({**envs[key], 'DEPLOY_DESIRED_COUNT': str(count)}, call, root, get, now, stage=name, session=session, recovery=True)
               for name, key, count, session in STAGES]
     target, fallback = stages[1], stages[3]
     result = {'schema': SCHEMA_PLAN, 'app': target['app'], 'repository': target['repository'], 'runId': target['runId'],
               'workflowSha': target['workflowSha'], 'stack': target['stack'], 'releaseVersion': target['releaseVersion'],
               'imageTag': target['imageTag'], 'fallbackReleaseVersion': fallback['releaseVersion'], 'fallbackImageTag': fallback['imageTag'],
-              'fallbackSource': env.get('FALLBACK_SOURCE') or 'input', 'healthyMinutes': minutes, 'stages': stages,
-              'persistenceStore': target['persistenceStore'], 'plannedAt': deploy.utc(now).isoformat()}
+              'fallbackSource': env.get('FALLBACK_SOURCE') or 'input', 'healthyMinutes': minutes, 'stages': stages, 'plannedAt': deploy.utc(now).isoformat()}
     result['planDigest'] = deploy.digest({k: v for k, v in result.items() if k != 'planDigest'})
     return result
 
@@ -126,7 +120,7 @@ def validate(planned, env, root, get=owner.api):
         stage = stagePlan(planned, name)
         deploy.validatePlan(stage, releaseEnv(env, key), root, get, identity=identities[key])
         require(stage['desiredCount'] == count and stage['choices'] == ['deploy'] and stage['sessionName'].endswith('-' + str(session))
-                and stage['runId'] == planned['runId'] and stage.get('persistenceStore') == planned.get('persistenceStore'), 'Recovery stage ' + name + ' changed')
+                and stage['runId'] == planned['runId'], 'Recovery stage ' + name + ' changed')
 
 
 def commands(planned):
@@ -178,8 +172,7 @@ def body(planned, receipt, env=None):
         validation=[('Target ' + t(planned['releaseVersion']), 'ECR tag `' + t(planned['imageTag']) + '` read back as `' + t(stagePlan(planned, 'target')['image'].rsplit('@', 1)[-1]) + '`'),
                     ('Fallback ' + t(planned['fallbackReleaseVersion']), 'ECR tag `' + t(planned['fallbackImageTag']) + '` read back as `'
                      + t(stagePlan(planned, 'fallback')['image'].rsplit('@', 1)[-1]) + '`; chosen by ' + t(planned['fallbackSource'])),
-                    ('Healthy bound', t(str(planned['healthyMinutes'])) + ' minutes of stack wait per serving stage')]
-                   + ([('Persistence store', 'kept at `' + t(planned['persistenceStore']) + '`: a recovery never switches the store')] if planned.get('persistenceStore') else []),
+                    ('Healthy bound', t(str(planned['healthyMinutes'])) + ' minutes of stack wait per serving stage')],
         evidence='Review the plan artifact of this run before approving.',
         risks='A stage that cannot verify does not retry: the run parks the service and fails, and the summary names the last stop reasons. '
               'A rollback stuck in UPDATE_ROLLBACK_FAILED stops the run (break-glass runbook). This is owner approval enforced by workflow code, not independent review.',

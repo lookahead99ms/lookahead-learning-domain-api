@@ -102,7 +102,7 @@ class MaintenanceJobsTest {
             var empty = sweeps.runNow(actor, RuntimeSweeps.Job.ALL);
             assertThat(empty.maintenance()).isEmpty();
             assertThat(empty).isEqualTo(new RuntimeSweeps.Result("all", "2026-11-10T08:00:00Z", 0, false, "no inbox file", null));
-            assertThat(log.only("sweep").getFormattedMessage()).isEqualTo("The owner ran the all sweep now: 0 support request(s) closed, inbox no inbox file, no waiting account(s) removed");
+            assertThat(log.only("sweep").getFormattedMessage()).isEqualTo("Owner " + actor.toString().substring(0, 8) + " ran the all sweep now: 0 support request(s) closed, inbox no inbox file, no waiting account(s) removed");
             assertThat(LogCapture.keys(log.only("sweep"))).containsEntry("maintenance.jobs", 0);
         }
         var done = new PagedJob("documents", new MaintenanceJobs.Page(2, 1, 0, true), new MaintenanceJobs.Page(0, 0, 0, false));
@@ -112,7 +112,7 @@ class MaintenanceJobsTest {
         try (var log = LogCapture.start()) {
             var result = sweeps.runNow(actor, RuntimeSweeps.Job.ALL);
             assertThat(result.maintenance()).extracting(RuntimeSweeps.Maintenance::job).containsExactly("documents", "broken", "endless");
-            assertThat(log.lines("sweep").getLast().getFormattedMessage()).isEqualTo("The owner ran the all sweep now: 0 support request(s) closed, inbox no inbox file, no waiting account(s) removed"
+            assertThat(log.lines("sweep").getLast().getFormattedMessage()).isEqualTo("Owner " + actor.toString().substring(0, 8) + " ran the all sweep now: 0 support request(s) closed, inbox no inbox file, no waiting account(s) removed"
                     + ", maintenance: documents 2 cleaned/1 retained/0 failed; broken 0 cleaned/0 retained/0 failed, stopped by IllegalStateException; endless 40 cleaned/0 retained/0 failed (more)");
             assertThat(LogCapture.keys(log.lines("sweep").getLast())).containsEntry("maintenance.jobs", 3);
         }
@@ -144,12 +144,11 @@ class MaintenanceJobsTest {
         assertThat(retired.name()).isEqualTo("retired-study-plan-documents");
         assertThat(retired.run(false)).isEqualTo(new MaintenanceJobs.Page(1, 0, 0, true));
         assertThat(retired.run(true)).isEqualTo(new MaintenanceJobs.Page(0, 1, 1, false));
-        // The configuration builds both jobs from the client and the names, in dynamodb mode only.
+        // The configuration builds both jobs from the client and the names.
         var client = mock(software.amazon.awssdk.services.dynamodb.DynamoDbClient.class, withSettings().mockMaker(MockMakers.PROXY));
         var configuration = new DynamoMaintenanceJobs();
         assertThat(configuration.studyPlanDocumentMaintenanceJob(client, com.lookahead.domain.persistence.dynamodb.DynamoTableNames.local()).name()).isEqualTo("study-plan-documents");
         assertThat(configuration.retiredStudyPlanDocumentJob(client, com.lookahead.domain.persistence.dynamodb.DynamoTableNames.local()).name()).isEqualTo("retired-study-plan-documents");
-        assertThat(DynamoMaintenanceJobs.class.getAnnotation(org.springframework.boot.autoconfigure.condition.ConditionalOnProperty.class).havingValue()).isEqualTo("dynamodb");
         verifyNoInteractions(client);
     }
 }

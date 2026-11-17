@@ -1,12 +1,10 @@
 package com.lookahead.domain.sweeps;
 
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.domain.persistence.dynamodb.StudyPlanDocumentMaintenance;
 import com.lookahead.domain.persistence.dynamodb.StudyPlanDocumentRetirement;
 import java.time.Clock;
 import java.util.Objects;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -19,7 +17,6 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
  * exposed as beans, so a lane that needs its own instance (plan deletion retires through its own) is not tied to these.
  */
 @Configuration
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoMaintenanceJobs {
     static final String DOCUMENTS = "study-plan-documents", RETIRED = "retired-study-plan-documents";
 

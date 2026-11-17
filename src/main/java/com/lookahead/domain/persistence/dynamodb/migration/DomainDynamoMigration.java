@@ -15,9 +15,8 @@ import java.util.UUID;
  *      org.springframework.boot.loader.launch.PropertiesLauncher migrate|verify|status
  * </pre>
  * Inputs are process variables: LOOKAHEAD_ENVIRONMENT, AWS_REGION, the four LOOKAHEAD_DYNAMODB_*_TABLE names
- * (dev/prod) or LOOKAHEAD_DYNAMODB_ENDPOINT (local), GITHUB_RUN_ID for the run identity and, for {@code migrate}, the
- * optional PostgreSQL import source of {@link DynamoMigrationSources} (LOOKAHEAD_IMPORT_JDBC_URL, _DB_USER, _DB_PASSWORD). Exit 0 means the
- * command succeeded, 1 that it failed and the ledger is unchanged past the last recorded step, 2 a usage error.
+ * (dev/prod) or LOOKAHEAD_DYNAMODB_ENDPOINT (local) and GITHUB_RUN_ID for the run identity. Exit 0 means the command
+ * succeeded, 1 that it failed and the ledger is unchanged past the last recorded step, 2 a usage error.
  * The migration-task role alone may write the ledger; the running app's role only reads it.
  */
 public final class DomainDynamoMigration {
@@ -36,9 +35,8 @@ public final class DomainDynamoMigration {
         try {
             var settings = DynamoSettings.fromVariables(variables);
             String runId = variables.getOrDefault("GITHUB_RUN_ID", "").isBlank() ? "local-" + UUID.randomUUID() : "github-" + variables.get("GITHUB_RUN_ID").trim();
-            var sources = command.equals("migrate") ? DynamoMigrationSources.fromVariables(variables, settings.environment(), variables.get("AWS_REGION")) : DynamoMigrationSources.none();
             try (var client = settings.client()) {
-                var runner = new DynamoMigrationRunner(client, settings.tables(), DomainDynamoCatalog.catalog(), clock, sources);
+                var runner = new DynamoMigrationRunner(client, settings.tables(), DomainDynamoCatalog.catalog(), clock);
                 DynamoMigrationRunner.Outcome outcome = switch (command) {
                     case "migrate" -> runner.migrate(runId);
                     case "verify" -> runner.verify();
@@ -50,12 +48,20 @@ public final class DomainDynamoMigration {
                 return 0;
             }
         } catch (RuntimeException failure) {
-            // The failure's type and our own words only: an SDK message may carry an endpoint or a request ID.
-            Events.failed(DynamoMigrationRunner.LOG, "migration." + command, failure instanceof DynamoMigrationLock.Locked ? "LOCKED"
-                    : failure instanceof DynamoMigrationLedger.Conflict ? "LEDGER_CONFLICT" : "FAILED")
-                    .addKeyValue("error.type", Events.types(failure)).log("Migration {} failed: {}", command,
-                            failure instanceof DynamoMigrationLock.Locked || failure instanceof DynamoMigrationLedger.Conflict
-                                    || failure instanceof IllegalArgumentException ? failure.getMessage() : Events.types(failure));
+            // Another run holding the lock is an expected refusal (WARN, our own words). Everything else is an ERROR an
+            // operator acts on (plain logs, owner 2026-11-17): the dependency's own message, the hint, and what happens next.
+            // The JSON report line below is parsed by tools/release/migrate.py and stays exactly as it is.
+            if (failure instanceof DynamoMigrationLock.Locked) {
+                Events.failed(DynamoMigrationRunner.LOG, "migration." + command, "LOCKED").addKeyValue("error.type", Events.types(failure))
+                        .log("Migration {} failed: {}", command, failure.getMessage());
+            } else {
+                String reason = failure instanceof DynamoMigrationLedger.Conflict ? "LEDGER_CONFLICT" : "FAILED";
+                DynamoMigrationRunner.LOG.atError().addKeyValue("event.action", "migration." + command).addKeyValue("event.outcome", "failure")
+                        .addKeyValue("reason", reason).addKeyValue("error.type", Events.types(failure))
+                        .log("Migration {} failed: {}{}; the task exits 1 and the ledger is unchanged past the last recorded step", command,
+                                failure instanceof DynamoMigrationLedger.Conflict || failure instanceof IllegalArgumentException || failure instanceof IllegalStateException
+                                        ? Events.scrub(failure.getMessage()) + " (" + reason + ")" : Events.quoted(failure), DynamoMigrationRunner.hint(failure));
+            }
             out.println("{\"command\":\"" + command + "\",\"failed\":true,\"error\":\"" + Events.types(failure).replace("\"", "") + "\"}");
             return 1;
         }

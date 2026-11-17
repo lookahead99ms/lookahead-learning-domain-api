@@ -8,7 +8,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -48,8 +47,10 @@ class ErrorLoggingTest {
 
         assertThat(logged.list).singleElement().satisfies(event -> {
             assertThat(event.getLevel()).isEqualTo(Level.ERROR);
-            assertThat(event.getFormattedMessage())
-                    .isEqualTo("Unexpected failure reference=" + reference + " POST /internal/v1/test-accounts/roster/next");
+            // Plain logs (owner, 2026-11-17): what was being done, why and where in our code, what the caller got, the reference.
+            assertThat(event.getFormattedMessage()).matches("POST /internal/v1/test-accounts/roster/next failed: unexpected IllegalStateException in"
+                    + " ErrorLoggingTest\\.anUnexpectedFailureIsLoggedWithItsStackAndAReferenceTheCallerAlsoGets \\(ErrorLoggingTest\\.java:\\d+\\):"
+                    + " Required scenario template is missing; answered 500 INTERNAL_SERVER_ERROR; reference " + reference);
             assertThat(event.getThrowableProxy().getClassName()).isEqualTo(IllegalStateException.class.getName());
             assertThat(event.getThrowableProxy().getMessage()).isEqualTo("Required scenario template is missing");
         });
@@ -64,8 +65,8 @@ class ErrorLoggingTest {
             var response = global.handleUnexpected(new IllegalStateException("boom"), request("GET", "/api/v1/plans"));
 
             assertThat(response.getBody().details()).containsExactly("Reference: " + requestId);
-            assertThat(logged.list).singleElement().extracting(ILoggingEvent::getFormattedMessage)
-                    .isEqualTo("Unexpected failure reference=" + requestId + " GET /api/v1/plans");
+            assertThat(logged.list).singleElement().extracting(ILoggingEvent::getFormattedMessage).asString()
+                    .startsWith("GET /api/v1/plans failed: unexpected IllegalStateException in ").endsWith(": boom; answered 500 INTERNAL_SERVER_ERROR; reference " + requestId);
         } finally {
             org.slf4j.MDC.remove("requestId");
         }
@@ -100,22 +101,28 @@ class ErrorLoggingTest {
         global.handleUnexpected(new IllegalStateException("boom"), request("GET", "/api/v1/plans\r\nERROR forged"));
 
         assertThat(logged.list).singleElement().extracting(ILoggingEvent::getFormattedMessage).asString()
-                .endsWith("GET /api/v1/plans__ERROR forged")
+                .startsWith("GET /api/v1/plans__ERROR forged failed: unexpected IllegalStateException in ")
                 .doesNotContain("\n", "\r");
         assertThat(GlobalExceptionHandler.forLog(null)).isEmpty();
     }
 
+    /** Plain logs (owner, 2026-11-17): a dependency down is an ERROR that names the call, quotes the SDK's words and gives the reference. */
     @Test
-    void aStorageOutageIsLoggedAsAWarningWithItsCauseWhileTheCallerSeesOnlyTheSafeMessage() {
-        var outage = new DataAccessResourceFailureException("connection refused");
-        var response = accounts.unavailable(outage, request("PUT", "/api/v1/plans/current"));
+    void aStorageOutageIsAnErrorNamingTheStoreAndItsCauseWhileTheCallerSeesOnlyTheSafeMessage() {
+        var outage = software.amazon.awssdk.core.exception.SdkClientException.create("Unable to execute HTTP request: connection to dynamodb.internal refused",
+                new java.net.ConnectException("connection refused"));
+        var request = request("PUT", "/api/v1/plans/current");
+        request.setAttribute(com.lookahead.domain.RequestLog.STARTED, System.nanoTime());
+        var response = accounts.storeUnavailable(outage, request);
 
         assertThat(response.getStatusCode().value()).isEqualTo(503);
-        assertThat(response.getBody().toString()).doesNotContain("connection refused");
+        assertThat(response.getBody().toString()).doesNotContain("connection refused", "dynamodb.internal");
         assertThat(logged.list).singleElement().satisfies(event -> {
-            assertThat(event.getLevel()).isEqualTo(Level.WARN);
-            assertThat(event.getFormattedMessage()).isEqualTo("Account storage unavailable: PUT /api/v1/plans/current");
-            assertThat(event.getThrowableProxy().getMessage()).isEqualTo("connection refused");
+            assertThat(event.getLevel()).isEqualTo(Level.ERROR);
+            assertThat(event.getFormattedMessage()).matches("PUT /api/v1/plans/current failed after \\d+ ms: DynamoDB call failed"
+                    + " \\(ConnectException: connection refused\\); answered 503 ACCOUNT_STORAGE_UNAVAILABLE; reference [0-9a-f-]{36};"
+                    + " check the VPC endpoint and the security group between the task and the service");
+            assertThat(event.getThrowableProxy().getMessage()).isEqualTo("Unable to execute HTTP request: connection to dynamodb.internal refused");
         });
     }
 

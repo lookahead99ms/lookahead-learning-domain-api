@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
-import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * DLV-969 S35: staff use DEV test accounts through a test session inside the DEV gate. The Gateway relays, from its own
@@ -57,10 +56,6 @@ public class DevTestSessions {
     public DevTestSessions(TestAccountStore store, TestAccountPolicy policy, String issuer, String gatewaySecret) {
         this.store = store; this.policy = policy; this.issuer = issuer;
         this.secret = Objects.requireNonNull(gatewaySecret).getBytes(StandardCharsets.UTF_8);
-    }
-    /** PostgreSQL convenience (existing tests and fixtures): the JDBC store on the template's data source. */
-    public DevTestSessions(JdbcTemplate jdbc, TestAccountPolicy policy, String issuer, String gatewaySecret) {
-        this(new JdbcTestAccountStore(jdbc, new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource())), policy, issuer, gatewaySecret);
     }
     private UpgradeMarkers markers;
     /** DLV-969 (owner, 2026-11-04): the "upgraded by" marker on the picker; without it every account shows none. */

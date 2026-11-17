@@ -29,11 +29,6 @@ public class TestAccountsService {
         this.store=store;this.json=json;this.policy=policy;this.purchases=purchases;this.plans=plans;this.staff=staff;this.summaries=summaries;this.catalog=catalog;
         this.clock=clock;
     }
-    /** PostgreSQL convenience (existing tests and fixtures): the JDBC store on the template's data source. */
-    public TestAccountsService(org.springframework.jdbc.core.JdbcTemplate jdbc,ObjectMapper json,TestAccountPolicy policy,ScenarioPurchases purchases,
-            ScenarioPlans plans,StaffAccessService staff,AccessSummaryService summaries,SnapshotValidator catalog){
-        this(new JdbcTestAccountStore(jdbc,new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource())),json,policy,purchases,plans,staff,summaries,catalog);
-    }
     /**
      * {@code expectedRevision} is a {@code Long}: a JSON reader refuses an absent value for a primitive, which answered
      * 400 MALFORMED_JSON; without it the reset now answers 428 REVISION_REQUIRED (DLV-969, 2026-11-04).
@@ -178,7 +173,7 @@ public class TestAccountsService {
                     :"Test account {} reset to its {} preset by account {}",id,request.preset(),actor.accountId()));
         }catch(AccountFailure refused){
             Events.refused(Events.EVENT,"test-account.reset",refused.code()).addKeyValue("account.id",actor==null?null:actor.accountId()).addKeyValue("target.id",id)
-                .log("Reset of test account {} refused: {}",id,refused.code());
+                .log("Reset of test account {} by {} refused: {}",id,Events.actor("Account",actor==null?null:actor.accountId()),refused.code());
             throw refused;
         }
     }

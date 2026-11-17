@@ -7,9 +7,7 @@ import com.lookahead.learning.content.security.AccountPrincipal;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.PlatformTransactionManager;
 
 /**
  * DLV-969 (owner decision 2026-11-03): the owner disables, enables and deletes DEV sign-in accounts from People and
@@ -33,11 +31,7 @@ public class AccountRemovalService {
     private final StaffAccessService staff;
     private final CognitoSignInAccounts signIns;
 
-    public AccountRemovalService(JdbcTemplate jdbc, StaffAccessService staff, ObjectProvider<CognitoSignInAccounts> signIns,
-            PlatformTransactionManager manager) {
-        this(new JdbcAccountRemovalStore(jdbc, manager), staff, signIns);
-    }
-    /** DLV-970: the store (PostgreSQL or DynamoDB) is selected by {@code app.persistence.store}. */
+    /** DLV-970: the DynamoDB store (PostgreSQL retired 2026-11-17). */
     @org.springframework.beans.factory.annotation.Autowired
     public AccountRemovalService(AccountRemovalStore store, StaffAccessService staff, ObjectProvider<CognitoSignInAccounts> signIns) {
         this.store = store; this.staff = staff; this.signIns = signIns.getIfAvailable();
@@ -79,8 +73,8 @@ public class AccountRemovalService {
         if (signIns == null) throw notSignIn();
         var target = store.disable(actor.accountId(), id);
         pool("disable", actor, id, target, () -> { for (String username : target.target().usernames()) signIns.disable(username); });
-        done("disable", actor, id, target, "Owner disabled account {}: no sign-in at all until Enable; its sign-ins ended and the sign-in pool confirmed for {} pool user(s)",
-            "Account {} was already disabled; the sign-in pool call was repeated and confirmed for {} pool user(s)");
+        done("disable", actor, id, target, "{} disabled account {}: no sign-in at all until Enable; its sign-ins ended and the sign-in pool confirmed for {} pool user(s)",
+            "Account {} was already disabled; {} repeated the sign-in pool call, confirmed for {} pool user(s)");
         return new Result(id, "disabled");
     }
 
@@ -90,8 +84,8 @@ public class AccountRemovalService {
         if (signIns == null) throw notSignIn();
         var target = store.enable(actor.accountId(), id);
         pool("enable", actor, id, target, () -> { for (String username : target.target().usernames()) signIns.enable(username); });
-        done("enable", actor, id, target, "Owner enabled account {}: it can sign in again and the sign-in pool confirmed for {} pool user(s)",
-            "Account {} was already enabled; the sign-in pool call was repeated and confirmed for {} pool user(s)");
+        done("enable", actor, id, target, "{} enabled account {}: it can sign in again and the sign-in pool confirmed for {} pool user(s)",
+            "Account {} was already enabled; {} repeated the sign-in pool call, confirmed for {} pool user(s)");
         return new Result(id, "active");
     }
 
@@ -102,8 +96,8 @@ public class AccountRemovalService {
         if (signIns == null) throw notSignIn();
         var target = store.remove(actor.accountId(), id);
         pool("delete", actor, id, target, () -> { for (String username : target.target().usernames()) signIns.remove(username); });
-        done("delete", actor, id, target, "Owner deleted account {}: learning data erased, sign-ins ended and {} sign-in pool user(s) deleted",
-            "Account {} was already deleted; the sign-in pool call was repeated and confirmed for {} pool user(s)");
+        done("delete", actor, id, target, "{} deleted account {}: learning data erased, sign-ins ended and {} sign-in pool user(s) deleted",
+            "Account {} was already deleted; {} repeated the sign-in pool call, confirmed for {} pool user(s)");
         return new Result(id, "removed");
     }
 
@@ -117,22 +111,26 @@ public class AccountRemovalService {
         catch (AccountFailure unconfirmed) {
             Events.failed(Events.EVENT, "account." + action, unconfirmed.code()).addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", id)
                 .addKeyValue("count", target.target().usernames().size())
-                .log("Account {}: {} saved in the database, but the sign-in pool call failed for one of its {} pool user(s); a retry of the same action repeats only the pool calls",
-                    id, action, target.target().usernames().size());
+                .log("Account {}: {} by {} saved in the database, but the sign-in pool call failed for one of its {} pool user(s); a retry of the same action repeats only the pool calls",
+                    id, action, Events.actor("Owner", actor.accountId()), target.target().usernames().size());
             throw unconfirmed;
         }
     }
 
+    /** {@code now} is "{actor} {did} account {id}: … {n} …"; {@code again} is "Account {id} was already …; {actor} … {n} …" (plain logs: the actor in the sentence). */
     private static void done(String action, AccountPrincipal actor, UUID id, Changed target, String now, String again) {
         int users = target.target().usernames().size();
-        Events.success(Events.EVENT, "account." + action).addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", id)
-            .addKeyValue("repeated", !target.changed()).addKeyValue("count", users).log(target.changed() ? now : again, id, users);
+        String owner = Events.actor("Owner", actor.accountId());
+        var line = Events.success(Events.EVENT, "account." + action).addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", id)
+            .addKeyValue("repeated", !target.changed()).addKeyValue("count", users);
+        if (target.changed()) line.log(now, owner, id, users); else line.log(again, id, owner, users);
     }
 
     private static AccountFailure refusal(String action, AccountPrincipal actor, UUID id, AccountFailure refused) {
         if (!POOL_UNAVAILABLE.equals(refused.code()))
             Events.refused(Events.EVENT, "account." + action, refused.code()).addKeyValue("account.id", actor == null ? null : actor.accountId())
-                .addKeyValue("target.id", id).log("{} of account {} refused: {}", Character.toUpperCase(action.charAt(0)) + action.substring(1), id, refused.code());
+                .addKeyValue("target.id", id).log("{} of account {} refused for {}: {}", Character.toUpperCase(action.charAt(0)) + action.substring(1), id,
+                    Events.actor("Account", actor == null ? null : actor.accountId()), refused.code());
         return refused;
     }
 

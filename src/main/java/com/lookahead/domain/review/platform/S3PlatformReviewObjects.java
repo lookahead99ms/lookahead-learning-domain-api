@@ -38,20 +38,20 @@ public final class S3PlatformReviewObjects implements PlatformReviewObjects {
             return Optional.of(new Stored(bytes,version));
         } catch(S3Exception failure) {
             if(failure.statusCode()==404)return Optional.empty();
-            throw unavailable("GetObject",started,failure);
-        } catch(IOException | software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("GetObject",started,failure); }
+            throw unavailable("GetObject",objectKey,started,failure);
+        } catch(IOException | software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("GetObject",objectKey,started,failure); }
     }
     @Override public boolean write(String key, byte[] bytes, String expectedVersion) {
         var request=putRequest(key).ifMatch(expectedVersion).ifNoneMatch(expectedVersion==null?"*":null).build();
         long started=Events.started();
         try { s3.putObject(request,RequestBody.fromBytes(bytes));return true; }
-        catch(S3Exception failure) { if(failure.statusCode()==412||failure.statusCode()==409)return false;throw unavailable("PutObject",started,failure); }
-        catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("PutObject",started,failure); }
+        catch(S3Exception failure) { if(failure.statusCode()==412||failure.statusCode()==409)return false;throw unavailable("PutObject",request.key(),started,failure); }
+        catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("PutObject",request.key(),started,failure); }
     }
     @Override public void put(String key,byte[] bytes) {
         long started=Events.started();
         try { s3.putObject(putRequest(key).build(),RequestBody.fromBytes(bytes)); }
-        catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("PutObject",started,failure); }
+        catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("PutObject",key(key),started,failure); }
     }
     private PutObjectRequest.Builder putRequest(String key) {
         return PutObjectRequest.builder().bucket(bucket).key(key(key)).expectedBucketOwner(owner)
@@ -75,7 +75,7 @@ public final class S3PlatformReviewObjects implements PlatformReviewObjects {
                 token=next;
             } while(token!=null);
             return List.copyOf(keys);
-        } catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("ListObjectsV2",started,failure); }
+        } catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("ListObjectsV2",directory,started,failure); }
     }
     /** DLV-971: records sit in day folders (records/YYYY/MM/DD/), so the store lists without a delimiter. */
     @Override public List<String> listAll(String requestedPrefix) {
@@ -96,20 +96,21 @@ public final class S3PlatformReviewObjects implements PlatformReviewObjects {
                 token=next;
             } while(token!=null);
             return List.copyOf(keys);
-        } catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("ListObjectsV2",started,failure); }
+        } catch(software.amazon.awssdk.core.exception.SdkException failure) { throw unavailable("ListObjectsV2",directory,started,failure); }
     }
     @Override public void delete(String key) {
         long started=Events.started();
         try {s3.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key(key)).expectedBucketOwner(owner).build());}
-        catch(software.amazon.awssdk.core.exception.SdkException failure) {throw unavailable("DeleteObject",started,failure);}
+        catch(software.amazon.awssdk.core.exception.SdkException failure) {throw unavailable("DeleteObject",key(key),started,failure);}
     }
     private static UncheckedIOException unavailable() {return new UncheckedIOException(new IOException("Review object storage unavailable"));}
     /**
      * Failures only get a {@code lookahead.upstream} line: one review page reads up to 30 day files, so a line per
-     * successful call would bury the rest. The line has the exception type and S3's status and error code.
+     * successful call would bury the rest. The line has the exception type, S3's status and error code and (plain logs,
+     * owner 2026-11-17) the bucket and key, so a permission refusal names the object it was refused on.
      */
-    private static UncheckedIOException unavailable(String operation,long started,Exception failure) {
-        Events.upstreamFailed("S3",operation,started,failure);
+    private UncheckedIOException unavailable(String operation,String key,long started,Exception failure) {
+        Events.upstreamFailed("S3",operation,bucket+"/"+key,started,failure);
         return unavailable();
     }
 }

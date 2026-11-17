@@ -18,10 +18,6 @@ public class ScenarioPurchases {
     public ScenarioPurchases(ScenarioPurchaseStore store, ObjectMapper json, TestAccountPolicy policy) {
         this.store=store; this.json=json; this.policy=policy;
     }
-    /** PostgreSQL convenience (existing tests and fixtures): the JDBC store on the template. */
-    public ScenarioPurchases(org.springframework.jdbc.core.JdbcTemplate jdbc, ObjectMapper json, TestAccountPolicy policy) {
-        this(new JdbcScenarioPurchaseStore(jdbc,json),json,policy);
-    }
     public void populate(UUID account, UUID actor, LearnerScenario scenario, Instant now) {
         policy.requireEnabled(); // Local seed, or DEV test accounts (DLV-969 S35)
         if (scenario.membership() == null) return;

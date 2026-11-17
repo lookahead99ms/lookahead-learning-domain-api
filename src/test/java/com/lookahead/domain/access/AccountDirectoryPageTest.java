@@ -3,15 +3,15 @@ import com.lookahead.domain.security.IdentitySettings;
 import com.lookahead.learning.content.exception.AccountFailure;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.jdbc.core.JdbcTemplate;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 class AccountDirectoryPageTest {
  @Test void rejectsInvalidQueriesAndBoundsBeforeDatabaseAccess() {
-  var jdbc=mock(JdbcTemplate.class);var directory=new AccountDirectory(mock(ObjectProvider.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)),jdbc);
+  var store=mock(AccountDirectoryStore.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));var directory=new AccountDirectory(mock(ObjectProvider.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)),store);
   for(String query:new String[]{null,"x".repeat(255),"a\nb"})assertThatThrownBy(()->directory.list(query,0)).isInstanceOf(AccountFailure.class);
   for(int page:new int[]{-1,100001})assertThatThrownBy(()->directory.list("",page)).isInstanceOf(AccountFailure.class);
-  verifyNoInteractions(jdbc);
+  verifyNoInteractions(store);
+  when(store.list("",0)).thenReturn(new AccountDirectory.Page(java.util.List.of(),0,false));
   assertThat(directory.list("",0).accounts()).isEmpty();assertThat(directory.list("",0).hasNext()).isFalse();
  }
  @Test void localDirectoryUsesPrivateAuthenticationAndRejectsMalformedUpstreamPages() throws Exception {
@@ -27,8 +27,8 @@ class AccountDirectoryPageTest {
   try {
    var provider=mock(ObjectProvider.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));var origin="http://127.0.0.1:"+server.getAddress().getPort();
    when(provider.getIfAvailable()).thenReturn(new IdentitySettings(origin,origin,"gateway","synthetic-verifier-secret-32-chars",java.time.Duration.ofSeconds(2),java.time.Duration.ofSeconds(2)));
-   var jdbc=mock(JdbcTemplate.class);var directory=new AccountDirectory(provider,jdbc);
-   assertThat(directory.list("a+b",2).accounts()).isEmpty();verifyNoInteractions(jdbc);
+   var store=mock(AccountDirectoryStore.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));var directory=new AccountDirectory(provider,store);
+   assertThat(directory.list("a+b",2).accounts()).isEmpty();verifyNoInteractions(store);
    for(String malformed:new String[]{"{", "null", "{\"accounts\":null,\"page\":2}","{\"accounts\":[],\"page\":1}","{\"accounts\":[{}],\"page\":2}","x".repeat(262145)}) {
     body.set(malformed);assertThatThrownBy(()->directory.list("a+b",2)).isInstanceOf(AccountFailure.class);
    }

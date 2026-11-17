@@ -4,7 +4,6 @@ import com.lookahead.domain.membership.AccessSummaryService;
 import com.lookahead.domain.testaccounts.TestAccountPolicy;
 import com.lookahead.learning.content.security.AccountPrincipal;
 import java.util.*;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 /** Owner-only directory: Identity owns identity fields; Domain owns roles and access. */
@@ -42,11 +41,7 @@ public class AdminAccountDirectory {
     private final AdminDirectoryStore store;
     private final TestAccountPolicy localPolicy;
     private final AccountRemovalService removal;
-    public AdminAccountDirectory(AccountDirectory directory,StaffAccessService access,StaffAccessRepository staff,
-            AccessSummaryService summaries,JdbcTemplate jdbc,TestAccountPolicy localPolicy,AccountRemovalService removal) {
-        this(directory,access,staff,summaries,new JdbcAdminDirectoryStore(jdbc),localPolicy,removal);
-    }
-    /** DLV-970: the store (PostgreSQL or DynamoDB) is selected by {@code app.persistence.store}. */
+    /** DLV-970: the DynamoDB store (PostgreSQL retired 2026-11-17). */
     @org.springframework.beans.factory.annotation.Autowired
     public AdminAccountDirectory(AccountDirectory directory,StaffAccessService access,StaffAccessRepository staff,
             AccessSummaryService summaries,AdminDirectoryStore store,TestAccountPolicy localPolicy,AccountRemovalService removal) {

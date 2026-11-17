@@ -5,7 +5,6 @@ import com.lookahead.domain.access.AccountAdmissionService.Waiting;
 import com.lookahead.domain.cloud.CloudAccountItems;
 import com.lookahead.domain.cloud.CloudAdmissionCleanup;
 import com.lookahead.domain.cloud.DynamoCloudAccounts;
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoItems;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.learning.content.exception.AccountFailure;
@@ -15,7 +14,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
@@ -26,7 +24,6 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
  * waiting projection removed, the directory updated and the insert-only admit event.
  */
 @Repository
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoAdmissionStore implements AdmissionStore {
     private final DynamoCloudAccounts accounts;
 

@@ -1,38 +1,18 @@
 package com.lookahead.domain.review.platform;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.core.JdbcTemplate;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.*;
 
+/** The kind decides the counter: support requests have their own, every other kind (and null) numbers reviews. */
 class ReviewRecordNumbersTest {
-    @Test void selectsOnlyTheTwoKnownSequencesAsBoundValues() {
-        var jdbc = mock(JdbcTemplate.class);
-        when(jdbc.queryForObject("SELECT nextval(?::regclass)", Long.class, "review_record_seq")).thenReturn(12L);
-        when(jdbc.queryForObject("SELECT nextval(?::regclass)", Long.class, "support_request_seq")).thenReturn(34L);
-        var numbers = new ReviewRecordNumbers.Jdbc(jdbc);
-        assertThat(numbers.next("review")).isEqualTo(12L);
-        assertThat(numbers.next("request")).isEqualTo(34L);
-        verify(jdbc).queryForObject("SELECT nextval(?::regclass)", Long.class, "review_record_seq");
-        verify(jdbc).queryForObject("SELECT nextval(?::regclass)", Long.class, "support_request_seq");
-        verifyNoMoreInteractions(jdbc);
+    @Test void onlyTheRequestKindSelectsTheSupportRequestCounter() {
+        assertThat(ReviewRecordNumbers.Dynamo.partition(PlatformReviewModels.KIND_REQUEST)).isEqualTo("SEQUENCE#support-request");
+        for (String kind : new String[]{null, "review", "REQUEST", "other_sequence", "request'); DROP TABLE review_status_events; --"})
+            assertThat(ReviewRecordNumbers.Dynamo.partition(kind)).as(kind).isEqualTo("SEQUENCE#review-record");
     }
-
-    @Test void unrecognizedKindsCannotBecomeSqlOrSelectAnotherSequence() {
-        var jdbc = mock(JdbcTemplate.class);
-        when(jdbc.queryForObject("SELECT nextval(?::regclass)", Long.class, "review_record_seq")).thenReturn(7L);
-        var numbers = new ReviewRecordNumbers.Jdbc(jdbc);
-        // Preserve the existing default-to-review behavior, including for null.
-        for (String kind : new String[]{null, "REQUEST", "other_sequence", "request'); DROP TABLE review_status_events; --"})
-            assertThat(numbers.next(kind)).isEqualTo(7L);
-        verify(jdbc, times(4)).queryForObject("SELECT nextval(?::regclass)", Long.class, "review_record_seq");
-        verifyNoMoreInteractions(jdbc);
-    }
-
-    @Test void nullDatabaseResultKeepsTheExistingZeroFallback() {
-        var jdbc = mock(JdbcTemplate.class);
-        assertThat(new ReviewRecordNumbers.Jdbc(jdbc).next("request")).isZero();
-        verify(jdbc).queryForObject("SELECT nextval(?::regclass)", Long.class, "support_request_seq");
-        verifyNoMoreInteractions(jdbc);
+    @Test void theInMemoryCounterNumbersEachKindFromOne() {
+        var numbers = new ReviewRecordNumbers.InMemory();
+        assertThat(numbers.next("review")).isEqualTo(1); assertThat(numbers.next("review")).isEqualTo(2);
+        assertThat(numbers.next(PlatformReviewModels.KIND_REQUEST)).isEqualTo(1);
     }
 }

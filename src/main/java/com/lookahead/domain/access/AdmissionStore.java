@@ -9,7 +9,7 @@ import java.util.function.Supplier;
 
 /** DLV-970: the waiting list and the admission write of {@link AccountAdmissionService} on one store. */
 public interface AdmissionStore {
-    /** Runs {@code work} in one store transaction (PostgreSQL); on DynamoDB the admission itself is the transaction. */
+    /** Runs {@code work}; on DynamoDB the admission itself is the transaction, so the default runs it as it is. */
     default <T> T transaction(Supplier<T> work) { return work.get(); }
     /** Waiting accounts (not admitted, not disabled or deleted), oldest request first, with duplicate count and sign-in methods. */
     List<Waiting> waiting();

@@ -27,8 +27,8 @@ import org.springframework.stereotype.Component;
  * sweeps repeat every 4 hours while the task runs (scheduling is enabled in cloud mode only; a local Domain sweeps at
  * each start). Each sweep is independent: a failure in one is logged and the next still runs. The owner can also run
  * one job, or all three, at once ({@link #runNow}, {@code POST /api/v1/sweeps/run}) instead of waiting for the cadence.
- * DLV-970: a fourth sweep, {@code maintenance}, runs every job registered with {@link MaintenanceJobs} (in dynamodb mode
- * the study-plan document cleanups; nothing is registered in postgresql mode), each in bounded pages, each guarded.
+ * DLV-970: a fourth sweep, {@code maintenance}, runs every job registered with {@link MaintenanceJobs} (the study-plan
+ * document cleanups, the erasure queue, the sign-in records), each in bounded pages, each guarded.
  */
 @Component
 @Profile("accounts")
@@ -162,7 +162,7 @@ public class RuntimeSweeps {
         Events.success(Events.EVENT, "sweep").addKeyValue("manual", true).addKeyValue("account.id", actorId).addKeyValue("job", job.id)
                 .addKeyValue("support.closed", result.supportRequestsClosed()).addKeyValue("inbox.merged", result.inboxMerged())
                 .addKeyValue("admissions.removed", result.admissionsRemoved()).addKeyValue("maintenance.jobs", result.maintenance().size())
-                .log("The owner ran the {} sweep now: {} support request(s) closed, inbox {}, {} waiting account(s) removed{}", job.id,
+                .log("{} ran the {} sweep now: {} support request(s) closed, inbox {}, {} waiting account(s) removed{}", Events.actor("Owner", actorId), job.id,
                         result.supportRequestsClosed() == null ? "no" : result.supportRequestsClosed(),
                         result.inboxMerged() == null ? "not touched" : result.inboxMerged() ? "merged into plan version " + result.inboxResult() : result.inboxResult(),
                         result.admissionsRemoved() == null ? "no" : result.admissionsRemoved(), maintenanceSummary(result.maintenance()));

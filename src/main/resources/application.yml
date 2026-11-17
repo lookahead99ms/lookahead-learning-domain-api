@@ -5,15 +5,6 @@ spring:
     include: accounts,resource
   config:
     import: optional:configtree:${LOOKAHEAD_SECRETS_DIRECTORY:/run/secrets/}
-  flyway:
-    enabled: false
-  datasource:
-    url: ${LOOKAHEAD_DOMAIN_JDBC_URL}
-    password: ${LOOKAHEAD_DOMAIN_DB_PASSWORD:}
-    hikari:
-      maximum-pool-size: 6
-      connection-timeout: 3000
-      validation-timeout: 2000
   servlet:
     # DLV-928 platform review uploads: 6 images of at most 5 MB, 20 MB of images per item.
     multipart:
@@ -25,6 +16,14 @@ spring:
       mail.smtp.connectiontimeout: 3000
       mail.smtp.timeout: 5000
       mail.smtp.writetimeout: 5000
+# Plain logs (owner, 2026-11-17): every line is "<UTC timestamp with millis> <LEVEL padded to 5> <sentence>", followed by
+# two spaces and "[request <first 8 chars of the request id>]" only while a request is being served (MDC requestId); a
+# stack trace follows the line only for ERROR lines of the unexpected-failure handlers. No logger name, thread, PID or
+# service name; the same pattern in every profile. The %replace drops the bracket when the MDC value is empty, so a line
+# outside a request ends after the sentence with no trailing spaces. PlainLoggingTest renders this very pattern.
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSS'Z', UTC} %-5level %msg%replace(  [request %.-8X{requestId}]){'  \\[request \\]$', ''}%n%ex"
 server:
   address: ${LOOKAHEAD_BIND_ADDRESS:127.0.0.1}
   port: ${PORT:8080}
@@ -57,10 +56,7 @@ app:
     manifest: ${LOOKAHEAD_AUTHOR_REVIEW_MANIFEST:}
   version: "@project.version@"
   deployment-environment: ${LOOKAHEAD_ENVIRONMENT}
-  # DLV-970: the one store this process uses. postgresql (default) keeps today's RDS/Local PostgreSQL; dynamodb
-  # selects the four approved tables and creates no JDBC data source. Any other value refuses startup.
-  persistence:
-    store: ${LOOKAHEAD_PERSISTENCE_STORE:postgresql}
+  # DLV-970: DynamoDB is the one store of this process (PostgreSQL served DEV until 2026-11-17 and was retired).
   dynamodb:
     region: ${AWS_REGION:}
     # Local only: the loopback DynamoDB Local endpoint, e.g. http://127.0.0.1:4400. Must be empty in dev and prod.
@@ -126,9 +122,6 @@ management:
       probes:
         enabled: true
       show-details: never
-      # DLV-970: the readiness group names both stores' indicators; only the selected store registers one, so
-      # membership is not validated (Boot would otherwise refuse to start over the absent indicator).
-      validate-group-membership: false
       group:
         readiness:
-          include: readinessState,domainDatabase,dynamodb,contentPublication
+          include: readinessState,dynamodb,contentPublication

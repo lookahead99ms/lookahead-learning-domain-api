@@ -16,14 +16,9 @@ class DomainActivationConfigurationTest {
     @TempDir Path directory;
 
     ApplicationContextRunner configuration(String mode) throws Exception {
-        var fixture = new CloudRuntimeGuardTest();
-        fixture.directory = directory;
-        String jdbc = fixture.valid().getProperty("spring.datasource.url");
         return new ApplicationContextRunner().withInitializer(new ConfigDataApplicationContextInitializer())
                 .withPropertyValues("spring.config.import=optional:configtree:/nonexistent-domain-activation-contract/",
                         "LOOKAHEAD_ENVIRONMENT=" + mode,
-                        "LOOKAHEAD_DOMAIN_JDBC_URL=" + jdbc,
-                        "LOOKAHEAD_DOMAIN_DB_PASSWORD=" + "A".repeat(48),
                         "LOOKAHEAD_DOMAIN_GATEWAY_SECRET=synthetic-domain-gateway-secret-at-least-32",
                         "APP_OAUTH_CLIENT_ID=SyntheticApplicationClient123",
                         "LOOKAHEAD_COGNITO_ISSUER=https://cognito-idp.us-east-2.amazonaws.com/us-east-2_SyntheticPool",
@@ -49,8 +44,7 @@ class DomainActivationConfigurationTest {
             assertThat(environment.getProperty("management.server.port", Integer.class)).isEqualTo(8081);
             assertThat(environment.getProperty("management.server.ssl.enabled", Boolean.class)).isFalse();
             assertThat(environment.getProperty("management.endpoint.health.group.readiness.include"))
-                    .isEqualTo("readinessState,domainDatabase,dynamodb,contentPublication");
-            assertThat(environment.getProperty("spring.flyway.enabled", Boolean.class)).isFalse();
+                    .isEqualTo("readinessState,dynamodb,contentPublication");
             assertThat(environment.getProperty("app.local-test.seed-enabled", Boolean.class)).isFalse();
             assertThat(environment.getProperty("app.local-test.author-enabled", Boolean.class)).isFalse();
             assertThatCode(() -> CloudRuntimeGuard.validate(environment)).doesNotThrowAnyException();

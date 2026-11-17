@@ -1,9 +1,7 @@
 package com.lookahead.domain.sweeps;
 
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.learning.content.repository.PlanMaintenanceJobs;
 import java.util.Objects;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /**
@@ -12,7 +10,6 @@ import org.springframework.stereotype.Component;
  * counts, so the page answers {@link MaintenanceJobs.Page#NOTHING} and the next sweep continues where it left off.
  */
 @Component
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoPlanMaintenanceJobs implements PlanMaintenanceJobs {
     private final MaintenanceJobs jobs;
 

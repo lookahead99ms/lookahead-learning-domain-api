@@ -16,9 +16,9 @@ import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.ResourceNotFoundException;
 
 /**
- * The {@code dynamodb} readiness indicator, registered by {@link DynamoPersistenceConfiguration} in dynamodb mode:
+ * The {@code dynamodb} readiness indicator, registered by {@link DynamoPersistenceConfiguration}:
  * four bounded strong GetItem probes (one per table) and the data-version watermark against the release's
- * requirement. It never writes, migrates or falls back to PostgreSQL; a store behind the catalog reports
+ * requirement. It never writes or migrates; a store behind the catalog reports
  * DATA_VERSION_BEHIND until the migration task has run.
  */
 public final class DynamoReadiness implements HealthIndicator {

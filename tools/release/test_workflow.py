@@ -327,16 +327,9 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertEqual(('choice', ['1', '0']), (self.wf['on']['workflow_dispatch']['inputs']['desired_count']['type'], self.wf['on']['workflow_dispatch']['inputs']['desired_count']['options']))
         self.assertEqual("${{ inputs.desired_count || '1' }}", self.wf['env']['DEPLOY_DESIRED_COUNT'])
         # DLV-968 (user 2026-11-05): DEV has no emergencies, so the overnight blackout has no override input.
-        # DLV-970: Domain alone carries the persistence store switch (as-configured keeps deploy-config.json's value).
-        store = {'persistence_store'} if APP == 'domain' else set()
-        self.assertEqual({'release_version', 'desired_count'} | store, set(self.wf['on']['workflow_dispatch']['inputs']))
-        if store:
-            for trigger in ('workflow_dispatch', 'workflow_call'):
-                spec = self.wf['on'][trigger]['inputs']['persistence_store']
-                self.assertEqual((False, 'as-configured'), (spec['required'], spec['default']))
-            self.assertEqual(('choice', ['as-configured', 'postgresql', 'dynamodb']), (self.wf['on']['workflow_dispatch']['inputs']['persistence_store']['type'],
-                                                                                        self.wf['on']['workflow_dispatch']['inputs']['persistence_store']['options']))
-            self.assertEqual("${{ inputs.persistence_store || 'as-configured' }}", self.wf['env']['DEPLOY_PERSISTENCE_STORE'])
+        # DLV-970 (2026-11-17): the Domain's persistence store switch went with PostgreSQL; no application carries one.
+        self.assertEqual({'release_version', 'desired_count'}, set(self.wf['on']['workflow_dispatch']['inputs']))
+        self.assertNotIn('DEPLOY_PERSISTENCE_STORE', self.wf['env'])
         self.assertNotIn('DEPLOY_EMERGENCY', self.wf['env'])
         self.assertEqual({'contents': 'read'}, self.wf['permissions'])
         self.assertEqual({'group': 'deploy-dev', 'cancel-in-progress': False}, self.wf['concurrency'])

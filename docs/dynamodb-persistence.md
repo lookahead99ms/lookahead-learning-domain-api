@@ -1,25 +1,25 @@
 # DynamoDB persistence
 
-DLV-970. Since 2026-11-10 the Domain runs on either store, chosen at startup by `app.persistence.store`
-(`LOOKAHEAD_PERSISTENCE_STORE`): `postgresql` (the default and today's running backend) or `dynamodb`. In
-dynamodb mode every aggregate has a DynamoDB store next to its PostgreSQL one (same interface, selected by the
-property), the whole application context starts without a JDBC bean, and the data is prepared by the numbered
-migration steps below. AWS DEV cutover remains user-run (Infra tables stack, six-role IAM transition, the
-Domain's `07 · Migrate DEV data`, then a deploy with the store parameter). The sections that follow this
-summary describe the library layer (2026-11-02 to 2026-11-04) and remain accurate for the primitives.
+DLV-970. DynamoDB is the Domain's one store. From 2026-11-10 to 2026-11-17 the Domain ran on either store,
+chosen at startup by `app.persistence.store`; DEV was cut over on 2026-11-17 (`07 · Migrate DEV data` to data
+version 5, then a deploy on `dynamodb`) and PostgreSQL was retired the same day with the switch, the `Jdbc*`
+stores, Flyway and the SQL migrations (owner: "delete all Postgres things"; a final RDS snapshot is kept). Every
+aggregate has one `Dynamo*` store behind its interface, the application context has no data source or JDBC
+bean, and the data is prepared by the numbered migration steps below. The sections that follow this summary
+describe the library layer (2026-11-02 to 2026-11-04) and remain accurate for the primitives.
 
-## Store adapters (2026-11-10)
+## Store adapters (2026-11-10; the PostgreSQL column of this table retired 2026-11-17)
 
-| Area | Interface(s) | PostgreSQL | DynamoDB | Item families |
-| --- | --- | --- | --- | --- |
-| Accounts, identities, sessions, admission, merge | `CloudSignInRegistry` (abstract), `CloudMergeService` (abstract), `AdmissionCleanupStore`, `AdmissionStore`, `AccountRemovalStore`, `AccountStore` | `Jdbc*` (SQL moved verbatim) | `DynamoCloudSignInRegistry`, `DynamoCloudMergeService`, `DynamoCloudAccounts`, `Dynamo*Store`, `DynamoSignInRecordRetirement` | `ACCOUNT#id / META·CONTROL·IDENTITY#…·SESSION#…·CHALLENGE#…·PREFERENCES·LINKS·GRANT#topic`, `IDENTITY#issuer#subject / BINDING`, `EMAIL#… / META·ACCOUNT#id·MERGE#…`, `MERGE#digest / TOKEN`, `FAMILY#digest / BINDING`, `DIRECTORY#00 / PERSON#…`, admission, merge and removal events in Administrator Audit Events |
-| Staff access, labels, directory, maintenance | `StaffAccessRepository` (abstract), `StaffAliasStore`, `AccountDirectoryStore`, `AdminDirectoryStore`, `AccountMaintenanceStore` | `Jdbc*` | `Dynamo*` + `DynamoStaffAliasStore` library | `STAFFACCESS / ASSIGNMENT#id`, `ACCOUNT#id / STAFF`, `INVITE#email / ASSIGNMENT`, `STAFF# / EVENT#…` (insert-only), labels `STAFF_ALIAS#…` |
-| Plans, versions, progress, receipts, lifecycle, free ledgers, support receipts | `PlanRepository`, `PlanLifecycleStore`, `FreePlanLedgerStore`, `SupportReceiptRepository`, `PlanErasure` | `Jdbc*` | `DynamoPlanRepository` with `DynamoOwnerTransactionManager` (one PartiQL transaction per `@Transactional` unit, `ACCOUNT#id / META` revision as the owner lock), documents ≤200 KiB inline else `StudyPlanDocumentStore` | `ACCOUNT#id / PLAN#id·PLANLIST#…·MUTATION#key·SUPPORT#key·LIFECYCLE#…·FREECREATE#…·FREEDELETE#…`, `PLAN#owner#id / VERSION#…·ACTIVITY#…`, `WORK#PLAN-PURGE#00 / …` |
-| Memberships, catalog, sales, mock gateway, access summary | `MembershipStore`, `AccessSummaryStore`, `MembershipGrants`, `MockPaymentStore` | `Jdbc*` | `Dynamo*` | `CATALOG / PLAN#id·META`, `SALES / SALE#…·META`, `ACCOUNT#id / MEMBERSHIP#id`, `PURCHASE#id / ACCOUNT`, `PROVIDEREVENT#ns#id / RECEIPT`, `MOCKPAYMENT#…`, audit `MEMBERSHIP#subject / EVENT#…` |
-| Test accounts, scenarios, erasure | `TestAccountStore`, `ScenarioPurchaseStore`, `AccountDataErasure` | `Jdbc*` | `Dynamo*` | `ACCOUNT#id / TEST·CREATION`, `TESTACCOUNTS#00 / …`, `CREATOR#id / CREATE#key`, reset receipts `TEST#id / RESET#key` (audit) |
-| Author reviews, record numbers, status history | `AuthorReviewStore`, `ReviewRecordNumbers`, `ReviewStatusHistory` | `Jdbc*` | `Dynamo*` | `ACCOUNT#actor / REVIEW#artifact·REVIEWKEY#key`, audit `REVIEW#actor#artifact / EVENT#seq#id`, `SEQUENCE#kind / COUNTER`, `RECORD#kind#id / STATUS#…` |
-| Sweeps | `MaintenanceJobs` | — | `RegisteredMaintenanceJobs`: `study-plan-documents`, `retired-study-plan-documents`, `plan-purge`, `account-erasure` (queue `WORK#ACCOUNT-ERASURE#00`) | — |
-| HTTP mapping | `AccountErrorHandler`, `DomainStorageFailureFilter` | `DataAccessException` → 503 | `DynamoWrites.Unavailable` and SDK failures → 503 `ACCOUNT_STORAGE_UNAVAILABLE`; `DynamoWrites.Conflict` → 409 `REVISION_CONFLICT` | — |
+| Area | Interface(s) | DynamoDB | Item families |
+| --- | --- | --- | --- |
+| Accounts, identities, sessions, admission, merge | `CloudSignInRegistry` (abstract), `CloudMergeService` (abstract), `AdmissionCleanupStore`, `AdmissionStore`, `AccountRemovalStore`, `AccountStore` | `DynamoCloudSignInRegistry`, `DynamoCloudMergeService`, `DynamoCloudAccounts`, `Dynamo*Store`, `DynamoSignInRecordRetirement` | `ACCOUNT#id / META·CONTROL·IDENTITY#…·SESSION#…·CHALLENGE#…·PREFERENCES·LINKS·GRANT#topic`, `IDENTITY#issuer#subject / BINDING`, `EMAIL#… / META·ACCOUNT#id·MERGE#…`, `MERGE#digest / TOKEN`, `FAMILY#digest / BINDING`, `DIRECTORY#00 / PERSON#…`, admission, merge and removal events in Administrator Audit Events |
+| Staff access, labels, directory, maintenance | `StaffAccessRepository` (abstract), `StaffAliasStore`, `AccountDirectoryStore`, `AdminDirectoryStore`, `AccountMaintenanceStore` | `Dynamo*` + `DynamoStaffAliasStore` library | `STAFFACCESS / ASSIGNMENT#id`, `ACCOUNT#id / STAFF`, `INVITE#email / ASSIGNMENT`, `STAFF# / EVENT#…` (insert-only), labels `STAFF_ALIAS#…` |
+| Plans, versions, progress, receipts, lifecycle, free ledgers, support receipts | `PlanRepository`, `PlanLifecycleStore`, `FreePlanLedgerStore`, `SupportReceiptRepository`, `PlanErasure` | `DynamoPlanRepository` with `DynamoOwnerTransactionManager` (one PartiQL transaction per `@Transactional` unit, `ACCOUNT#id / META` revision as the owner lock), documents ≤200 KiB inline else `StudyPlanDocumentStore` | `ACCOUNT#id / PLAN#id·PLANLIST#…·MUTATION#key·SUPPORT#key·LIFECYCLE#…·FREECREATE#…·FREEDELETE#…`, `PLAN#owner#id / VERSION#…·ACTIVITY#…`, `WORK#PLAN-PURGE#00 / …` |
+| Memberships, catalog, sales, mock gateway, access summary | `MembershipStore`, `AccessSummaryStore`, `MembershipGrants`, `MockPaymentStore` | `Dynamo*` | `CATALOG / PLAN#id·META`, `SALES / SALE#…·META`, `ACCOUNT#id / MEMBERSHIP#id`, `PURCHASE#id / ACCOUNT`, `PROVIDEREVENT#ns#id / RECEIPT`, `MOCKPAYMENT#…`, audit `MEMBERSHIP#subject / EVENT#…` |
+| Test accounts, scenarios, erasure | `TestAccountStore`, `ScenarioPurchaseStore`, `AccountDataErasure` | `Dynamo*` | `ACCOUNT#id / TEST·CREATION`, `TESTACCOUNTS#00 / …`, `CREATOR#id / CREATE#key`, reset receipts `TEST#id / RESET#key` (audit) |
+| Author reviews, record numbers, status history | `AuthorReviewStore`, `ReviewRecordNumbers`, `ReviewStatusHistory` | `Dynamo*` | `ACCOUNT#actor / REVIEW#artifact·REVIEWKEY#key`, audit `REVIEW#actor#artifact / EVENT#seq#id`, `SEQUENCE#kind / COUNTER`, `RECORD#kind#id / STATUS#…` |
+| Sweeps | `MaintenanceJobs` | `RegisteredMaintenanceJobs`: `study-plan-documents`, `retired-study-plan-documents`, `plan-purge`, `account-erasure` (queue `WORK#ACCOUNT-ERASURE#00`) | — |
+| HTTP mapping | `AccountErrorHandler`, `DomainStorageFailureFilter` | `DynamoWrites.Unavailable` and SDK failures → 503 `ACCOUNT_STORAGE_UNAVAILABLE`; `DynamoWrites.Conflict` → 409 `REVISION_CONFLICT` | — |
 
 Author review submission reads the idempotency receipt before the artifact head.
 Because two strongly consistent reads are not one snapshot, a conflicting head
@@ -36,19 +36,18 @@ each with one dynamodb-mode adapter (`DynamoAccountRecords`, `DynamoPlanFacts`, 
 (schemaVersion 1, revision, lastPlanNumber, createdAt) is the one item every owner-scoped transaction fences on;
 the account aggregate creates it at first contact and the test-account store on creation.
 
-Not on DynamoDB: the `CloudAccountAdministration` command-line tool (the owner identity admits
-itself at first contact, or at its next sign-in when `OWNER / ROOT` was written after that contact;
-`resolve-password-change` has no DynamoDB counterpart yet) and the Local
-audit purge (an insert-only audit has no equivalent). The author flag is bound from Protected
-Owner Identity at first contact rather than re-checked on every request. Cross-lane facts for the
-merge page: `MembershipFacts.hasPaidMembership` and `StudyPlanFacts.cards` (`DynamoPlanFacts`).
+Retired with PostgreSQL (2026-11-17), without a DynamoDB counterpart: the `CloudAccountAdministration` command-line
+tool (the owner identity admits itself at first contact, or at its next sign-in when `OWNER / ROOT` was written after
+that contact; every other account action is an owner endpoint; `resolve-password-change` has no caller) and the Local
+audit purge (an insert-only audit has nothing to purge).
 
 Data steps shipped by this build (`DomainDynamoCatalog.REQUIRED = 5`): 1 `base-tables`, 2 `staff-alias-counters`,
 3 `membership-catalog` (the ten catalog plans and `CATALOG / META`; a replay accepts the seeded ids), 4
 `review-record-counters` (`SEQUENCE#review-record` and `SEQUENCE#support-request` at 0), 5 `account-access-import`
-(the real PostgreSQL accounts with their identities, admissions, roles and labels, written in the application's own
-item shapes with their PostgreSQL ids; the record counters continue from the PostgreSQL sequence values; see
-[docs/dynamodb-runtime.md](dynamodb-runtime.md)).
+(on DEV, run 44162520740 of 2026-11-17: the real PostgreSQL accounts with their identities, admissions, roles and
+labels, written in the application's own item shapes with their PostgreSQL ids, the record counters continued from
+the sequence values; since the retirement of the source the step only writes its empty result marker on a store
+without one and verifies the accounts an existing marker names; see [docs/dynamodb-runtime.md](dynamodb-runtime.md)).
 
 Validation (2026-11-10, integrated tree): `./mvnw -o -q test-compile` clean; the Infra DynamoDB Local wrapper with
 every `*Dynamo*Test` plus the foundation tests: 340 tests, 0 failures, 1 environment-gated skip; line coverage
@@ -62,19 +61,16 @@ end-to-end run are recorded in the Content evidence folder for this batch.
 ## Library foundation (2026-11-02)
 
 The persistence library (`persistence/dynamodb`) was delivered first and the store adapters on top of it
-on 2026-11-10; everything below is wired by `DynamoPersistenceConfiguration` and the dynamodb-conditional
-beans in `dynamodb` mode. Java SDK v2 at the repository's 2.55.12; the dependency is `dynamodb` only.
+on 2026-11-10; everything below is wired by `DynamoPersistenceConfiguration` and the `Dynamo*` beans,
+unconditional since the PostgreSQL retirement of 2026-11-17. Java SDK v2 at the repository's 2.55.12; the dependency is `dynamodb` only.
 
-## Runtime selection, migration tooling and the local store (2026-11-10)
+## Runtime settings, migration tooling and the local store (2026-11-10, switch retired 2026-11-17)
 
-The store is chosen once at startup by `app.persistence.store` (`LOOKAHEAD_PERSISTENCE_STORE`):
-`postgresql` (the default, today's RDS and Local PostgreSQL) or `dynamodb`. `PersistenceStore.Check`
-refuses any other value, so a typo cannot start a Domain with no store. With `postgresql` the
-Hikari data source, `JdbcTemplate`, transaction manager and the `domainDatabase` health check exist;
-with `dynamodb` none of them do and `DynamoPersistenceConfiguration` supplies the `DynamoDbClient`,
-`DynamoTableNames`, `DynamoSettings`, the release `DynamoDataRequirement` and the `dynamodb`
-readiness indicator. The readiness group lists both indicator names; the selected store contributes one.
-A DynamoDB failure never falls back to PostgreSQL.
+`DynamoPersistenceConfiguration` supplies the `DynamoDbClient`, `DynamoTableNames`, `DynamoSettings`, the
+release `DynamoDataRequirement` and the `dynamodb` readiness indicator, unconditionally; the readiness group
+names `readinessState`, `dynamodb` and `contentPublication`. The store switch (`app.persistence.store`,
+`PersistenceStore.Check`, the `domainDatabase` indicator) went with PostgreSQL; a DynamoDB failure has nothing
+to fall back to and answers 503 until the store recovers.
 
 `DynamoSettings`: Local needs `app.dynamodb.endpoint` (`LOOKAHEAD_DYNAMODB_ENDPOINT`) pointing at a
 loopback DynamoDB Local (`http://127.0.0.1:<port>`) and uses synthetic credentials and the four DEV
@@ -107,8 +103,12 @@ java -cp target/lookahead-domain-api-0.0.1-SNAPSHOT.jar \
 ```
 
 Exit 0 succeeded, 1 failed (the ledger is unchanged past the last recorded step), 2 usage; one JSON line
-reports before/after/required/applied/verified. Logger `lookahead.migration`; the lock holder and
-conflicts are named, never endpoints or item contents. The persistent laptop store is operated with the
+reports before/after/required/applied/verified. Logger `lookahead.migration`: a held lock is one WARN
+line (`Migration migrate failed: Another migration run holds the lock`); a failed step is one ERROR line
+`Data step N <name> failed before it was recorded; CURRENT stays at N-1: <exception type: its message>;
+<hint>; the task exits 1 and a rerun resumes from step N` (a DynamoDB permission refusal points at the IAM
+policy, a missing table at the Infra stack, a connection failure at the VPC endpoint);
+item contents never appear. The persistent laptop store is operated with the
 Infra script `local/database/dynamodb_local.py` (container `lookahead-local-dynamodb` on 127.0.0.1:4400,
 volume `lookahead-local-dynamodb-data`); the disposable test fixture in `dynamodb_contract_tests.py` is separate.
 
@@ -210,19 +210,22 @@ Focused suites run against a disposable DynamoDB Local through the Infra wrapper
 `DLV970_DYNAMODB_TEST_ENDPOINT=http://127.0.0.1:<port>` (loopback only; the database tests skip without it).
 Every `*DatabaseTest` creates the four tables when absent and purges the key prefixes it writes; never point
 the variable at the persistent laptop store. The full fixture-backed release gate (`-Pcoverage clean verify`,
-85% line coverage) also needs the two disposable PostgreSQL fixtures described in the README. Local tests
+85% line coverage) needs this one fixture (`DLV970_DYNAMODB_TEST_ENDPOINT` and `DLV970_LOCAL_DYNAMODB_ENDPOINT`,
+`CoverageFixtureAvailabilityTest`); the PostgreSQL fixtures retired with the store on 2026-11-17. Local tests
 exercise the database protocol, not IAM: effective AWS permissions are proven by the Infra probes A01–A16
 after the six-role transition, user-run.
 
 ## Open items
 
-- `CloudAccountAdministration resolve-password-change` has no DynamoDB counterpart (the other commands are
-  owner endpoints or the owner's self-admission).
-- The Local audit purge has no DynamoDB equivalent (insert-only audit).
+- `CloudAccountAdministration` retired with PostgreSQL (2026-11-17): `admit`, `disable`, `enable` and the author
+  flags are owner endpoints or the owner's self-admission; `resolve-password-change` has no counterpart and no
+  caller.
+- The Local audit purge retired with PostgreSQL (the audit table is insert-only; nothing needs purging).
 - A plan creation refused at commit (lost owner fence) after a > 200 KiB version document was published
   leaves a COMMITTED, unreferenced document; the purge sweep does not retire it yet.
-- Where PostgreSQL waited on a row lock, DynamoDB tells the loser to reload (409): plans of one owner, a
+- Where the retired PostgreSQL store waited on a row lock, DynamoDB tells the loser to reload (409): plans of one owner, a
   creator's simultaneous test-account creates, concurrent checkouts; `DynamoTestAccountStore.transact`
   retries re-runnable bodies three times.
-- Study plans, purchases, receipts, reviews and audit history are not imported from PostgreSQL (owner decision
-  2026-11-17: accounts and access only, by `DomainDynamoCatalog` step 5; none of the real accounts had plans).
+- Study plans, purchases, receipts, reviews and audit history were not imported from PostgreSQL (owner decision
+  2026-11-17: accounts and access only, by `DomainDynamoCatalog` step 5; none of the real accounts had plans). They
+  remain only in the final RDS snapshot.

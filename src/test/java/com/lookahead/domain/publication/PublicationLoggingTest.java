@@ -53,7 +53,7 @@ class PublicationLoggingTest {
             assertThatThrownBy(() -> new PublicationBootstrap(helper.mapper).load(helper.settings(fixture), helper.source(fixture)))
                     .hasMessage("Selected cloud publication failed startup verification");
             var line = log.only("publication.load");
-            assertThat(line.getLevel()).isEqualTo(Level.WARN);
+            assertThat(line.getLevel()).isEqualTo(Level.ERROR);
             assertThat(line.getFormattedMessage()).isEqualTo("Startup refused: content release " + PublicationBootstrapTest.TAG
                     + " could not be loaded while extracting the archive: Archive member digest mismatch; the app stops before it takes traffic");
             assertThat(LogCapture.keys(line)).containsEntry("reason", "PUBLICATION_INVALID").containsEntry("release.tag", PublicationBootstrapTest.TAG);
@@ -61,7 +61,8 @@ class PublicationLoggingTest {
         }
     }
 
-    @Test void anS3RefusalOrIoFailureNamesTheStatusCodeAndTypesNeverTheMessage() throws Exception {
+    /** Plain logs (owner, 2026-11-17): the ERROR line quotes S3's own message (the refused role helps), never the error-detail body. */
+    @Test void anS3RefusalOrIoFailureNamesTheStatusCodeAndQuotesTheDependencysMessage() throws Exception {
         helper.directory = directory;
         var fixture = helper.fixture(null, false, false);
         var denied = S3Exception.builder().statusCode(403).message("Access Denied for arn:aws:iam::123456789012:role/secret-role")
@@ -75,12 +76,14 @@ class PublicationLoggingTest {
             })).isInstanceOf(IllegalStateException.class);
             assertThat(log.messages()).containsExactly(
                     "Startup refused: content release " + PublicationBootstrapTest.TAG + " could not be loaded while reading manifest.json:"
-                            + " S3 answered HTTP 403 AccessDenied (S3Exception); the app stops before it takes traffic",
+                            + " S3 answered HTTP 403 AccessDenied (S3Exception: Access Denied for arn:aws:iam::123456789012:role/secret-role"
+                            + " (Service: null, Status Code: 403, Request ID: null)); the app stops before it takes traffic",
                     "Startup refused: content release " + PublicationBootstrapTest.TAG + " could not be loaded while downloading publication.tar.gz:"
-                            + " IOException; the app stops before it takes traffic");
+                            + " IOException: connection to bucket.s3.internal reset; the app stops before it takes traffic");
+            assertThat(log.lines()).allSatisfy(line -> assertThat(line.getLevel()).isEqualTo(Level.ERROR));
             assertThat(LogCapture.keys(log.lines().getFirst())).containsEntry("reason", "PUBLICATION_UNAVAILABLE").containsEntry("upstream.status", 403)
                     .containsEntry("upstream.code", "AccessDenied");
-            log.containsNone("secret-role", "private detail", "s3.internal", "123456789012");
+            log.containsNone("private detail");
         }
     }
 
@@ -124,17 +127,19 @@ class PublicationLoggingTest {
             health.health();
             health.health();
             assertThat(log.messages()).containsExactly(
-                    "Readiness DOWN: no content release is loaded: the content policy started without a publication manifest or content folder;"
+                    "Readiness DOWN for content publication: no content release is loaded: the content policy started without a publication manifest or content folder"
+                            + " (CONTENT_DISABLED); the container health check fails until this is fixed",
+                    "Readiness UP for content publication: the content release is loaded and its files are on disk",
+                    "Readiness DOWN for content publication: the loaded content release has lost its trusted account catalog (account-catalog.json) from the task's disk"
+                            + " (CATALOG_MISSING); the container health check fails until this is fixed",
+                    "Readiness DOWN for content publication: the loaded content release has lost its trusted account catalog (account-catalog.json) from the task's disk"
+                            + " (CATALOG_MISSING); the container health check fails until this is fixed",
+                    "Readiness DOWN for content publication: the loaded content release has lost its publication manifest (publication.json) from the task's disk"
+                            + " (MANIFEST_MISSING); the container health check fails until this is fixed",
+                    "Readiness DOWN for content publication: the loaded content release has lost its content folder from the task's disk (CONTENT_ROOT_MISSING);"
                             + " the container health check fails until this is fixed",
-                    "Readiness UP: the content release is loaded and its files are on disk",
-                    "Readiness DOWN: the loaded content release has lost its trusted account catalog (account-catalog.json) from the task's disk;"
-                            + " the container health check fails until this is fixed",
-                    "Readiness DOWN: the loaded content release has lost its trusted account catalog (account-catalog.json) from the task's disk;"
-                            + " the container health check fails until this is fixed",
-                    "Readiness DOWN: the loaded content release has lost its publication manifest (publication.json) from the task's disk;"
-                            + " the container health check fails until this is fixed",
-                    "Readiness DOWN: the loaded content release has lost its content folder from the task's disk; the container health check fails until this is fixed",
-                    "Readiness UP: the content release is loaded and its files are on disk");
+                    "Readiness UP for content publication: the content release is loaded and its files are on disk");
+            assertThat(log.lines()).extracting(line -> line.getLevel()).containsExactly(Level.ERROR, Level.INFO, Level.ERROR, Level.ERROR, Level.ERROR, Level.ERROR, Level.INFO);
             assertThat(log.lines()).extracting(line -> LogCapture.keys(line).get("reason")).containsExactly("CONTENT_DISABLED", null, "CATALOG_MISSING",
                     "CATALOG_MISSING", "MANIFEST_MISSING", "CONTENT_ROOT_MISSING", null);
             assertThat(log.lines()).allSatisfy(line -> assertThat(LogCapture.keys(line)).containsEntry("health.component", "content publication"));

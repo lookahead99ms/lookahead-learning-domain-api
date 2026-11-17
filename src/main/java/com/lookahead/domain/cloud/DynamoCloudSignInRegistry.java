@@ -21,8 +21,8 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
 /**
- * DLV-970: the sign-in registry on DynamoDB. The account's {@code CONTROL} revision plays the role of the PostgreSQL
- * row lock: every structural write (a new sign-in, a revocation, a challenge, a profile change) is one transaction
+ * DLV-970: the sign-in registry on DynamoDB. The account's {@code CONTROL} revision plays the role the retired PostgreSQL
+ * store's row lock played: every structural write (a new sign-in, a revocation, a challenge, a profile change) is one transaction
  * conditioned on the revision read at the start of the request and advancing it; a lost race is re-read and retried.
  * Idle (30 min) and absolute (7 days) expiry, challenge expiry (5 min) and the 5-per-15-minutes window are checked in
  * code at the exact boundary; nothing relies on TTL. Revoke-all advances {@code authGeneration} on the control item

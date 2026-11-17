@@ -1,11 +1,9 @@
 package com.lookahead.domain.membership;
 
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import java.time.Instant;
 import java.util.*;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import tools.jackson.databind.JsonNode;
@@ -19,7 +17,6 @@ import tools.jackson.databind.node.ObjectNode;
  * memberships and no grants.
  */
 @Component
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoAccessSummaryStore implements AccessSummaryStore {
     private final DynamoDbClient client;
     private final DynamoTableNames tables;

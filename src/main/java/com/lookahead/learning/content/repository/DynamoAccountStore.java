@@ -3,7 +3,6 @@ package com.lookahead.learning.content.repository;
 import static com.lookahead.domain.cloud.CloudAccountItems.*;
 
 import com.lookahead.domain.cloud.DynamoCloudAccounts;
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoItems;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
@@ -12,7 +11,6 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
@@ -22,7 +20,6 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
  * checked in code at read time.
  */
 @Repository
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoAccountStore implements AccountStore {
     private final DynamoCloudAccounts accounts;
 

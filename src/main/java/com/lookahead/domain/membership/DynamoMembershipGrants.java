@@ -1,18 +1,15 @@
 package com.lookahead.domain.membership;
 
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.learning.content.validator.SnapshotValidator;
 import java.time.Clock;
 import java.util.*;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import tools.jackson.databind.ObjectMapper;
 
 /** DLV-970: the catalogs of the account's purchases granting access now, from a strong read of its purchase items. */
 @Component
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoMembershipGrants implements MembershipGrants {
     private final DynamoDbClient client;
     private final DynamoTableNames tables;

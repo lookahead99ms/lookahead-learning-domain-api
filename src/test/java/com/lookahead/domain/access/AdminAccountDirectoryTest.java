@@ -5,7 +5,6 @@ import com.lookahead.learning.content.security.AccountPrincipal;
 import com.lookahead.learning.content.exception.AccountFailure;
 import java.util.*;
 import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.core.JdbcTemplate;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -14,17 +13,17 @@ class AdminAccountDirectoryTest {
   var directory=mock(AccountDirectory.class);var access=mock(StaffAccessService.class);
   var actor=new AccountPrincipal(UUID.randomUUID(),"admin","Admin",true);
   doThrow(new AccountFailure(403,"OWNER_REQUIRED","Owner required")).when(access).requireOwner(actor);
-  var service=new AdminAccountDirectory(directory,access,mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)),mock(AccessSummaryService.class),mock(JdbcTemplate.class),mock(TestAccountPolicy.class),mock(AccountRemovalService.class));
+  var service=new AdminAccountDirectory(directory,access,mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)),mock(AccessSummaryService.class),mock(AdminDirectoryStore.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)),mock(TestAccountPolicy.class),mock(AccountRemovalService.class));
   assertThatThrownBy(()->service.list(actor,"",0)).isInstanceOf(AccountFailure.class);verifyNoInteractions(directory);
  }
  @Test void joinsIdentityWithCurrentDomainRolesAndAccessWithoutWrites() {
   var directory=mock(AccountDirectory.class);var access=mock(StaffAccessService.class);var staff=mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
-  var summaries=mock(AccessSummaryService.class);var jdbc=mock(JdbcTemplate.class);
+  var summaries=mock(AccessSummaryService.class);var jdbc=mock(AdminDirectoryStore.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
   var localPolicy=mock(TestAccountPolicy.class);when(localPolicy.local()).thenReturn(true);
   var actor=new AccountPrincipal(UUID.randomUUID(),"owner","Owner",true);UUID real=UUID.randomUUID(),admin=UUID.randomUUID();
   when(directory.list("",0)).thenReturn(new AccountDirectory.Page(List.of(new AccountDirectory.Account(actor.accountId(),"owner","Owner",null),new AccountDirectory.Account(real,"real","Real","real@example.test"),new AccountDirectory.Account(admin,"admin","Admin",null)),0,false));
   when(staff.forAccount(admin)).thenReturn(new StaffAccessRepository.Assignment(UUID.randomUUID(),admin,null,Set.of("admin"),Set.of(),false,1));
-  when(jdbc.queryForObject(anyString(),eq(Boolean.class),eq(admin))).thenAnswer(call->((String)call.getArgument(0)).contains("test_account_registry"));
+  when(jdbc.testAccount(admin)).thenReturn(true);
   var summary=new AccessSummaryService.Summary("Regular · Learn",List.of("Regular · Learn"),List.of());
   when(summaries.get(actor,real)).thenReturn(summary);
   when(summaries.get(actor,actor.accountId())).thenReturn(new AccessSummaryService.Summary("Free",List.of("Free"),List.of()));
@@ -39,7 +38,7 @@ class AdminAccountDirectoryTest {
   assertThat(result.accounts().get(1).testAccount()).isFalse();assertThat(result.accounts().get(2).testAccount()).isTrue();
   assertThat(result.accounts().get(1).canDowngrade()).isTrue();assertThat(result.accounts().get(1).canDelete()).isFalse();
   assertThat(result.accounts().get(2).canDowngrade()).isFalse();assertThat(result.accounts().get(2).canDelete()).isFalse();
-  assertThat(result.accounts().get(2).fullCurriculum()).isTrue();verify(jdbc,never()).update(anyString(),any(Object[].class));
+  assertThat(result.accounts().get(2).fullCurriculum()).isTrue();
   // DLV-969: the removal options come from the removal service; the owner's own row never asks for them.
   var realRow=result.accounts().get(1);
   assertThat(List.of(String.valueOf(realRow.signIn()),realRow.canDisable(),realRow.canEnable(),realRow.canRemove())).containsExactly("disabled",false,true,true);
@@ -48,7 +47,7 @@ class AdminAccountDirectoryTest {
   verify(removal,never()).options(eq(actor.accountId()),eq(actor.accountId()),anyBoolean());
   // DLV-969 S36: the owner sees how many other accounts share a row's verified email; no email, no query.
   assertThat(realRow.sameEmailAccounts()).isZero();
-  when(jdbc.queryForObject(contains("count(*)"),eq(Integer.class),eq("real@example.test"),eq("real@example.test"),eq(real))).thenReturn(2);
+  when(jdbc.sameEmailAccounts(real,"real@example.test")).thenReturn(2);
   var again=new AdminAccountDirectory(directory,access,staff,summaries,jdbc,localPolicy,removal).list(actor,"",0);
   assertThat(again.accounts().get(1).sameEmailAccounts()).isEqualTo(2);assertThat(again.accounts().get(0).sameEmailAccounts()).isZero();
   assertThat(again.accounts().get(2).sameEmailAccounts()).isZero();
@@ -57,22 +56,21 @@ class AdminAccountDirectoryTest {
   assertThat(new AdminAccountDirectory.Row(real,"real","Real",null,Set.of("user"),false,false,summary,false,false,null,false,false,false,3).signInMethods()).isEmpty();
   // The owner sees every sign-in method of a row, from cloud_identities; a test account's row asks nothing.
   assertThat(again.accounts().get(1).signInMethods()).isEmpty();
-  when(jdbc.query(contains("FROM cloud_identities"),any(org.springframework.jdbc.core.RowMapper.class),eq(real)))
-      .thenReturn(List.of(Map.of("provider","google","email","real@example.test"),Map.of("provider","cognito")));
+  when(jdbc.signInMethods(real)).thenReturn(List.of(Map.of("provider","google","email","real@example.test"),Map.of("provider","cognito")));
   var third=new AdminAccountDirectory(directory,access,staff,summaries,jdbc,localPolicy,removal).list(actor,"",0);
   assertThat(third.accounts().get(1).signInMethods()).containsExactly(Map.of("provider","google","email","real@example.test"),Map.of("provider","cognito"));
-  verify(jdbc,never()).query(contains("FROM cloud_identities"),any(org.springframework.jdbc.core.RowMapper.class),eq(admin));
+  verify(jdbc,never()).signInMethods(admin);
   // DLV-969 (owner, 2026-11-05): the owner sees each person's saved GitHub link; none is null; a test account asks nothing.
   assertThat(third.accounts().get(1).github()).isNull();
-  when(jdbc.queryForList(contains("cloud_account_profile_links"),eq(String.class),eq(real))).thenReturn(List.of("https://github.com/real-person"));
+  when(jdbc.github(real)).thenReturn("https://github.com/real-person");
   var fourth=new AdminAccountDirectory(directory,access,staff,summaries,jdbc,localPolicy,removal).list(actor,"",0);
   assertThat(fourth.accounts().get(1).github()).isEqualTo("https://github.com/real-person");
   assertThat(fourth.accounts().get(2).github()).isNull();
-  verify(jdbc,never()).queryForList(contains("cloud_account_profile_links"),eq(String.class),eq(admin));
+  verify(jdbc,never()).github(admin);
   assertThat(compatible.github()).isNull();
  }
  @Test void aNonOwnerNeverReachesAnyGithubLink() {
-  var directory=mock(AccountDirectory.class);var access=mock(StaffAccessService.class);var jdbc=mock(JdbcTemplate.class);
+  var directory=mock(AccountDirectory.class);var access=mock(StaffAccessService.class);var jdbc=mock(AdminDirectoryStore.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
   var actor=new AccountPrincipal(UUID.randomUUID(),"coauthor","Co-author",true);
   doThrow(new AccountFailure(403,"OWNER_REQUIRED","Owner required")).when(access).requireOwner(actor);
   var service=new AdminAccountDirectory(directory,access,mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)),mock(AccessSummaryService.class),jdbc,mock(TestAccountPolicy.class),mock(AccountRemovalService.class));

@@ -232,7 +232,7 @@ public class PlatformReviewService {
         Events.success(Events.EVENT, "platform-review.status").addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", id)
                 .addKeyValue("actor.role", owner ? "owner" : "admin").addKeyValue("review.kind", saved.kind())
                 .addKeyValue("review.status.before", before[0]).addKeyValue("review.status", status)
-                .log("Platform review item {} status changed by {}: {} -> {}", id, owner ? "the owner" : "an admin", before[0], status);
+                .log("Platform review item {} status changed by {}: {} -> {}", id, Events.actor(owner ? "Owner" : "Admin", actor.accountId()), before[0], status);
         return view(shown(actor, saved), ticketStatuses());
     }
 
@@ -264,7 +264,7 @@ public class PlatformReviewService {
         }
         Events.success(Events.EVENT, "platform-review.promote").addKeyValue("account.id", actor.accountId()).addKeyValue("target.id", id)
                 .addKeyValue("ticket.id", ticketId).addKeyValue("review.kind", record.kind()).addKeyValue("plan.version", created.version())
-                .log("Platform review item {} promoted by {} to delivery ticket {} (plan version {})", id, owner ? "the owner" : "an admin", ticketId, created.version());
+                .log("Platform review item {} promoted by {} to delivery ticket {} (plan version {})", id, Events.actor(owner ? "Owner" : "Admin", actor.accountId()), ticketId, created.version());
         return new Promoted(ticketId, created.item());
     }
 

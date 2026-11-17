@@ -1,7 +1,6 @@
 package com.lookahead.domain.testaccounts;
 
 import com.lookahead.domain.membership.MembershipItems;
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoItems;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
@@ -10,7 +9,6 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import tools.jackson.databind.JsonNode;
@@ -24,7 +22,6 @@ import tools.jackson.databind.node.ObjectNode;
  * the account revision; the reset's commit tells them from a checkout's row by {@link MembershipItems#FIXTURE_FINGERPRINT}.
  */
 @Component
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoScenarioPurchaseStore implements ScenarioPurchaseStore {
     private final DynamoDbClient client;
     private final DynamoTableNames tables;

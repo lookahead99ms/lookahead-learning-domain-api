@@ -4,7 +4,6 @@ import static com.lookahead.domain.cloud.CloudAccountItems.*;
 
 import com.lookahead.domain.cloud.DynamoCloudAccounts;
 import com.lookahead.domain.membership.AccountGrantsLookup;
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.domain.testaccounts.AccountIdentityLookup;
 import com.lookahead.domain.testaccounts.AccountRecordsMaintenance;
@@ -18,7 +17,6 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
@@ -30,7 +28,6 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
  * roster (lane C). Each write is its own committed operation, as the SQL test-account paths made them.
  */
 @Component
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoAccountRecords implements AccountGrantsLookup, AccountIdentityLookup, AccountRecordsMaintenance {
     private final DynamoCloudAccounts accounts;
     private final DynamoStaffAccessRepository staff;

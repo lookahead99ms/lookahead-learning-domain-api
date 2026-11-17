@@ -6,9 +6,8 @@ import java.util.UUID;
 import static com.lookahead.domain.review.ReviewModels.*;
 
 /**
- * DLV-970: the author review events of one actor, as whole aggregate operations. {@link JdbcAuthorReviewStore} is
- * today's PostgreSQL code moved verbatim; {@link DynamoAuthorReviewStore} keeps the same contract on the four
- * DynamoDB tables. {@link AuthorReviewService} keeps validation and policy; the store keeps the transaction and the
+ * DLV-970: the author review events of one actor, as whole aggregate operations. {@link DynamoAuthorReviewStore} keeps
+ * the contract on the four DynamoDB tables (the PostgreSQL store retired 2026-11-17). {@link AuthorReviewService} keeps validation and policy; the store keeps the transaction and the
  * conflicts only a transaction can decide (replay, supersession, unknown actor).
  */
 public interface AuthorReviewStore {

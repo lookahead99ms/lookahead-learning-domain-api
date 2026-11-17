@@ -62,7 +62,7 @@ class CloudMergeControllerTest {
             (ch.qos.logback.classic.Logger)org.slf4j.LoggerFactory.getLogger(com.lookahead.learning.content.handler.GlobalExceptionHandler.class));
         loggers.forEach(l->l.addAppender(logged));
         try{
-            when(merges.candidates(ACTOR,token)).thenThrow(new org.springframework.dao.DataAccessResourceFailureException("synthetic outage"));
+            when(merges.candidates(ACTOR,token)).thenThrow(software.amazon.awssdk.core.exception.SdkClientException.create("synthetic outage"));
             mvc.perform(get("/api/v1/account/merge/"+token)).andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.code").value("ACCOUNT_STORAGE_UNAVAILABLE")).andExpect(jsonPath("$.path").value("/api/v1/account/merge/[token]"));
             when(merges.merge(ACTOR,token,KEEP)).thenThrow(new IllegalStateException("synthetic bug"));

@@ -22,10 +22,10 @@ import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 
 /**
  * DLV-970: one owner-scoped DynamoDB transaction for one PlanService mutation. PlanService keeps its validation,
- * policy and the many small repository calls of one {@code @Transactional} method; in dynamodb mode the stores do not
+ * policy and the many small repository calls of one {@code @Transactional} method; the stores do not
  * write when called but record the final state of every item they touch here, and {@link #commit()} sends all of it
- * as one conditional PartiQL transaction. The SQL owner row lock ({@code SELECT … FOR UPDATE} on platform_subjects)
- * becomes the owner fence: {@code ACCOUNT#id / META} is read strongly once per unit and updated under its exact
+ * as one conditional PartiQL transaction. The owner row lock of the retired PostgreSQL store ({@code SELECT … FOR UPDATE})
+ * became the owner fence: {@code ACCOUNT#id / META} is read strongly once per unit and updated under its exact
  * revision, so two mutations of the same owner never interleave (the second one fails with
  * {@link DynamoWrites.Conflict} and is retried by its client through its durable receipt). The plan-number sequence
  * and the lifetime free-creation counter live on that same item and move in the same transaction.
@@ -115,7 +115,7 @@ public final class DynamoOwnerUnit {
             item = client.getItem(GetItemRequest.builder().tableName(tables.userAccountDetailsTableName())
                     .key(DynamoItems.key(DynamoItems.account(owner), "META")).consistentRead(true).build()).item();
         } catch (SdkException failure) {
-            throw new DynamoOwnerUnavailable(failure);
+            throw new DynamoOwnerUnavailable("GetItem", tables.userAccountDetailsTableName(), failure);
         }
         if (item.isEmpty()) throw new AccountFailure(401, "AUTHENTICATION_REQUIRED", "Sign in to continue");
         DynamoItems.requireSchema(item, SCHEMA);
@@ -154,5 +154,9 @@ public final class DynamoOwnerUnit {
      */
     public static final class DynamoOwnerUnavailable extends DynamoWrites.Unavailable {
         public DynamoOwnerUnavailable(SdkException cause) { super("DynamoDB read unavailable: " + cause.getClass().getSimpleName(), cause); }
+        /** Plain logs (owner, 2026-11-17): the read operation and the table, so the ERROR line can name them. */
+        public DynamoOwnerUnavailable(String operation, String table, SdkException cause) {
+            super("DynamoDB read unavailable: " + cause.getClass().getSimpleName(), cause, operation, table == null ? java.util.List.of() : java.util.List.of(table));
+        }
     }
 }

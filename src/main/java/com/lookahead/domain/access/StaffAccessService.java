@@ -63,7 +63,7 @@ public class StaffAccessService {
         catch(AccountFailure refused) {
             Events.refused(Events.EVENT,"access.save",refused.code()).addKeyValue("account.id",actor.accountId())
                 .addKeyValue("target.id",change==null?null:change.accountId())
-                .log("Access change refused for {}: {}",change==null||change.accountId()==null?"a pending invitation":"account "+change.accountId(),refused.code());
+                .log("Access change by {} refused for {}: {}",Events.actor("Account",actor.accountId()),change==null||change.accountId()==null?"a pending invitation":"account "+change.accountId(),refused.code());
             throw refused;
         }
     }
@@ -86,7 +86,7 @@ public class StaffAccessService {
         Events.afterCommit(()->Events.success(Events.EVENT,next.accountId()==null?"access.invitation-saved":"access.saved")
             .addKeyValue("account.id",actor.accountId()).addKeyValue("target.id",next.accountId()==null?next.id():next.accountId())
             .addKeyValue("roles",new java.util.TreeSet<>(next.roles())).addKeyValue("rolesBefore",new java.util.TreeSet<>(before))
-            .log("Owner saved access for {}: roles {} -> {}, {} topic grant(s), full curriculum {}",
+            .log("{} saved access for {}: roles {} -> {}, {} topic grant(s), full curriculum {}",Events.actor("Owner",actor.accountId()),
                 next.accountId()==null?"pending invitation "+next.id():"account "+next.accountId(),
                 new java.util.TreeSet<>(before),new java.util.TreeSet<>(next.roles()),next.topicGrants().size(),next.fullCurriculum()?"on":"off"));
         return next;

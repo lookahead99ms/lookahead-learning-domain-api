@@ -11,7 +11,6 @@ import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.ScheduledAnnotationBeanPostProcessor;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -20,6 +19,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 import software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider;
 import software.amazon.awssdk.services.cognitoidentityprovider.CognitoIdentityProviderClient;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockingDetails;
 
-/** Actual provider/configuration beans; no provider request, database connection or application server. */
+/** Actual provider/configuration beans; no provider request, store call or application server. */
 class AuthenticationProviderConfigurationTest {
     private final WebApplicationContextRunner context = new WebApplicationContextRunner()
             .withUserConfiguration(Application.class)
@@ -54,8 +54,7 @@ class AuthenticationProviderConfigurationTest {
                             .doesNotHaveBean(CloudAdmissionCleanup.class).doesNotHaveBean(ScheduledAnnotationBeanPostProcessor.class);
                     assertThat(application).hasBean("domainDecoder").hasBean("localAuthenticationConverter")
                             .doesNotHaveBean("cloudDecoder");
-                    assertThat(mockingDetails(application.getBean(JdbcTemplate.class)).getInvocations())
-                            .allSatisfy(invocation -> assertThat(invocation.getMethod().getName()).isEqualTo("afterPropertiesSet"));
+                    assertThat(mockingDetails(application.getBean(DynamoDbClient.class)).getInvocations()).isEmpty();
                 });
     }
 
@@ -73,8 +72,7 @@ class AuthenticationProviderConfigurationTest {
             var client = application.getBean(CognitoIdentityProviderClient.class).serviceClientConfiguration();
             assertThat(client.region().id()).isEqualTo("us-east-2");
             assertThat(client.credentialsProvider()).isInstanceOf(AnonymousCredentialsProvider.class);
-            assertThat(mockingDetails(application.getBean(JdbcTemplate.class)).getInvocations())
-                            .allSatisfy(invocation -> assertThat(invocation.getMethod().getName()).isEqualTo("afterPropertiesSet"));
+            assertThat(mockingDetails(application.getBean(DynamoDbClient.class)).getInvocations()).isEmpty();
         });
     }
 
@@ -97,7 +95,8 @@ class AuthenticationProviderConfigurationTest {
     @Import({DomainSecurityConfiguration.class, CloudSecurityConfiguration.class, CloudSchedulingConfiguration.class})
     static class Application {
         @Bean AccountRepository accounts() { return mock(AccountRepository.class); }
-        @Bean JdbcTemplate jdbc() { return mock(JdbcTemplate.class); }
+        @Bean DynamoDbClient dynamoDbClient() { return mock(DynamoDbClient.class, org.mockito.Mockito.withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS)); }
+        @Bean com.lookahead.domain.persistence.dynamodb.DynamoTableNames dynamoTableNames() { return com.lookahead.domain.persistence.dynamodb.DynamoTableNames.local(); }
         @Bean PlatformTransactionManager transactions() { return mock(PlatformTransactionManager.class); }
         @Bean ObjectMapper mapper() { return new JsonMapper(); }
     }

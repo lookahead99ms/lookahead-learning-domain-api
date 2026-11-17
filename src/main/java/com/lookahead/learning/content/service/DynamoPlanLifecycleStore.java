@@ -21,7 +21,6 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 /** DLV-970: {@code ACCOUNT#id / LIFECYCLE#planId} items; reads merge the rows this unit already changed, writes land at commit under the owner revision. */
 @Repository
 @Profile("accounts")
-@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = com.lookahead.domain.persistence.PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoPlanLifecycleStore implements PlanLifecycleStore {
     private final DynamoDbClient client;
     private final DynamoTableNames tables;

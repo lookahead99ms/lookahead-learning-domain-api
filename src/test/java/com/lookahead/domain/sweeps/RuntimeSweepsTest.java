@@ -74,7 +74,7 @@ class RuntimeSweepsTest {
         try (var log = com.lookahead.domain.LogCapture.start()) {
             result = sweeps.runNow(actor, RuntimeSweeps.Job.ALL);
             var line = log.only("sweep");
-            assertThat(line.getFormattedMessage()).isEqualTo("The owner ran the all sweep now: 3 support request(s) closed, inbox merged into plan version 12, 1 waiting account(s) removed");
+            assertThat(line.getFormattedMessage()).isEqualTo("Owner " + actor.toString().substring(0, 8) + " ran the all sweep now: 3 support request(s) closed, inbox merged into plan version 12, 1 waiting account(s) removed");
             assertThat(com.lookahead.domain.LogCapture.keys(line)).containsEntry("manual", true).containsEntry("account.id", actor).containsEntry("job", "all")
                     .containsEntry("event.outcome", "success").containsEntry("support.closed", 3).containsEntry("inbox.merged", true).containsEntry("admissions.removed", 1);
         }
@@ -109,7 +109,7 @@ class RuntimeSweepsTest {
             assertThat(support.inboxMerged()).isNull();
             assertThat(support.inboxResult()).isNull();
             assertThat(support.admissionsRemoved()).isNull();
-            assertThat(log.only("sweep").getFormattedMessage()).isEqualTo("The owner ran the support-requests sweep now: 2 support request(s) closed, inbox not touched, no waiting account(s) removed");
+            assertThat(log.only("sweep").getFormattedMessage()).isEqualTo("Owner " + actor.toString().substring(0, 8) + " ran the support-requests sweep now: 2 support request(s) closed, inbox not touched, no waiting account(s) removed");
             assertThat(com.lookahead.domain.LogCapture.keys(log.only("sweep"))).containsEntry("job", "support-requests").containsEntry("manual", true);
         }
         verifyNoInteractions(plans, cleanup);
@@ -146,7 +146,7 @@ class RuntimeSweepsTest {
         try (var log = com.lookahead.domain.LogCapture.start()) {
             failed = sweeps.runNow(actor, RuntimeSweeps.Job.ALL);
             assertThat(log.lines("sweep")).extracting(line -> com.lookahead.domain.LogCapture.keys(line).get("sweep")).containsExactly("support request close", "delivery inbox sync", null);
-            assertThat(log.lines("sweep").getLast().getFormattedMessage()).isEqualTo("The owner ran the all sweep now: 0 support request(s) closed, inbox did not complete (IllegalStateException), no waiting account(s) removed");
+            assertThat(log.lines("sweep").getLast().getFormattedMessage()).isEqualTo("Owner " + actor.toString().substring(0, 8) + " ran the all sweep now: 0 support request(s) closed, inbox did not complete (IllegalStateException), no waiting account(s) removed");
             log.containsNone("synthetic storage outage", "synthetic plan outage");
         }
         assertThat(failed.supportRequestsClosed()).isZero();

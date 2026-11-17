@@ -3,7 +3,14 @@
 DEV/PROD use Cognito managed login through Gateway. Local retains the Identity
 application and its database. This is implemented application code and an
 inactive deployment candidate; local controlled-provider tests do not establish
-live Cognito, RDS, ECS, IAM or network readiness.
+live Cognito, DynamoDB, ECS, IAM or network readiness.
+
+Store note (DLV-970, 2026-11-17): the Domain's account, sign-in and admission data lives in
+DynamoDB (`DynamoCloudSignInRegistry`, `DynamoCloudAccounts`; see [DynamoDB persistence](dynamodb-persistence.md)).
+Where this page names PostgreSQL rows, migrations (`V4`, `V17`, `V21`, …), grants, triggers or
+row locks, it records how the same rule was kept on the PostgreSQL store that served DEV until
+2026-11-17; the rule is unchanged and its DynamoDB form is one conditional transaction on the
+account's `CONTROL` revision with insert-only audit items.
 
 ## Ownership and verification
 
@@ -12,7 +19,7 @@ tokens, CSRF protection, and an unguessable server-side sign-in proof. Tokens,
 proofs, the internal Gateway secret, AWS credentials and private content are not
 frontend configuration. Domain owns application account mapping, enabled/admitted
 state, explicit author capability, course grants, and durable logical sign-ins in
-its PostgreSQL database. Cognito owns credentials and provider identity.
+its DynamoDB store (PostgreSQL until 2026-11-17). Cognito owns credentials and provider identity.
 
 Domain checks JWT signature against the configured Cognito JWKS, exact regional
 issuer, access-token use, configured client ID, explicit issue/expiry times,
@@ -31,13 +38,13 @@ Accounts map `(issuer, subject)` to an application UUID. Email/username is never
 a linking key and Local UUIDs are never inferred from Cognito claims. Admission
 is explicit; managed login by itself cannot grant application or curriculum
 access. Current enabled/admitted/author state and session state are read on each
-request. The runtime SQL role cannot create cloud accounts or change admission,
-enabled state or author capability.
+request. The owner alone admits, disables, enables and grants author capability, through
+owner endpoints the Domain enforces.
 
 ## Durable sign-in policy
 
-A per-account PostgreSQL row lock serializes admission, replacement, revocation
-and operator changes across Domain instances. At most two sign-ins are active.
+The account's `CONTROL` revision (a DynamoDB conditional transaction) serializes admission,
+replacement, revocation and owner changes across Domain instances. At most two sign-ins are active.
 A third login receives a five-minute restricted replacement challenge; it cannot
 call ordinary authenticated APIs until it replaces one of its own sign-ins.
 Challenges and Gateway proofs are stored as SHA-256 digests, bound to the provider
@@ -68,67 +75,28 @@ These systems have no shared atomic transaction or automatic replay.
 Application logout likewise requires confirmed Domain termination; provider
 logout uncertainty is reported separately by Gateway.
 
-## Explicit account administration
+## Explicit account administration (retired)
 
-Apply migrations through Infra's separately approved Flyway Utils flow first;
-the Domain migration/bootstrap executable entrypoints remain retired.
-`V4__cloud_identity_and_sign_ins.sql` adds cloud tables without changing Local
-identity ownership. Use a verified exact provider issuer/subject, dedicated
-migration-role connection and externally injected secret. The application runtime
-role must not run this command. From the built executable JAR:
-
-```sh
-java -Dloader.main=com.lookahead.domain.cloud.CloudAccountAdministration \
-  -cp target/lookahead-domain-api-0.0.1-SNAPSHOT.jar \
-  org.springframework.boot.loader.launch.PropertiesLauncher \
-  admit https://cognito-idp.us-east-2.amazonaws.com/us-east-2_Example \
-  synthetic-provider-subject learner@example.invalid 'Example Learner'
-```
-
-That filename is the default local build. For a release artifact, use its exact
-`lookahead-domain-api-<version>.jar` filename.
-
-Set `LOOKAHEAD_ENVIRONMENT=dev` or `prod` and `AWS_REGION` for cloud operator
-commands. Runtime, migrations and account administration require the same regional
-RDS endpoint, database `lookahead_platform`, `sslmode=verify-full` and absolute
-readable CA bundle. Both the initial role check and subsequent JDBC connections
-use bounded connect/socket/cancellation timeouts. Unknown or empty environment
-names fail; an omitted environment retains the existing Local CLI default.
-
-Supply `SPRING_FLYWAY_URL`, `SPRING_FLYWAY_USER`, and exactly one of
-`SPRING_FLYWAY_PASSWORD` or `LOOKAHEAD_MIGRATION_PASSWORD_FILE` as documented for
-migration. The example contains synthetic identifiers, not a deployment target.
-Other actions are `disable`, `enable`, `author-on`, and `author-off`, followed by
-issuer and subject only. `disable` also revokes every durable sign-in and cancels
-pending challenges; `enable` never revives them. Repeated admission preserves the
-application UUID. Admission leaves content grants and author capability unchanged.
-This is an operator CLI; there is no public account-admission endpoint or automatic
-cloud self-registration workflow.
-
-To recover a stuck password-change guard: disable the account, investigate the
-provider outcome and confirm no password operation remains in flight, then run
-`resolve-password-change <issuer> <subject>` through the same CLI. Resolution
-requires a disabled account, revokes all old sign-ins/challenges and clears the
-guard in one transaction. Enable only after review; require a fresh login. Normal
-restart and `enable` alone never clear the guard. Recovery is not automatic.
+The `CloudAccountAdministration` command (admit, disable, enable, author flags over a migration-role
+JDBC connection) and the Flyway migrations it depended on retired with PostgreSQL on 2026-11-17.
+Admission is the owner's endpoint (People and access) or the protected owner identity's own first
+contact; Disable, Enable, Delete and the author flag are owner endpoints too. Nothing reaches the
+store outside the application.
 
 ## Admission (DLV-969)
 
-`V17__dev_access_admission.sql` turns the sign-in admission into a request-and-approve
-flow. The operator CLI above still works and the Gateway contract is unchanged: an
+Sign-in admission is a request-and-approve flow (migration V17 on the PostgreSQL store, 2026-11;
+the same flow on DynamoDB items since the cutover). The Gateway contract is unchanged: an
 account that is not admitted still receives `403 ACCOUNT_ADMISSION_REQUIRED`.
 
-First contact. When `POST /internal/v1/cloud-sign-ins/admit` finds no `cloud_accounts`
-row for the verified issuer and subject, `CloudSignInRegistry.admit` inserts a
-`platform_subjects` row and a waiting `cloud_accounts` row (`admitted=false`,
-`enabled=true`, `author_access=false`, `requested_at=clock_timestamp()`, username,
-display name and the provider-verified email when present), records a `request` event
-in `cloud_admission_events`, commits, and then answers the 403. A later sign-in before
-admission refreshes username, display name and verified email on the waiting row and
-answers the same 403. A per-identity transaction advisory lock makes two concurrent
-first contacts produce one row. Only the sign-in admission path does this; `authenticate`,
-`inventory` and the other actions keep failing without creating rows, and a disabled
-account keeps answering 401.
+First contact. When `POST /internal/v1/cloud-sign-ins/admit` finds no account for the verified
+issuer and subject, `CloudSignInRegistry.admit` writes the account in one transaction: the `META`
+and `CONTROL` items (not admitted, enabled, no author flag, `requestedAt` now, username, display
+name and the provider-verified email when present), its `IDENTITY` binding, the `DIRECTORY` and
+`WAITING` projections and a `request` admission event in Administrator Audit Events, and then
+answers the 403. A later sign-in before admission refreshes username, display name and verified
+email on the waiting account and does not change `requestedAt`; the waiting list shows the request
+time and the expiry 48 hours later.
 
 Owner endpoints, proxied by the Gateway with the other `/api/v1/admin/access` routes
 and refused with `403 OWNER_REQUIRED` for anyone else, before any query:
@@ -137,8 +105,8 @@ and refused with `403 OWNER_REQUIRED` for anyone else, before any query:
   `{waiting:[{accountId, username, displayName, email, requestedAt, expiresAt}], expiryHours:48}`,
   oldest request first; `email` is the verified email or null; `expiresAt` is
   `requestedAt` plus 48 hours. `Cache-Control: no-store`.
-- `POST /api/v1/admin/access/admit` with `{accountId, roles}` locks the row, sets
-  `admitted=true`, `admitted_at`, `admitted_by`, saves the staff assignment through the
+- `POST /api/v1/admin/access/admit` with `{accountId, roles}` reads the account under its
+  `CONTROL` revision, marks it admitted (`admittedAt`, `admittedBy`), saves the staff assignment through the
   existing owner `StaffAccessService.save` when `roles` is not empty (creating one, or
   updating the account's existing assignment with its id and revision), records an
   `admit` event with the roles, and answers `{accountId, username, displayName, admittedAt, roles}`
@@ -146,25 +114,21 @@ and refused with `403 OWNER_REQUIRED` for anyone else, before any query:
   outside co-author/admin/reviewer/tester), `404 ACCOUNT_NOT_FOUND`,
   `409 ACCOUNT_ALREADY_ADMITTED`. Owner access (`author_access`) is never granted here.
 
-Cleanup. In cloud mode only (`CloudSchedulingConfiguration` enables scheduling under the
-same `dev|prod` condition), `CloudAdmissionCleanup.expire` runs five minutes after start
-and then hourly. It takes `pg_try_advisory_xact_lock(hashtextextended('cloud-admission-cleanup',0))`
-and returns 0 when another task holds it; otherwise it selects waiting rows older than
-48 hours `FOR UPDATE SKIP LOCKED`, writes an `expire` event, deletes the `cloud_accounts`
-row (only while `admitted=false`) and its `platform_subjects` row, and returns the count.
+Cleanup. In cloud mode only, `CloudAdmissionCleanup.expire` runs through `RuntimeSweeps` at start and
+every four hours (DLV-971). It walks the `WAITING` projection for accounts older than 48 hours and,
+per account, writes an `expire` event and deletes the waiting account's items in one conditional
+transaction (only while not admitted; a concurrent admission or another task's delete makes that
+account's transaction lose and it is skipped), and returns the count.
 Failures are logged as one WARN line and never stop the scheduler. The 48 hours are the
 single constant `CloudAdmissionCleanup.WAITING_EXPIRY`, also used for `expiresAt`. The
 Cognito user is not touched; the person can sign in again and a new waiting row appears.
 
-V17 grants to `lookahead_platform_app`: `INSERT` and `DELETE` on `cloud_accounts`,
-`UPDATE` on `admitted`, `admitted_at`, `admitted_by`, `requested_at` and `verified_email`
-(in addition to the V4 `username`, `display_name`, `credential_change_pending`), and
-`SELECT`, `INSERT` on `cloud_admission_events`. `enabled`, `author_access`, `issuer` and
-`subject` stay operator-only; `cloud_admission_events` is append-only by trigger and
-revoke; a `BEFORE DELETE` trigger refuses to delete an admitted `cloud_accounts` row.
-`CloudSignInRegistryDatabaseTest` applies V4, V6, V7 and V17 and covers first contact,
-concurrent first contacts, the runtime-role grants, owner admission with roles and
-rollback, and the cleanup under a held lock.
+On DynamoDB the same rules hold through the item shapes: admission events are insert-only items in
+Administrator Audit Events, a waiting account is deleted only by the 48-hour expiry or a merge (one
+conditional delete per account), and an admitted account is never deleted by the cleanup.
+`DynamoCloudSignInRegistryDatabaseTest` covers first contact, concurrent first contacts, owner
+admission with roles, the lost-fence 409 and the cleanup against DynamoDB Local. (The PostgreSQL
+grants of migration V17 and `CloudSignInRegistryDatabaseTest` retired with the store on 2026-11-17.)
 
 Test accounts in DEV (phase C, Domain side). `LOOKAHEAD_TEST_ACCOUNT_IDENTITY`
 (`app.test-accounts.identity`, `local` by default) set to `cognito` together with
@@ -180,15 +144,13 @@ needs exactly five actions on the pool ARN: `cognito-idp:AdminCreateUser` (messa
 no attributes), `AdminSetUserPassword` (permanent), `AdminGetUser` (reads the `sub`),
 `AdminDisableUser` and `AdminDeleteUser` (see `shared/iam-transition-proposal.md` in the
 DLV-969 evidence folder). The completing transaction of `POST /api/v1/admin/test-accounts`
-also inserts the admitted `cloud_accounts` row (`admitted=true`, `enabled=true`,
-`author_access=false`, username = display name = the generated username, `admitted_by` = the
-creator) and an `admit` event with roles `[]`, so the Waiting list and the audit stay
+also writes the admitted account (`CONTROL`: admitted, enabled, no author flag, username =
+display name = the generated username, `admittedBy` = the creator) and an `admit` event with roles `[]`, so the Waiting list and the audit stay
 consistent; an existing Cognito user from an interrupted attempt is reused on retry with the
 same mutation key, and the lifetime allowance is unchanged. `DELETE` disables and deletes the
-Cognito user, revokes the account's `cloud_sign_ins`, erases its data and marks the registry
-row deleted; the admitted `cloud_accounts` row stays, because the runtime role cannot change
-`enabled` and V17 never deletes an admitted row. `CloudTestAccountsDatabaseTest` (cloud-auth
-database, full schema plus V17) covers create, retry, delete and the roster refusal.
+Cognito user, revokes the account's sign-ins, erases its data and marks the registry
+item deleted; the admitted account itself stays (an admitted account is never deleted by the
+cleanup). `DynamoTestAccountsDatabaseTest` covers create, retry, delete and the roster refusal.
 
 One access hierarchy for DEV test accounts (DLV-969, owner 2026-11-04). `TestAccountTemplates.allows` is the
 single rule for the test-session picker and start (`DevTestSessions`), the test-account list
@@ -210,8 +172,8 @@ and any other scenario id answers `422 UNKNOWN_SCENARIO`. DLV-971 (owner, 2026-1
 accounts only. The co-author and admin test accounts it used to carry (`coauthor01`, `coauthor02`,
 `admin01`–`admin06`, in DEV with the `@lookahead.dev` suffix) are gone from the roster and retired by migration V21
 where a database already holds them: their `staff_access` row is cleared, their registry row is marked deleted by
-`V21` (a creation-ledger row too), and their `platform_subjects` and admitted `cloud_accounts` rows stay (V17). They
-are never created or restored again. A test account never carries a staff role; the hierarchy above still decides who
+`V21` (a creation-ledger row too; on the PostgreSQL store, 2026-11-06; the DynamoDB roster never held them and the import
+of 2026-11-17 excluded test accounts). They are never created or restored again. A test account never carries a staff role; the hierarchy above still decides who
 sees or acts on an account, because it also governs the People list.
 
 Restore of deleted roster accounts (owner, DEV only), on the route the Gateway already forwards:
@@ -225,7 +187,7 @@ card's `roster.deleted` (allowance) is the restorable count.
 
 Roster status (owner, DEV only): `GET /api/v1/admin/test-accounts/allowance` carries `roster` for the owner (null for
 everyone else and outside DEV), and `POST /api/v1/admin/test-accounts` with `{"roster": true}` answers the same
-object. It is computed by one SQL query (`DevTestRoster.STATUS`) on every read:
+object. It is computed from the store on every read (`DevTestRoster`):
 
 | Field | Meaning |
 | --- | --- |
@@ -235,7 +197,7 @@ object. It is computed by one SQL query (`DevTestRoster.STATUS`) on every read:
 | `withoutPlan` | ready learners whose scenario has a study plan they do not have (S37) |
 | `changed` | ready accounts that differ from their scenario start; the card greys out "Reset all" at 0 (owner 2026-11-04) |
 
-An account's scenario start is its latest `test_account_resets` row: Reset (`scenario`), Restore (`restore`) or, since
+(PostgreSQL-era definition of `changed`, kept for the record; `DynamoTestAccountStore` answers the same fields from the account, plan and purchase items.) An account's scenario start is its latest `test_account_resets` row: Reset (`scenario`), Restore (`restore`) or, since
 2026-11-04, the `create` row roster creation writes; each is the last write of its transaction. An account counts in
 `changed` when, after that row, its registry row was stamped (the V10 triggers set `last_changed_at` on every insert,
 update or delete of its `plans`, `account_grants`, `membership_purchases` and `staff_access`, which also covers plan
@@ -396,20 +358,17 @@ platform reviews. Tests: `DeliveryPlanServiceTest`, `DeliveryPlanControllerTest`
 Cloud requires `LOOKAHEAD_COGNITO_ISSUER`, `AWS_REGION`,
 `APP_OAUTH_CLIENT_ID`, `LOOKAHEAD_COGNITO_SCOPE_PREFIX`, and the separately
 injected `LOOKAHEAD_DOMAIN_GATEWAY_SECRET` value (32–4096 characters; secret ARNs, unresolved placeholders and control characters are rejected). See `src/main/resources/application.yml`
-and the application service manifest for authoritative bindings. Cloud database
-configuration requires injected runtime credentials, regional RDS host,
-`sslmode=verify-full` and an installed trusted CA file. Cloud readiness includes
-migrationV4 and restricted cloud identity/session privileges in addition to the
-existing database and publication gates.
+and the application service manifest for authoritative bindings. The cloud store
+configuration is `AWS_REGION` and the four `LOOKAHEAD_DYNAMODB_*_TABLE` names; the task role
+reaches the tables, no secret is injected for them. Cloud readiness includes the `dynamodb`
+check (the four tables answer and the data version meets the build's requirement) and the
+publication gate.
 
-Run Java21 `./mvnw test package`. Database suites opt in through
-`CLOUD_AUTH_TEST_DATABASE_URL` and `CLOUD_AUTH_TEST_PASSWORD_FILE` and reject all
-URLs except a loopback `lookahead_domain_cloud_auth` database. Infra owns the
-isolated tmpfs PostgreSQL helper `scripts/cloud_auth_test_database.py`; never point
-these tests at an application database. They cover concurrent admission across
-registry instances, challenge binding/replay, revocation/expiry, explicit account
-administration, runtime grants, provider outage handling, and real signed JWTs
-through Spring security/controllers into PostgreSQL. Provider calls are controlled
-fixtures. Remaining deployment gates include real client-secret transfer, SQL
-role/CA bootstrap, private Gateway-to-Domain TLS, live Cognito flows, and
-cross-service deployment evidence. No local result authorizes cloud activation.
+Run Java21 `./mvnw test package`. Store suites opt in through
+`DLV970_DYNAMODB_TEST_ENDPOINT` (a loopback DynamoDB Local; never the persistent laptop
+store). They cover concurrent admission across registry instances, challenge binding/replay,
+revocation/expiry, provider outage handling, and real signed JWTs through Spring
+security/controllers into the store. Provider calls are controlled fixtures. Remaining
+deployment gates include real client-secret transfer, the tables' IAM grants, private
+Gateway-to-Domain TLS, live Cognito flows, and cross-service deployment evidence. No local
+result authorizes cloud activation.

@@ -25,7 +25,6 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
  */
 @Component
 @Profile("accounts")
-@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = com.lookahead.domain.persistence.PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoPlanPurge {
     static final int MAX_JOBS = 25;
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger("lookahead.event");
@@ -93,7 +92,7 @@ public class DynamoPlanPurge {
     /**
      * The test-account reset's {@code UPDATE mutation_receipts SET deleted=true,response=NULL WHERE account_id=?}: every
      * receipt of the owner not yet a tombstone, the 204 receipts of earlier deletions included (a replayed delete key
-     * answers 410 after a reset, as on PostgreSQL). Batches of up to 100 distinct items; a batch that loses an item to a
+     * answers 410 after a reset). Batches of up to 100 distinct items; a batch that loses an item to a
      * concurrent erasure falls back to one receipt at a time.
      */
     void tombstoneReceipts(UUID owner) {

@@ -8,11 +8,10 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
-/** DLV-970: dynamodb mode has no JDBC transaction manager; this one turns each PlanService transaction into one unit. */
+/** DLV-970: the one {@code PlatformTransactionManager}; it turns each PlanService transaction into one DynamoDB unit. */
 @Configuration
 @Profile("accounts")
 @EnableTransactionManagement
-@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = com.lookahead.domain.persistence.PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoOwnerTransactionConfiguration {
     @Bean PlatformTransactionManager dynamoOwnerTransactionManager(DynamoDbClient client, DynamoTableNames tables) {
         return new DynamoOwnerTransactionManager(client, tables);

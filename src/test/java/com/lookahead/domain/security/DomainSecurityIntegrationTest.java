@@ -16,7 +16,6 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.env.MapPropertySource;
-import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.mock.web.MockServletContext;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -84,7 +83,7 @@ class DomainSecurityIntegrationTest {
         verifyNoInteractions(accounts);
     }
     @Test void subjectStorageFailureIsSafe503AndNeverExecutesResource() throws Exception {
-        doThrow(new DataAccessResourceFailureException("synthetic private database details"))
+        doThrow(software.amazon.awssdk.core.exception.SdkClientException.create("synthetic private database details"))
                 .when(accounts).ensureSubject(UUID.fromString(SUBJECT));
         http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token"))
                 .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("code").value("ACCOUNT_STORAGE_UNAVAILABLE"))

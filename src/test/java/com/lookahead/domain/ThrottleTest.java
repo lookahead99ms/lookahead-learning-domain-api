@@ -1,13 +1,11 @@
 package com.lookahead.domain;
 
 import ch.qos.logback.classic.Level;
-import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import org.junit.jupiter.api.Test;
-import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.authentication.AuthenticationServiceException;
@@ -48,14 +46,14 @@ class ThrottleTest {
     }
 
     /** A storage or identity outage behind bearer authentication says why it answered 503, once while it lasts. */
-    @Test void dependencyFailuresBeforeMvcNameTheirTypesAndSqlStateOnceWhileTheyLast() throws Exception {
+    @Test void dependencyFailuresBeforeMvcNameTheirTypesOnceWhileTheyLast() throws Exception {
         try (var log = LogCapture.start()) {
             var filter = new DomainStorageFailureFilter();
             for (int request = 0; request < 3; request++) {
                 var response = new MockHttpServletResponse();
                 filter.doFilter(new MockHttpServletRequest("GET", "/api/v1/plans"), response, (in, out) -> {
-                    throw new DataAccessResourceFailureException("host db.internal password=hunter2",
-                            new SQLException("connection to db.internal refused", "08001"));
+                    throw software.amazon.awssdk.core.exception.SdkClientException.create("host db.internal password=hunter2",
+                            new java.net.ConnectException("connection to db.internal refused"));
                 });
                 assertThat(response.getStatus()).isEqualTo(503);
             }
@@ -64,13 +62,15 @@ class ThrottleTest {
                 throw new AuthenticationServiceException("identity at identity.internal");
             });
             assertThat(response.getContentAsString()).contains("IDENTITY_UNAVAILABLE");
+            // Plain logs (owner, 2026-11-17): a dependency down is an ERROR quoting the dependency's own message (the host helps); never a secret.
             assertThat(log.messages()).containsExactly(
-                    "Account database unavailable on /api/v1/plans: ACCOUNT_STORAGE_UNAVAILABLE (DataAccessResourceFailureException < SQLException,"
-                            + " SQL state 08001); answered 503 until it recovers",
-                    "Sign-in check unavailable on /api/v1/plans: IDENTITY_UNAVAILABLE (AuthenticationServiceException); answered 503 until it recovers");
-            assertThat(log.lines()).allSatisfy(line -> assertThat(line.getLevel()).isEqualTo(Level.WARN));
-            assertThat(LogCapture.keys(log.lines().getFirst())).containsEntry("db.sqlState", "08001").containsEntry("http.status", 503);
-            log.containsNone("hunter2", "db.internal", "identity.internal");
+                    "Account storage unavailable on /api/v1/plans: ACCOUNT_STORAGE_UNAVAILABLE (ConnectException: connection to db.internal refused);"
+                            + " answered 503 until it recovers; check the VPC endpoint and the security group between the task and the service",
+                    "Sign-in check unavailable on /api/v1/plans: IDENTITY_UNAVAILABLE (AuthenticationServiceException: identity at identity.internal); answered 503 until it recovers");
+            assertThat(log.lines()).allSatisfy(line -> assertThat(line.getLevel()).isEqualTo(Level.ERROR));
+            assertThat(LogCapture.keys(log.lines().getFirst())).containsEntry("http.status", 503)
+                    .containsEntry("error.type", "SdkClientException < ConnectException");
+            log.containsNone("hunter2");
         }
     }
 }

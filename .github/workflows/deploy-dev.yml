@@ -1,6 +1,6 @@
 {
   "name": "04 \u00b7 Deploy DEV",
-  "run-name": "${{ github.workflow }} | ${{ inputs.release_version }} | desired ${{ inputs.desired_count || 1 }} | store ${{ inputs.persistence_store || 'as-configured' }} | ${{ github.event_name }} | #${{ github.run_number }}",
+  "run-name": "${{ github.workflow }} | ${{ inputs.release_version }} | desired ${{ inputs.desired_count || 1 }} | ${{ github.event_name }} | #${{ github.run_number }}",
   "on": {
     "workflow_dispatch": {
       "inputs": {
@@ -18,17 +18,6 @@
           ],
           "required": false,
           "default": "1"
-        },
-        "persistence_store": {
-          "description": "DLV-970 (Domain): the store this deploy renders into PersistenceStore. as-configured keeps the value in deployment/dev/deploy-config.json (postgresql until the cutover) and is refused while the stack serves another store (merge the deploy-config pull request right after the cutover); dynamodb needs 07 \u00b7 Migrate DEV data with the same release first (data first, then app). Before the application's first write on DynamoDB (migration seeds are not application data) postgresql goes back; after it the way back is a data decision, not a flag",
-          "type": "choice",
-          "options": [
-            "as-configured",
-            "postgresql",
-            "dynamodb"
-          ],
-          "required": false,
-          "default": "as-configured"
         }
       }
     },
@@ -44,12 +33,6 @@
           "type": "string",
           "required": false,
           "default": "1"
-        },
-        "persistence_store": {
-          "description": "The store to render into PersistenceStore (as-configured, postgresql or dynamodb)",
-          "type": "string",
-          "required": false,
-          "default": "as-configured"
         }
       }
     }
@@ -64,8 +47,7 @@
   "env": {
     "DEPLOY_ROLE": "${{ vars.DEV_DEPLOY_ROLE_ARN || 'arn:aws:iam::509614632283:role/lookahead-dev-deploy' }}",
     "RELEASE_VERSION": "${{ inputs.release_version }}",
-    "DEPLOY_DESIRED_COUNT": "${{ inputs.desired_count || '1' }}",
-    "DEPLOY_PERSISTENCE_STORE": "${{ inputs.persistence_store || 'as-configured' }}"
+    "DEPLOY_DESIRED_COUNT": "${{ inputs.desired_count || '1' }}"
   },
   "jobs": {
     "validate": {

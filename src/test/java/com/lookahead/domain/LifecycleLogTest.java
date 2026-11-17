@@ -48,7 +48,7 @@ class LifecycleLogTest {
                             + " environment dev, profiles [accounts,resource], readiness ACCEPTING_TRAFFIC",
                     "Readiness state REFUSING_TRAFFIC: the app takes no new traffic (it is starting or stopping)",
                     "Readiness state ACCEPTING_TRAFFIC: the app accepts traffic once its readiness checks are UP (lookahead.health)",
-                    "Liveness BROKEN: the app reports itself broken and should be restarted");
+                    "Liveness BROKEN: the app reports itself broken and should be restarted (LIVENESS_BROKEN)");
             assertThat(log.lines()).extracting(line -> line.getLevel()).containsExactly(Level.INFO, Level.INFO, Level.INFO, Level.INFO, Level.INFO, Level.WARN);
             assertThat(LogCapture.keys(log.only("startup"))).containsEntry("domain.version", "2026.11.4.19").containsEntry("release.tag", "v2026.11.04.19.00")
                     .containsEntry("profiles", "accounts,resource").containsEntry("availability.readiness", "ACCEPTING_TRAFFIC");

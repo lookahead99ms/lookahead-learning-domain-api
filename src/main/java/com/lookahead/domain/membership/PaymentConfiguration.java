@@ -5,7 +5,7 @@ import org.springframework.core.env.Environment;
 
 @Configuration
 public class PaymentConfiguration {
-    /** DLV-970: the mock provider's records come from the selected store ({@link JdbcMockPaymentStore} or {@link DynamoMockPaymentStore}). */
+    /** DLV-970: the mock provider's records come from the store ({@link DynamoMockPaymentStore}). */
     @Bean PaymentGateway paymentGateway(MockPaymentStore store,Environment environment) {
         String deployment=environment.getProperty("app.deployment-environment", "local");
         String provider=environment.getProperty("app.payments.provider","mock");

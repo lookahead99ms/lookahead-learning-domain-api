@@ -9,7 +9,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
 
@@ -35,8 +34,7 @@ public class AccountAdmissionService {
     private final AdmissionStore store;
     private final StaffAccessService access;
     private final StaffAccessRepository staff;
-    public AccountAdmissionService(JdbcTemplate jdbc,StaffAccessService access,StaffAccessRepository staff,ObjectMapper mapper){this(new JdbcAdmissionStore(jdbc,mapper,null),access,staff);}
-    /** DLV-970: the store (PostgreSQL or DynamoDB) is selected by {@code app.persistence.store}. */
+    /** DLV-970: the DynamoDB store (PostgreSQL retired 2026-11-17). */
     @org.springframework.beans.factory.annotation.Autowired
     public AccountAdmissionService(AdmissionStore store,StaffAccessService access,StaffAccessRepository staff){this.store=store;this.access=access;this.staff=staff;}
 

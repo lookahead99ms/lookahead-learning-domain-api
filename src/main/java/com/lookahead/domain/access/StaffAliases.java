@@ -6,9 +6,7 @@ import com.lookahead.learning.content.security.LocalAuthorAccess;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.PlatformTransactionManager;
 
 /**
  * DLV-969 (owner decision 2026-11-03): only the owner sees who people are. Everyone else sees another person as a
@@ -24,10 +22,7 @@ public class StaffAliases {
     private final StaffAccessService access;
     private final StaffAccessRepository staff;
 
-    public StaffAliases(JdbcTemplate jdbc, StaffAccessService access, StaffAccessRepository staff, PlatformTransactionManager manager) {
-        this(new JdbcStaffAliasStore(jdbc, manager), access, staff);
-    }
-    /** DLV-970: the store (PostgreSQL or DynamoDB) is selected by {@code app.persistence.store}. */
+    /** DLV-970: the DynamoDB store (PostgreSQL retired 2026-11-17). */
     @org.springframework.beans.factory.annotation.Autowired
     public StaffAliases(StaffAliasStore store, StaffAccessService access, StaffAccessRepository staff) {
         this.store = store; this.access = access; this.staff = staff;

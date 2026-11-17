@@ -2,7 +2,6 @@ package com.lookahead.domain.access;
 
 import static com.lookahead.domain.cloud.CloudAccountItems.*;
 
-import com.lookahead.domain.persistence.PersistenceStore;
 import com.lookahead.domain.persistence.dynamodb.DynamoItems;
 import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
 import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
@@ -15,7 +14,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
@@ -28,7 +26,6 @@ import tools.jackson.databind.ObjectMapper;
  * per email) that commit with it. Events are insert-only {@code STAFF#assignmentId / EVENT#revision#id} items.
  */
 @Repository
-@ConditionalOnProperty(name = PersistenceStore.PROPERTY, havingValue = "dynamodb")
 public class DynamoStaffAccessRepository extends StaffAccessRepository {
     static final Duration PENDING_LIFETIME = Duration.ofDays(14);
     private final DynamoDbClient client;

@@ -64,18 +64,11 @@ BLACKOUT_TEXT = 'between 23:30 and 00:30 New York time'
 CONFIG_KEYS = {'schema', 'app', 'service', 'account', 'region', 'imageRepository', 'deployRoleArn', 'cloudFormationRoleArn',
                'sessionPrefix', 'cluster', 'clusterName', 'stack', 'logGroup', 'namespaceName', 'discovery', 'targetGroupArn',
                'observationMinutes', 'refreshObservationMinutes', 'probeUrl', 'probeRequired', 'parameters', 'logFailurePatterns'}
-# DLV-970 (Domain only): the template parameter PersistenceStore selects the store the application reads and writes; the four
-# DynamoDB table parameters are pinned to the DEV names. The configuration carries the standing value; the workflow input
-# `persistence_store` (DEPLOY_PERSISTENCE_STORE) overrides it for one run and defaults to AS_CONFIGURED. AS_CONFIGURED never changes
-# the store a stack already serves: when the configuration and the stack disagree (the window between the cutover and the merge of
-# the deploy-config pull request) the plan is refused, so neither an ordinary deploy nor `01 · Full` flips the store silently; only an
-# input that names the store switches it. Web and Gateway have no switch: their configuration carries none of these keys and an
-# override is refused there.
-STORES = ('postgresql', 'dynamodb')
-STORE_PARAMETER = 'PersistenceStore'
+# DLV-970 (Domain only): the four DynamoDB table parameters are pinned to the DEV names. DynamoDB is the Domain's one store since
+# the PostgreSQL retirement of 2026-11-17; the store switch (PersistenceStore, the `persistence_store` input) went with it. Web and
+# Gateway carry none of these keys.
 TABLE_PARAMETERS = {'UserAccountDetailsTable': 'lookahead-dev-user-account-details', 'AdministratorAuditEventsTable': 'lookahead-dev-administrator-audit-events',
                     'UserStudyPlanDetailsTable': 'lookahead-dev-user-study-plan-details', 'ProtectedOwnerIdentityTable': 'lookahead-dev-protected-owner-identity'}
-AS_CONFIGURED = 'as-configured'
 require = owner.require
 digest = owner.digest
 
@@ -138,30 +131,9 @@ def loadConfig(root):
     # Domain would otherwise fail whenever Gateway is stopped (Web run 41993985015, 2026-11-05).
     require(config['probeRequired'] is (group is not None), 'probeRequired is true for Gateway (target group) and false for Web and Domain')
     params = config['parameters']
-    if STORE_PARAMETER in params or any(key in params for key in TABLE_PARAMETERS):
-        require(params.get(STORE_PARAMETER) in STORES and all(params.get(key) == name for key, name in TABLE_PARAMETERS.items()),
-                'A persistence store switch needs PersistenceStore postgresql or dynamodb and the four DEV DynamoDB table names')
+    if any(key in params for key in TABLE_PARAMETERS):
+        require(all(params.get(key) == name for key, name in TABLE_PARAMETERS.items()), 'The DynamoDB store needs the four DEV DynamoDB table names')
     return config
-
-
-def persistenceStore(env, config, current=None):
-    """The store this deploy renders: the configuration's PersistenceStore unless the workflow input `persistence_store` names one for
-    this run; None for an application without the switch, where an override is refused. `current` is the stack's parameters when it
-    exists: `as-configured` must agree with the store the stack serves, or the plan is refused (a park included: the next start would
-    serve the flipped revision). Only an input that names the store changes it."""
-    configured = config['parameters'].get(STORE_PARAMETER)
-    chosen = str(env.get('DEPLOY_PERSISTENCE_STORE', '')).strip() or AS_CONFIGURED
-    if chosen == AS_CONFIGURED:
-        serving = (current or {}).get(STORE_PARAMETER)
-        require(configured is None or serving is None or serving == configured,
-                'The stack serves the ' + str(serving) + ' store but deployment/dev/deploy-config.json says ' + str(configured)
-                + ': as-configured would switch the store silently. Merge the deploy-config pull request (PersistenceStore=' + str(serving)
-                + ') before any further deploy, or dispatch 04 · Deploy DEV with persistence_store ' + str(serving) + ' to keep the store'
-                + ' (an input naming the other store switches it on purpose)')
-        return configured
-    require(configured is not None, 'This application has no persistence store switch; leave persistence_store as-configured')
-    require(chosen in STORES, 'persistence_store must be as-configured, postgresql or dynamodb')
-    return chosen
 
 
 def loadTemplate(root):
@@ -243,12 +215,9 @@ def stackState(call, name):
             'tags': {row['Key']: row.get('Value') for row in stack.get('Tags', [])}}
 
 
-def parameters(config, image, count, refresh='none', store=None):
+def parameters(config, image, count, refresh='none'):
     rendered = dict(config['parameters'])
     rendered.update({'ApplicationImage': image, 'DesiredCount': str(count), 'RefreshToken': refresh})
-    if store is not None:
-        require(store in STORES and STORE_PARAMETER in rendered, 'Persistence store needs the PersistenceStore parameter')
-        rendered[STORE_PARAMETER] = store
     if config['discovery'] is not None:
         rendered['DiscoveryServiceArn'] = config['discovery']['serviceArn']
     if config['targetGroupArn'] is not None:
@@ -268,15 +237,7 @@ def serviceCounts(call, config):
             'rolloutState': primary.get('rolloutState'), 'taskDefinition': primary.get('taskDefinition')}
 
 
-def storeChange(store, current):
-    """`postgresql → dynamodb` when a serving stack changes store, else the store alone; empty without a switch."""
-    if store is None:
-        return ''
-    before = (current or {}).get(STORE_PARAMETER)
-    return 'store switch ' + before + ' → ' + store if before and before != store else 'persistence store ' + store
-
-
-def resourceRows(config, state, count, current, unchanged=False, busy=False, store=None):
+def resourceRows(config, state, count, current, unchanged=False, busy=False):
     first = state is None
     if busy:
         return [{'action': 'Modify', 'type': 'AWS::ECS::Service', 'consoleName': config['stack'],
@@ -296,9 +257,6 @@ def resourceRows(config, state, count, current, unchanged=False, busy=False, sto
                       else 'service parked at zero tasks; the task definition and stack stay')}]
     if current and current.get('ApplicationImage') and current.get('DesiredCount') == '1':
         rows[1]['note'] += '; currently serving ' + current['ApplicationImage'].rsplit('@', 1)[-1][:19] + '…'
-    if store is not None:
-        rows[0]['note'] += '; ' + storeChange(store, current)
-        rows[1]['note'] += '; the task reads LOOKAHEAD_PERSISTENCE_STORE=' + store
     return rows
 
 
@@ -323,10 +281,7 @@ def plan(env, call, root, get=owner.api, now=None, stage=None, session=1, recove
             'Stack ' + config['stack'] + ' is not updatable: ' + str(state and state['status']) + ' (manual recovery, see README)')
     exists = state is not None and state['status'] != REVIEW
     current = state['parameters'] if exists else {}
-    # DLV-970: the store is settled against the stack's current parameters, so as-configured can never flip it (S2).
-    store = persistenceStore(env, config, current)
-    require(store is None or STORE_PARAMETER in template.get('Parameters', {}), 'Template has no PersistenceStore parameter')
-    rendered = parameters(config, image, count, current.get('RefreshToken', 'none') if exists else 'none', store)
+    rendered = parameters(config, image, count, current.get('RefreshToken', 'none') if exists else 'none')
     # A busy stack's parameters are the ones it is still trying to apply; a park there is always a change.
     unchanged = exists and not busy and not recovery and all(current.get(k) == v for k, v in rendered.items())
     # A duplicate image offers a restart (refresh) or a verification only; a parked duplicate can only be verified.
@@ -337,8 +292,6 @@ def plan(env, call, root, get=owner.api, now=None, stage=None, session=1, recove
               'unchanged': unchanged, 'choices': choices, 'refreshToken': 'run-' + release['runId'],
               'changeSet': 'app-' + release['runId'] + ('-' + stage if stage else ''), 'parameters': rendered,
               'currentImage': current.get('ApplicationImage'), 'currentDesiredCount': current.get('DesiredCount'),
-              # DLV-970: the store this plan renders and the one the stack serves now (None for an application without the switch).
-              'persistenceStore': store, 'currentPersistenceStore': current.get(STORE_PARAMETER) if store is not None else None,
               'observationMinutes': config['observationMinutes'], 'refreshObservationMinutes': config['refreshObservationMinutes'], 'probeUrl': config['probeUrl'],
               'probeRequired': config['probeRequired'],
               # The stack's tags are kept exactly as they are: CloudFormation copies them onto the ECS service, and changing one needs
@@ -348,7 +301,7 @@ def plan(env, call, root, get=owner.api, now=None, stage=None, session=1, recove
               'templateSha256': hashlib.sha256(templateText.encode()).hexdigest(),
               'configSha256': hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest(),
               'busyStackPark': busy and count == 0, 'busyStackStatus': state['status'] if busy and count == 0 else None,
-              'resources': resourceRows(config, state if exists else None, count, current, unchanged, busy and count == 0, store), 'plannedAt': utc(now).isoformat()}
+              'resources': resourceRows(config, state if exists else None, count, current, unchanged, busy and count == 0), 'plannedAt': utc(now).isoformat()}
     if stage:
         result['stage'] = stage
     result['planDigest'] = digest({k: v for k, v in result.items() if k != 'planDigest'})
@@ -387,8 +340,6 @@ def headline(planned):
     action = 'Deploy ' + planned['app'] if planned['desiredCount'] == 1 else 'Park ' + planned['app']
     change = ('rolling update of ' + planned['stack'] if planned['stackExists'] else 'first start of ' + planned['stack']) if planned['desiredCount'] == 1 \
         else planned['stack'] + ' to zero tasks'
-    if planned['desiredCount'] == 1 and planned.get('persistenceStore'):
-        change += ', ' + storeChange(planned['persistenceStore'], {STORE_PARAMETER: planned.get('currentPersistenceStore')})
     if planned['unchanged']:
         change = 'DUPLICATE IMAGE, ' + planned['stack'] + ' already runs it: ' + (' or '.join(planned['choices']) + ' or reject')
     if planned.get('busyStackPark'):
@@ -396,22 +347,12 @@ def headline(planned):
     return {'env': 'DEV', 'action': action, 'subject': planned['imageTag'], 'change': change}
 
 
-def storeNote(planned):
-    """DLV-970: what the approval says about the store a serving plan renders, and the rollback rule of a switch to DynamoDB."""
-    store = planned.get('persistenceStore')
-    if not store or planned['desiredCount'] != 1:
+def dataNote(planned):
+    """DLV-970 (Domain, the one application whose configuration pins the DynamoDB table names): data first, then app."""
+    if planned['desiredCount'] != 1 or not all(planned['parameters'].get(key) == name for key, name in TABLE_PARAMETERS.items()):
         return ''
-    before = planned.get('currentPersistenceStore')
-    text = ' The task definition sets PersistenceStore `' + issueTemplate.text(store) + '` (LOOKAHEAD_PERSISTENCE_STORE)'
-    if before and before != store:
-        text += ', a store switch from `' + issueTemplate.text(before) + '`'
-    text += '.'
-    if store == 'dynamodb':
-        text += (' Run `07 · Migrate DEV data` with this release first (data first, then app), or the task reports DATA_VERSION_BEHIND and never becomes healthy.'
-                 " Before the application's first write on DynamoDB (the migration's seed rows are not application data; PostgreSQL stays complete until then)"
-                 ' this switch goes back with a run of this workflow and `persistence_store` postgresql; after the first application write the way back is a data decision, not a flag.'
-                 ' Afterwards merge the deploy-config pull request (PersistenceStore=dynamodb) before any further deploy: as-configured is refused while the configuration and the stack disagree.')
-    return text
+    return (' The task reads the four DEV DynamoDB tables. Run `07 · Migrate DEV data` with this release first when it needs a new data step'
+            ' (data first, then app), or the task reports DATA_VERSION_BEHIND and never becomes healthy.')
 
 
 def gist(planned, env=None):
@@ -420,7 +361,7 @@ def gist(planned, env=None):
                + t(planned['sessionName']) + '` (at most 60 minutes).',
                '2. Change set `' + t(planned['changeSet']) + '` on stack `' + t(planned['stack']) + '`: task definition with image `'
                + t(planned['image'].rsplit('@', 1)[-1][:19]) + '…`, DesiredCount ' + str(planned['desiredCount']) + '; the preview must match this plan before it is executed.'
-               + storeNote(planned),
+               + dataNote(planned),
                '3. ECS performs the rolling update: the new task starts beside the old one and the old one is drained once the new one is healthy; '
                'if the new revision never becomes healthy the deployment circuit breaker rolls the service back to the previous revision and this run fails.',
                '4. Verify: task HEALTHY, log window clean, ' + ('service discovery lists the task' if planned['parameters'].get('DiscoveryServiceArn') else 'target group healthy')
@@ -458,7 +399,7 @@ def gist(planned, env=None):
 
 
 def body(planned, receipt, env=None):
-    fields = ('releaseVersion', 'imageTag', 'image', 'desiredCount', 'persistenceStore', 'currentPersistenceStore', 'sourceSha', 'workflowSha', 'stack', 'currentImage',
+    fields = ('releaseVersion', 'imageTag', 'image', 'desiredCount', 'sourceSha', 'workflowSha', 'stack', 'currentImage',
               'currentDesiredCount', 'sessionName', 'repository', 'account', 'region')
     shown = [('**' + key + '**', owner.commitLink(planned, planned[key]) if key in ('sourceSha', 'workflowSha') else '`' + issueTemplate.text(str(planned[key])) + '`')
              for key in fields if planned.get(key) is not None]
@@ -474,9 +415,7 @@ def body(planned, receipt, env=None):
                     ('Template and configuration', '`' + planned['templateSha256'][:16] + '…` / `' + planned['configSha256'][:16] + '…` rechecked before execution'),
                     ('Change', 'duplicate image: no-op unless you answer REFRESH (restart on the same image)' if planned['unchanged']
                      else 'park of a busy stack: direct scale to zero, wait, then the park change set' if planned.get('busyStackPark')
-                     else 'rolling update' if planned['stackExists'] else 'first creation')]
-                   + ([('Persistence store', storeChange(planned['persistenceStore'], {STORE_PARAMETER: planned.get('currentPersistenceStore')}))]
-                      if planned.get('persistenceStore') else []),
+                     else 'rolling update' if planned['stackExists'] else 'first creation')],
         evidence='Review the plan artifact of this run before approving.',
         risks='A new revision that never becomes healthy is rolled back by the ECS circuit breaker and this run fails; the previous revision keeps serving. '
             'Old and new tasks overlap for the discovery TTL and the load-balancer drain. This is owner approval enforced by workflow code, not independent review.',
@@ -863,7 +802,7 @@ def main(argv=None, env=None, call=None, get=owner.api, sleep=time.sleep, fetch=
         result = plan(env, call, args.root, get)
         write(args.output, result)
         output(env, plan_digest=result['planDigest'], desired_count=result['desiredCount'])
-        print(json.dumps({k: result[k] for k in ('releaseVersion', 'image', 'desiredCount', 'persistenceStore', 'stackExists', 'unchanged', 'planDigest')}, sort_keys=True))
+        print(json.dumps({k: result[k] for k in ('releaseVersion', 'image', 'desiredCount', 'stackExists', 'unchanged', 'planDigest')}, sort_keys=True))
         return result
     require(bool(args.plan and args.receipt), '--plan and --receipt required')
     planned = readJson(args.plan)
