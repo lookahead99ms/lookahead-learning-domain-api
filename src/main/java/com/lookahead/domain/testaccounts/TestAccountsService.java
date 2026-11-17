@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 import java.time.Instant;
+import java.time.Clock;
 import java.util.*;
 
 @Service
@@ -17,10 +18,16 @@ public class TestAccountsService {
     private final TestAccountStore store;private final ObjectMapper json;private final TestAccountPolicy policy;
     private final ScenarioPurchases purchases;private final ScenarioPlans plans;private final StaffAccessService staff;
     private final AccessSummaryService summaries;private final SnapshotValidator catalog;
+    private final Clock clock;
     @org.springframework.beans.factory.annotation.Autowired
     public TestAccountsService(TestAccountStore store,ObjectMapper json,TestAccountPolicy policy,ScenarioPurchases purchases,
             ScenarioPlans plans,StaffAccessService staff,AccessSummaryService summaries,SnapshotValidator catalog){
+        this(store,json,policy,purchases,plans,staff,summaries,catalog,Clock.systemUTC());
+    }
+    TestAccountsService(TestAccountStore store,ObjectMapper json,TestAccountPolicy policy,ScenarioPurchases purchases,
+            ScenarioPlans plans,StaffAccessService staff,AccessSummaryService summaries,SnapshotValidator catalog,Clock clock){
         this.store=store;this.json=json;this.policy=policy;this.purchases=purchases;this.plans=plans;this.staff=staff;this.summaries=summaries;this.catalog=catalog;
+        this.clock=clock;
     }
     /** PostgreSQL convenience (existing tests and fixtures): the JDBC store on the template's data source. */
     public TestAccountsService(org.springframework.jdbc.core.JdbcTemplate jdbc,ObjectMapper json,TestAccountPolicy policy,ScenarioPurchases purchases,
@@ -93,7 +100,7 @@ public class TestAccountsService {
         // and is never registered as a test account.
         UUID operator=com.lookahead.learning.content.security.LocalAuthorAccess.ACCOUNT_ID;
         store.transact(work->{work.actor("seed");work.seedLock();work.createSubject(operator);return null;});
-        Instant now=Instant.now();int created=0;
+        Instant now=clock.instant();int created=0;
         for(var entry:roster){
             boolean fresh=store.transact(work->{
                 work.actor("seed");
@@ -205,7 +212,7 @@ public class TestAccountsService {
         work.deletePlans(id);
         work.deleteGrants(id);
         work.clearStaffAccess(id);
-        defaults(work,entry,actor.accountId(),request.preset(),Instant.now());
+        defaults(work,entry,actor.accountId(),request.preset(),clock.instant());
         work.resetRegistry(id,request.preset(),actor.accountId());
         work.insertReset(id,request.key(),actor.accountId(),request.preset());
         return false;
@@ -272,7 +279,7 @@ public class TestAccountsService {
             work.admitTestAccount(id,entry.cloudUsername(),entry.firstName(),owner.accountId());
         work.restoreRegistry(id,owner.accountId());
         work.restoreCreations(id);
-        defaults(work,entry,owner.accountId(),"scenario",Instant.now());
+        defaults(work,entry,owner.accountId(),"scenario",clock.instant());
         // The append-only reset ledger records who restored it and when.
         work.insertReset(id,UUID.randomUUID(),owner.accountId(),"restore");
         return true;
@@ -295,7 +302,7 @@ public class TestAccountsService {
         work.createSubject(entry.accountId());
         work.registerRoster(entry.accountId(),entry.cloudUsername(),owner.accountId());
         work.admitTestAccount(entry.accountId(),entry.cloudUsername(),entry.firstName(),owner.accountId());
-        defaults(work,entry,owner.accountId(),"scenario",Instant.now());
+        defaults(work,entry,owner.accountId(),"scenario",clock.instant());
         // DLV-969 (owner, 2026-11-04): its scenario start in the reset ledger, the transaction's last write, so the
         // roster's "changed" count (DevTestRoster.STATUS) has a start for an account that was never reset.
         work.insertReset(entry.accountId(),UUID.randomUUID(),owner.accountId(),"create");
@@ -310,7 +317,7 @@ public class TestAccountsService {
     void applyCreated(UUID id,String template,UUID actor){
         store.transact(work->{
         work.actor(actor.toString());
-        applyTemplate(work,id,template,actor,"scenario",Instant.now());
+        applyTemplate(work,id,template,actor,"scenario",clock.instant());
         return null;
         });
     }

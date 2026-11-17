@@ -162,6 +162,11 @@ access repository/service required by account and preview authorization. Keep
 these test contexts aligned with application dependencies; do not bypass staff
 checks to make isolated contexts start.
 
+DynamoDB test-account fixtures share one controllable clock across scenario creation,
+membership evaluation and store timestamps. `TestAccountsService` defaults to the UTC
+system clock in production; database tests inject their fixture clock and verify creation,
+expiry and reset at fixed dates, so memberships do not become future-dated as CI ages.
+
 
 CI and release validation run `./mvnw -Pcoverage clean verify` with both disposable
 PostgreSQL fixtures configured. JaCoCo 0.8.15 measures every production class,

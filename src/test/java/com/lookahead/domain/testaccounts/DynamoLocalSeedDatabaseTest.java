@@ -75,7 +75,7 @@ class DynamoLocalSeedDatabaseTest {
     private TestAccountsService service(TestAccountPolicy policy, StaffAccessService staff) {
         var plans = new ScenarioPlans(publication, catalog, new DynamoPlanRepository(client, TABLES, json), mock(PlanLifecycle.class), new PlanJson(json), json, policy, fixtures);
         return new TestAccountsService(store(), json, policy, new ScenarioPurchases(new DynamoScenarioPurchaseStore(client, TABLES, json, clock), json, policy),
-                plans, staff, new AccessSummaryService(new DynamoAccessSummaryStore(client, TABLES, json, fakes), staff, clock), catalog);
+                plans, staff, new AccessSummaryService(new DynamoAccessSummaryStore(client, TABLES, json, fakes), staff, clock), catalog, clock);
     }
     private static int plansOf(LearnerScenario scenario) {
         return switch (scenario.planKind()) { case NONE -> 0; case SEVERAL -> 2; default -> 1; };
