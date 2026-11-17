@@ -69,6 +69,7 @@ class DynamoMigrationDatabaseTest {
         purge(TABLES.administratorAuditEventsTableName(), "STAFF_ALIAS#");
         purge(TABLES.userAccountDetailsTableName(), "CATALOG");
         purge(TABLES.userAccountDetailsTableName(), "SEQUENCE#");
+        purge(TABLES.userAccountDetailsTableName(), "IMPORT#");
     }
     private static void purge(String table, String prefix) {
         var scan = client.scan(ScanRequest.builder().tableName(table).consistentRead(true).filterExpression("begins_with(pk, :p)")
@@ -109,22 +110,22 @@ class DynamoMigrationDatabaseTest {
         try (var logs = LogCapture.start("lookahead.migration")) {
             var outcome = runner.migrate("github-1");
             assertThat(outcome.before()).isZero();
-            assertThat(outcome.after()).isEqualTo(4);
-            assertThat(outcome.applied()).containsExactly("1 base-tables", "2 staff-alias-counters", "3 membership-catalog", "4 review-record-counters");
+            assertThat(outcome.after()).isEqualTo(5);
+            assertThat(outcome.applied()).containsExactly("1 base-tables", "2 staff-alias-counters", "3 membership-catalog", "4 review-record-counters", "5 account-access-import");
             assertThat(outcome.ahead()).isFalse();
             assertThat(logs.messages()).contains("Applying data step 1 base-tables", "Recorded data step 1 base-tables; CURRENT is now 1",
-                    "Recorded data step 2 staff-alias-counters; CURRENT is now 2", "Recorded data step 4 review-record-counters; CURRENT is now 4",
-                    "Migration complete: the data is at 4; this build knows 4 step(s)");
+                    "Recorded data step 2 staff-alias-counters; CURRENT is now 2", "Recorded data step 4 review-record-counters; CURRENT is now 4", "Recorded data step 5 account-access-import; CURRENT is now 5",
+                    "Migration complete: the data is at 5; this build knows 5 step(s)");
         }
         assertThat(readiness.health().getStatus()).isEqualTo(Status.UP);
         var ledger = new DynamoMigrationLedger(client, TABLES);
-        assertThat(ledger.current()).isEqualTo(4);
+        assertThat(ledger.current()).isEqualTo(5);
         var history = ledger.history();
-        assertThat(history).extracting(DynamoMigrationLedger.AppliedStep::version).containsExactly(1, 2, 3, 4);
+        assertThat(history).extracting(DynamoMigrationLedger.AppliedStep::version).containsExactly(1, 2, 3, 4, 5);
         assertThat(history).extracting(DynamoMigrationLedger.AppliedStep::runId).containsOnly("github-1");
         assertThat(history.get(1).checksum()).isEqualTo(DomainDynamoCatalog.catalog().checksum(2));
         assertThat(history.get(1).appliedAt()).isEqualTo(NOW);
-        assertThat(item(TABLES.protectedOwnerIdentityTableName(), "CURRENT").get("version")).isEqualTo(n("4"));
+        assertThat(item(TABLES.protectedOwnerIdentityTableName(), "CURRENT").get("version")).isEqualTo(n("5"));
         // Steps 3 and 4 seeded the catalog (ten plans and META at revision 1) and the two record counters at 0.
         var plans = com.lookahead.domain.membership.MembershipItems.query(client, TABLES.userAccountDetailsTableName(), "CATALOG", "PLAN#");
         assertThat(plans).hasSize(10);
@@ -148,11 +149,11 @@ class DynamoMigrationDatabaseTest {
                 .key(Map.of("pk", s("STAFF_ROLE#learner"), "sk", s("COUNTER"))).build()).item()).isNotEmpty();
         var again = runner.migrate("github-2");
         assertThat(again.applied()).isEmpty();
-        assertThat(again.before()).isEqualTo(4);
+        assertThat(again.before()).isEqualTo(5);
         assertThat(item(TABLES.protectedOwnerIdentityTableName(), "LOCK").get("fence")).isEqualTo(n("2"));
         var verified = runner.verify();
-        assertThat(verified.verified()).containsExactly("1 base-tables", "2 staff-alias-counters", "3 membership-catalog", "4 review-record-counters");
-        assertThat(ledger.history()).hasSize(4);
+        assertThat(verified.verified()).containsExactly("1 base-tables", "2 staff-alias-counters", "3 membership-catalog", "4 review-record-counters", "5 account-access-import");
+        assertThat(ledger.history()).hasSize(5);
         // The owner binding is never touched by migration: whatever an earlier class seeded (or nothing) is still there, unchanged.
         assertThat(owner()).isEqualTo(ownerBefore);
     }
@@ -327,14 +328,14 @@ class DynamoMigrationDatabaseTest {
         var out = new java.io.ByteArrayOutputStream();
         var variables = Map.of("LOOKAHEAD_ENVIRONMENT", "local", "LOOKAHEAD_DYNAMODB_ENDPOINT", System.getenv("DLV970_DYNAMODB_TEST_ENDPOINT"));
         assertThat(DomainDynamoMigration.run(new String[]{"status"}, variables, new java.io.PrintStream(out), clock)).isZero();
-        assertThat(out.toString()).contains("\"command\":\"status\"").contains("\"before\":0").contains("\"required\":4");
+        assertThat(out.toString()).contains("\"command\":\"status\"").contains("\"before\":0").contains("\"required\":5");
         out.reset();
         assertThat(DomainDynamoMigration.run(new String[]{"migrate"}, variables, new java.io.PrintStream(out), clock)).isZero();
-        assertThat(out.toString()).contains("\"after\":4").contains("\"applied\":[\"1 base-tables\",\"2 staff-alias-counters\",\"3 membership-catalog\",\"4 review-record-counters\"]").contains("\"runId\":\"local-");
+        assertThat(out.toString()).contains("\"after\":5").contains("\"applied\":[\"1 base-tables\",\"2 staff-alias-counters\",\"3 membership-catalog\",\"4 review-record-counters\",\"5 account-access-import\"]").contains("\"runId\":\"local-");
         out.reset();
         assertThat(DomainDynamoMigration.run(new String[]{"verify"}, Map.of("LOOKAHEAD_ENVIRONMENT", "local",
                 "LOOKAHEAD_DYNAMODB_ENDPOINT", variables.get("LOOKAHEAD_DYNAMODB_ENDPOINT"), "GITHUB_RUN_ID", "41"), new java.io.PrintStream(out), clock)).isZero();
-        assertThat(out.toString()).contains("\"verified\":[\"1 base-tables\",\"2 staff-alias-counters\",\"3 membership-catalog\",\"4 review-record-counters\"]").contains("\"runId\":\"github-41\"");
+        assertThat(out.toString()).contains("\"verified\":[\"1 base-tables\",\"2 staff-alias-counters\",\"3 membership-catalog\",\"4 review-record-counters\",\"5 account-access-import\"]").contains("\"runId\":\"github-41\"");
         out.reset();
         assertThat(DomainDynamoMigration.run(new String[]{"drop"}, variables, new java.io.PrintStream(out), clock)).isEqualTo(2);
         assertThat(DomainDynamoMigration.run(new String[]{}, variables, new java.io.PrintStream(out), clock)).isEqualTo(2);

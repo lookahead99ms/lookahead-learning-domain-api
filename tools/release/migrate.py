@@ -90,11 +90,27 @@ def loadConfig(root):
     return config
 
 
-def environment(config, runId):
-    """What the entrypoint reads: the environment, the region, the four tables and the run identity it records in the ledger."""
+IMPORT_URL_VARIABLE, IMPORT_USER_VARIABLE, IMPORT_PASSWORD_VARIABLE = 'LOOKAHEAD_IMPORT_JDBC_URL', 'LOOKAHEAD_IMPORT_DB_USER', 'LOOKAHEAD_IMPORT_DB_PASSWORD'
+IMPORT_USER = 'lookahead_platform_app'
+JDBC_URL = 'jdbc:postgresql://{host}:5432/lookahead_platform?sslmode=verify-full&sslrootcert=/opt/lookahead/trust/rds-global-bundle.pem'
+
+
+def environment(config, runId, mode='migrate'):
+    """What the entrypoint reads: the environment, the region, the four tables and the run identity it records in the ledger. A `migrate`
+    also gets the PostgreSQL import source of data step 5 (the service's own JDBC URL and read-write role; the step only reads)."""
     variables = {'LOOKAHEAD_ENVIRONMENT': 'dev', 'AWS_REGION': config['region'], 'GITHUB_RUN_ID': runId, 'JAVA_TOOL_OPTIONS': JAVA_TOOL_OPTIONS}
     variables.update({variable: config['parameters'][parameter] for parameter, variable in TABLE_VARIABLES.items()})
+    if mode == 'migrate':
+        variables[IMPORT_URL_VARIABLE] = JDBC_URL.format(host=config['parameters']['DatabaseAddress'])
+        variables[IMPORT_USER_VARIABLE] = IMPORT_USER
     return variables
+
+
+def secrets(config, mode):
+    """The one ECS secret of a `migrate`: the runtime database password, as the service template injects it (secret ARN, key, version)."""
+    if mode != 'migrate':
+        return {}
+    return {IMPORT_PASSWORD_VARIABLE: config['parameters']['DomainAppSecretArn'] + ':password::' + config['parameters']['DomainAppVersion']}
 
 
 def ledgerRows(mode, table):
@@ -114,6 +130,12 @@ def resourceRows(planned):
             {'action': 'No change', 'type': 'AWS::ECS::Service', 'consoleName': planned['stack'],
              'note': 'the running release keeps serving' + (' on the ' + planned['currentPersistenceStore'] + ' store' if planned.get('currentPersistenceStore') else '')
                      + '; deploy this release with persistence_store dynamodb afterwards (04 · Deploy DEV)'}]
+    if mode == 'migrate':
+        rows.append({'action': 'Read only', 'type': 'AWS::RDS::DBInstance', 'consoleName': planned['environment'][IMPORT_URL_VARIABLE].split('//', 1)[1].split(':', 1)[0],
+                     'note': 'data step 5 reads the real accounts and their access (cloud_accounts, cloud_identities, cloud_admission_events, staff_access, staff_aliases)'
+                             ' as ' + IMPORT_USER + '; nothing is written to PostgreSQL'})
+        rows.append({'action': 'Read', 'type': 'AWS::SecretsManager::Secret', 'consoleName': planned['secrets'][IMPORT_PASSWORD_VARIABLE].split(':secret:', 1)[1].split(':', 1)[0],
+                     'note': 'the runtime database password, injected by the execution role as ' + IMPORT_PASSWORD_VARIABLE + ' (the same secret and version the service uses)'})
     for parameter, variable in TABLE_VARIABLES.items():
         name = tables[variable]
         if mode == 'migrate':
@@ -133,13 +155,13 @@ def plan(env, call, root, get=owner.api, now=None):
     state = deploy.stackState(call, config['stack'])
     current = state['parameters'] if state and state['status'] != deploy.REVIEW else {}
     params = config['parameters']
-    variables = environment(config, release['runId'])
+    variables = environment(config, release['runId'], mode)
     result = {'schema': SCHEMA_PLAN, **release, 'command': mode, 'image': image, 'account': config['account'], 'region': config['region'],
               'deployRoleArn': config['deployRoleArn'], 'sessionName': config['sessionPrefix'] + '-migrate-' + release['runId'] + '-1',
               'cluster': config['cluster'], 'clusterName': config['clusterName'], 'stack': config['stack'], 'family': FAMILY, 'containerName': CONTAINER,
               'taskRoleArn': 'arn:aws:iam::' + config['account'] + ':role/' + MIGRATION_TASK_ROLE, 'executionRoleArn': params['ExecutionRoleArn'],
               'subnets': params['ApplicationSubnets'].split(','), 'securityGroup': params['ServiceSecurityGroup'],
-              'logGroup': config['logGroup'], 'logStreamPrefix': LOG_PREFIX, 'entryPoint': ENTRY_POINT, 'environment': variables,
+              'logGroup': config['logGroup'], 'logStreamPrefix': LOG_PREFIX, 'entryPoint': ENTRY_POINT, 'environment': variables, 'secrets': secrets(config, mode),
               'tables': {variable: variables[variable] for variable in TABLE_VARIABLES.values()},
               'ledger': {'table': variables['LOOKAHEAD_DYNAMODB_PROTECTED_OWNER_IDENTITY_TABLE'], 'partition': LEDGER_PARTITION, 'items': [key for key, _ in LEDGER_ITEMS]},
               'currentPersistenceStore': current.get(deploy.STORE_PARAMETER), 'currentDesiredCount': current.get('DesiredCount'), 'currentImage': current.get('ApplicationImage'),
@@ -196,14 +218,16 @@ def gist(planned, env=None):
              + MIGRATION_TASK_ROLE + '`, execution role `' + t(planned['executionRoleArn'].rsplit('/', 1)[-1]) + '`, awslogs to `' + t(planned['logGroup']) + '`, entry point '
              '`java -cp /opt/lookahead/app.jar -Dloader.main=…DomainDynamoMigration org.springframework.boot.loader.launch.PropertiesLauncher ' + mode + '`.',
              '3. `ecs run-task`: one Fargate task on `' + t(planned['clusterName']) + '` in the service\'s subnets and security group, with LOOKAHEAD_ENVIRONMENT=dev, AWS_REGION, '
-             'the four table names and GITHUB_RUN_ID=' + t(planned['runId']) + ' (recorded in the ledger as `github-' + t(planned['runId']) + '`).',
+             'the four table names and GITHUB_RUN_ID=' + t(planned['runId']) + ' (recorded in the ledger as `github-' + t(planned['runId']) + '`)'
+             + (', plus the PostgreSQL import source of data step 5: ' + IMPORT_URL_VARIABLE + ' (the service\'s JDBC URL), ' + IMPORT_USER_VARIABLE + '=' + IMPORT_USER
+                + ' and the secret ' + IMPORT_PASSWORD_VARIABLE + ' (the runtime database password the execution role already injects into the service).' if mode == 'migrate' else '.'),
              '4. Wait at most ' + str(STOP_SECONDS // 60) + ' minutes for the task to stop (`ecs describe-tasks`), read its exit code, then the one JSON report line from the log stream '
              '`' + LOG_PREFIX + '/' + CONTAINER + '/<task id>` (`logs get-log-events`): `{"command":"' + mode + '","before":N,"after":M,"required":R,"applied":[…],"verified":[…],"ahead":…}`.',
              '5. The run succeeds only with exit code 0, a report line without `failed`, the command and run identity it names'
              + (' and `after` at `required`.' if mode == 'migrate' else ' and an empty `applied` list (no ledger change).')
              + ' The result artifact of this run holds every step; the issue is closed with the outcome.']
     tail = ('Exit code 1 means the entrypoint failed and the ledger is unchanged past the last recorded step: fix the cause and run again with the same release (the entrypoint '
-            'continues from CURRENT). No service, stack, IAM, network or secret changes. Approve within ' + owner.minutesText(window(planned, env))
+            'continues from CURRENT). No service, stack, IAM, network or secret changes (a migrate reads the runtime database secret; it changes none). Approve within ' + owner.minutesText(window(planned, env))
             + ' minutes of this issue being created; the approval comment is then valid for ' + owner.minutesText(owner.approvalValid(env)) + ' minutes.')
     return head + '\n\n' + '\n'.join(steps) + '\n\n' + tail
 
@@ -275,6 +299,7 @@ def taskDefinition(planned):
                                       'linuxParameters': {'capabilities': {'drop': ['ALL']}}, 'essential': True,
                                       'entryPoint': list(p['entryPoint']), 'command': [p['command']],
                                       'environment': [{'name': k, 'value': v} for k, v in sorted(p['environment'].items())],
+                                      **({'secrets': [{'name': k, 'valueFrom': v} for k, v in sorted(p['secrets'].items())]} if p.get('secrets') else {}),
                                       'mountPoints': [{'sourceVolume': 'applicationTmp', 'containerPath': '/tmp', 'readOnly': False}],
                                       'logConfiguration': {'logDriver': 'awslogs', 'options': {'awslogs-group': p['logGroup'], 'awslogs-region': p['region'],
                                                                                                 'awslogs-stream-prefix': p['logStreamPrefix']}}}]}

@@ -22,7 +22,8 @@ migration entrypoint, sweeps). The AWS DEV cutover (tables, IAM, `07 · Migrate 
 deploy with `persistence_store=dynamodb`) stays user-run and is described in the Infra
 cutover guide; local tests do not establish AWS permissions. On DynamoDB the
 `CloudAccountAdministration` command-line tool is not needed: the protected owner identity
-admits itself at first contact and every other account action is an owner endpoint.
+admits itself at first contact (or at its next sign-in, when its `OWNER / ROOT` binding was
+written after that contact) and every other account action is an owner endpoint.
 
 ## Audit retention and Local fixture provisioning
 
@@ -1052,6 +1053,15 @@ deployed on `dynamodb` ("data first, then app"). There is no pipeline gate: the 
 serving while the data moves ahead; a release deployed on `dynamodb` before its migration reports
 `DATA_VERSION_BEHIND` in readiness and never becomes healthy, and the ECS circuit breaker rolls it back.
 
+A `migrate` run also receives the PostgreSQL import source of data step 5 (`account-access-import`,
+owner decision 2026-11-17): the service's own JDBC URL as `LOOKAHEAD_IMPORT_JDBC_URL`,
+`LOOKAHEAD_IMPORT_DB_USER=lookahead_platform_app` and, as the task's one ECS secret, the runtime database
+password (`LOOKAHEAD_IMPORT_DB_PASSWORD`, the same secret ARN, key and version the service template
+injects, so the execution role needs no new grant). The step only reads PostgreSQL; `verify` and `status`
+receive none of the three. The import expects the store out of service (switch DEV back to `postgresql`
+with `04 · Deploy DEV` first): it removes the sign-in waiting rows the store recorded since the cutover
+and refuses an admitted account it does not know. See [docs/dynamodb-runtime.md](docs/dynamodb-runtime.md).
+
 ### Dispatching `07 · Migrate DEV data` (one step at a time)
 
 1. Make sure the release is published: `01 · Full` or `03 · Publish` finished with the tag `vYYYY.MM.DD.HH.NN` in ECR as `domain-vYYYY.MM.DD.HH.NN`.
@@ -1126,7 +1136,7 @@ admit them as it admits `domain-deploy-*`. Calls, in order:
 | execute | `ecs:DescribeTasks` | `lookahead-dev-deploy` (already granted for the service's tasks; needs the migrate tasks too) | tasks of `lookahead-dev-cluster` |
 | execute | `logs:GetLogEvents` | `lookahead-dev-deploy` (new; the deploy has `logs:FilterLogEvents` only) | log group `/lookahead/dev/domain`, streams `migrate/migrate/*` |
 | the task | `ecr:GetAuthorizationToken`, `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `logs:CreateLogStream`, `logs:PutLogEvents` | `lookahead-dev-ecs-execution` (already granted for the service) | the image and the log group above |
-| the task | reads `dynamodb:DescribeTable` (all four tables), `GetItem` (also authorises `TransactGetItems`) and `Query` on the account and audit tables, `Scan` on the audit table only (the bootstrap's empty-namespace check); PartiQL writes `dynamodb:PartiQLInsert` through `ExecuteTransaction` on the account and audit tables (staff counters and markers, `CATALOG / PLAN#<id>` + `META`, `SEQUENCE#* / COUNTER`); the ledger on the protected table, partition `DATA_VERSION#DOMAIN` only: `GetItem`, `Query`, `PutItem`, `UpdateItem`, `ConditionCheckItem` (`TransactWriteItems`). No `DeleteItem`, nothing on `OWNER/ROOT`. The running application's role: `ExecuteTransaction` (PartiQL `INSERT` / `UPDATE` / `DELETE`; `PartiQLInsert` only on the audit table) plus `GetItem`, `Query`, `Scan`, `BatchGetItem`, `TransactGetItems`, `DescribeTable`; no native write anywhere | `lookahead-dev-migration-task` | the four `lookahead-dev-*` tables |
+| the task | reads `dynamodb:DescribeTable` (all four tables), `GetItem` (also authorises `TransactGetItems`) and `Query` on the account and audit tables, `Scan` on the audit table only (the bootstrap's empty-namespace check); PartiQL writes through `ExecuteTransaction`: `dynamodb:PartiQLInsert` on the account and audit tables (staff counters and markers, `CATALOG / PLAN#<id>` + `META`, `SEQUENCE#* / COUNTER`, the imported account, access and audit items of step 5), `dynamodb:PartiQLUpdate` and `dynamodb:PartiQLDelete` on the account table only (step 5 raises the counters and removes the pre-import waiting rows; the audit table stays append-only); the ledger on the protected table, partition `DATA_VERSION#DOMAIN` only: `GetItem`, `Query`, `PartiQLInsert`, `PartiQLUpdate` (corrected 2026-11-17, transition `dev-dynamodb-ledger-partiql`). Nothing on `OWNER/ROOT`. A `migrate` task also reads the platform database as `lookahead_platform_app` with the runtime secret its execution role already injects. The running application's role: `ExecuteTransaction` (PartiQL `INSERT` / `UPDATE` / `DELETE`; `PartiQLInsert` only on the audit table) plus `GetItem`, `Query`, `Scan`, `BatchGetItem`, `TransactGetItems`, `DescribeTable`; no native write anywhere | `lookahead-dev-migration-task` | the four `lookahead-dev-*` tables |
 
 The task definition is registered without tags (no `ecs:TagResource`), with a read-only root file
 system, `/tmp` as a volume and blocking `awslogs` (the report line is never dropped). The service's
