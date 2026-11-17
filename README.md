@@ -1030,12 +1030,12 @@ default, or `dynamodb`) and four table parameters pinned by `AllowedPattern` to 
 `LOOKAHEAD_PERSISTENCE_STORE` and the four `LOOKAHEAD_DYNAMODB_*_TABLE` variables beside the unchanged
 `AWS_REGION` and `LOOKAHEAD_ENVIRONMENT=dev`; the JDBC settings stay in the task definition and are
 ignored in dynamodb mode. `deployment/dev/deploy-config.json` carries the standing value
-(`PersistenceStore: postgresql` today) and the four names. `04 · Deploy DEV` has a new input
+(`PersistenceStore: dynamodb` since the DEV cutover of 2026-11-17; `postgresql` before it) and the four names. `04 · Deploy DEV` has a new input
 `persistence_store`: `as-configured` (the default, also what `01 · Full` passes) renders the
 configuration's value, `postgresql` or `dynamodb` overrides it for that one run. The plan, the approval
 issue (title, `persistenceStore` / `currentPersistenceStore` fields, the stack and service resource
 rows) and the result name the store; a store change on the same image is a change, not a duplicate.
-After the cutover the standing value is changed to `dynamodb` in `deploy-config.json` by a PR, so that
+After the cutover the standing value was changed to `dynamodb` in `deploy-config.json` by a PR, so that
 later deploys need no input.
 
 ### Order: migrate, then deploy
