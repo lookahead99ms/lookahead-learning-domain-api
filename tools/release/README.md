@@ -299,3 +299,7 @@ actionlint .github/workflows/*.yml
 Tests simulate the GitHub, AWS and Docker boundaries; they do not certify a hosted run. A hosted
 run counts only with its receipts: the release-tag record, the registry readback, the deploy plan,
 approval and result.
+
+Deploy and recovery CLI tests freeze the clock for the complete plan/approval/execution flow,
+so the suite can run during DEV's 23:30–00:30 New York deployment blackout. Separate CLI tests
+verify that serving plans are still rejected during that window; the production guard is unchanged.
