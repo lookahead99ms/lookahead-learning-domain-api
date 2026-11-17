@@ -1,15 +1,16 @@
 """`05 · Recover DEV` (tools/release/recover.py): park, deploy the target, fall back, park again. AWS and GitHub are the injected
 fakes of test_deploy; nothing is called for real."""
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import deploy
 import recover as m
 import owner_approval as owner
-from test_deploy import APP, HAS_STORE, DeployFixture
+from test_deploy import APP, HAS_STORE, DeployFixture, NY_2350, NY_0020
 from test_owner_approval import record
 
 FALLBACK = 'v2026.10.20.10.00'
@@ -292,7 +293,10 @@ class SummaryAndCommandTests(RecoverFixture):
         text, served = m.summary(planned, directory)
         self.assertIsNone(served); self.assertIn('Nothing serves', text)
 
-    def test_command_line_runs_each_mode_and_fails_when_nothing_serves(self):
+    @patch.object(deploy, 'datetime', wraps=datetime)
+    def test_command_line_runs_each_mode_and_fails_when_nothing_serves(self, clock):
+        # Recovery CLI planning and stage execution must use the same clock as approval fixtures.
+        clock.now.return_value = self.now
         self.aws.serving('old')
         planned = self.recovery()
         outputs = self.out / 'outputs.txt'; summary = self.out / 'summary.md'
@@ -303,6 +307,7 @@ class SummaryAndCommandTests(RecoverFixture):
         deploy.write(receiptPath, self.approvedRecovery(deploy.readJson(planPath, 1024 * 1024)))
         m.main(['verify', '--plan', str(planPath), '--receipt', str(receiptPath), '--root', str(self.root)], env=env, call=self.aws, get=self.get, now=self.now)
         planned = deploy.readJson(planPath, 1024 * 1024)
+        self.assertEqual(self.now.isoformat(), planned['plannedAt'])
         for name in ('park', 'target'):
             self.aws.session = m.stagePlan(planned, name)['sessionName']
             m.main(['stage', '--stage', name, '--plan', str(planPath), '--receipt', str(receiptPath), '--dir', str(stages), '--root', str(self.root)],
@@ -319,6 +324,19 @@ class SummaryAndCommandTests(RecoverFixture):
             m.main(['stage', '--stage', 'target', '--plan', str(planPath), '--receipt', str(receiptPath), '--dir', str(stages), '--root', str(self.root)],
                    env=env, call=self.aws, get=self.get, sleep=lambda s: None, fetch=lambda url: 200)
         self.assertEqual('unhealthy', deploy.readJson(stages / 'target.json')['outcome'])
+
+    @patch.object(deploy, 'datetime', wraps=datetime)
+    def test_cli_recovery_plan_enforces_blackout_before_writing_a_plan(self, clock):
+        self.aws.serving('old')
+        output = self.out / 'blackout-plan.json'
+        for instant in (NY_2350, NY_0020):
+            with self.subTest(instant=instant):
+                clock.now.return_value = instant
+                with self.assertRaisesRegex(ValueError, 'No deploy between 23:30 and 00:30 New York time'):
+                    m.main(['plan', '--root', str(self.root), '--output', str(output)],
+                           env=self.env, call=self.aws, get=self.get)
+                self.assertFalse(output.exists())
+        self.assertEqual([], self.aws.ops('cloudformation', 'execute-change-set'))
 
 
 if __name__ == '__main__':

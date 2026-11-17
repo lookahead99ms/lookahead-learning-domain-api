@@ -146,7 +146,7 @@ class DynamoTestAccountsDatabaseTest {
     TestAccountsService serviceOn(DynamoDbClient on, AccountPrincipal who) {
         var staff = staffFor(who);
         var service = new TestAccountsService(storeOn(on), json, policy, new ScenarioPurchases(new DynamoScenarioPurchaseStore(on, TABLES, json, clock), json, policy),
-                plans, staff, new AccessSummaryService(new DynamoAccessSummaryStore(on, TABLES, json, fakes), staff, clock), catalog);
+                plans, staff, new AccessSummaryService(new DynamoAccessSummaryStore(on, TABLES, json, fakes), staff, clock), catalog, clock);
         service.configureMemberships(new MembershipService(new DynamoMembershipStore(on, TABLES, json, clock), json,
                 new OwnerApprovalPaymentGateway(new MockStripePaymentGateway(new DynamoMockPaymentStore(on, TABLES), "success")), staff, clock));
         service.configureAliases(aliases());
@@ -173,6 +173,28 @@ class DynamoTestAccountsDatabaseTest {
     static UUID roster(String username) { return new TestAccountRoster.Entry(username).accountId(); }
     static AccountFailure failure(ThrowableAssert.ThrowingCallable call) { return catchThrowableOfType(AccountFailure.class, call); }
     TestAccountStore.RegistryRow registry(UUID id) { return store().transact(work -> work.registry(id)); }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"2026-11-10T08:00:00Z", "2030-06-01T12:00:00Z"})
+    void scenarioCreationAndResetShareTheMembershipClock(String instant) {
+        clock.advance(Duration.between(NOW, Instant.parse(instant)));
+        var service = service(owner);
+        UUID account = roster("learner05");
+        service.admitRosterEntry(owner, new TestAccountRoster.Entry("learner05"));
+        var purchase = purchases(account).getFirst();
+        assertThat(purchase.path("startsAt").asText()).isEqualTo(clock.instant().minus(Duration.ofDays(7)).toString());
+        assertThat(registry(account).lastChangedAt()).isEqualTo(clock.instant());
+        assertThat(service.list(owner).getFirst().path("access").path("label").asText()).isEqualTo("Regular · Learn");
+
+        clock.advance(Duration.ofDays(400));
+        assertThat(service.list(owner).getFirst().path("access").path("label").asText()).isEqualTo("Free");
+        service.reset(owner, account, new TestAccountsService.Reset(UUID.randomUUID(), 1L, "learner05@lookahead.dev", "scenario"));
+        var current = purchases(account).stream().filter(DynamoTestAccountsDatabaseTest::open).toList();
+        assertThat(current).hasSize(1);
+        assertThat(current.getFirst().path("startsAt").asText()).isEqualTo(clock.instant().minus(Duration.ofDays(7)).toString());
+        assertThat(registry(account).lastChangedAt()).isEqualTo(clock.instant());
+        assertThat(service.list(owner).getFirst().path("access").path("label").asText()).isEqualTo("Regular · Learn");
+    }
 
     @Test void theRosterIsCreatedInBatchesAndTestSessionsFollowTheHierarchy() {
         var roster = roster(owner);
@@ -419,7 +441,7 @@ class DynamoTestAccountsDatabaseTest {
         UUID failing = roster.get(4).accountId();
         doThrow(new IllegalStateException("fixture down")).when(purchases).populate(eq(failing), any(), any(), any());
         var staff = staffFor(owner);
-        var service = new TestAccountsService(storeOn(spy), json, local, purchases, plans, staff, new AccessSummaryService(new DynamoAccessSummaryStore(spy, TABLES, json, fakes), staff, clock), catalog);
+        var service = new TestAccountsService(storeOn(spy), json, local, purchases, plans, staff, new AccessSummaryService(new DynamoAccessSummaryStore(spy, TABLES, json, fakes), staff, clock), catalog, clock);
         assertThatThrownBy(() -> service.seed(roster)).isInstanceOf(IllegalStateException.class).hasMessage("fixture down");
         for (int n = 0; n < roster.size(); n++) {
             UUID id = roster.get(n).accountId();

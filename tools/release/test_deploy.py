@@ -956,7 +956,10 @@ class TransportAndCliTests(DeployFixture):
         with self.assertRaisesRegex(ValueError, 'https'):
             m.probe('http://dev.devlookahead.com/')
 
-    def test_cli_plan_approve_verify_execute_write_once(self):
+    @patch.object(m, 'datetime', wraps=datetime)
+    def test_cli_plan_approve_verify_execute_write_once(self, clock):
+        # Freeze every CLI phase, including plan, without bypassing UTC conversion or the blackout guard.
+        clock.now.return_value = self.now
         out = self.root / 'out'
         env = dict(self.env); env['GITHUB_OUTPUT'] = str(out / 'github-output'); env['DEPLOY_DESIRED_COUNT'] = '1'
         out.mkdir()
@@ -967,18 +970,30 @@ class TransportAndCliTests(DeployFixture):
         self.assertIn('desired_count=1', (out / 'github-output').read_text())
         with self.assertRaises(FileExistsError):
             m.main(['plan', '--root', str(self.root), '--output', str(out / 'plan.json')], env, call=self.aws, get=self.get)
-        with patch.object(m, 'utc', side_effect=lambda now=None: self.now if now is None else now):
-            receipt = m.main(['approve', '--root', str(self.root), '--plan', str(out / 'plan.json'), '--receipt', str(out / 'approval.json')], env, get=self.get, sleep=lambda s: None)
-            self.assertEqual(receipt, json.loads((out / 'approval.json').read_text()))
-            m.main(['verify', '--root', str(self.root), '--plan', str(out / 'plan.json'), '--receipt', str(out / 'approval.json')], env, get=self.get)
-            outcome = m.main(['execute', '--root', str(self.root), '--plan', str(out / 'plan.json'), '--receipt', str(out / 'approval.json'), '--output', str(out / 'result.json')],
-                             env, call=self.aws, get=self.get, sleep=lambda s: None, fetch=lambda url: 200)
+        self.assertEqual(self.now.isoformat(), planned['plannedAt'])
+        receipt = m.main(['approve', '--root', str(self.root), '--plan', str(out / 'plan.json'), '--receipt', str(out / 'approval.json')], env, get=self.get, sleep=lambda s: None)
+        self.assertEqual(receipt, json.loads((out / 'approval.json').read_text()))
+        m.main(['verify', '--root', str(self.root), '--plan', str(out / 'plan.json'), '--receipt', str(out / 'approval.json')], env, get=self.get)
+        outcome = m.main(['execute', '--root', str(self.root), '--plan', str(out / 'plan.json'), '--receipt', str(out / 'approval.json'), '--output', str(out / 'result.json')],
+                         env, call=self.aws, get=self.get, sleep=lambda s: None, fetch=lambda url: 200)
         self.assertEqual('success', outcome['outcome'])
         self.assertEqual(outcome, json.loads((out / 'result.json').read_text()))
         with self.assertRaisesRegex(ValueError, '--plan and --receipt required'):
             m.main(['verify', '--root', str(self.root)], env, get=self.get)
         with self.assertRaisesRegex(ValueError, '--output required'):
             m.main(['plan', '--root', str(self.root)], env, call=self.aws, get=self.get)
+
+    @patch.object(m, 'datetime', wraps=datetime)
+    def test_cli_plan_enforces_blackout_before_writing_a_plan(self, clock):
+        output = self.root / 'blackout-plan.json'
+        for instant in (NY_2350, NY_0020):
+            with self.subTest(instant=instant):
+                clock.now.return_value = instant
+                with self.assertRaisesRegex(ValueError, 'No deploy between 23:30 and 00:30 New York time'):
+                    m.main(['plan', '--root', str(self.root), '--output', str(output)],
+                           dict(self.env, DEPLOY_DESIRED_COUNT='1'), call=self.aws, get=self.get)
+                self.assertFalse(output.exists())
+        self.assertEqual([], self.aws.ops('ecr', 'batch-get-image'))
 
 
 if __name__ == '__main__':

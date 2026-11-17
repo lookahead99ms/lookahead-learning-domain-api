@@ -1,5 +1,5 @@
-"""DLV-970: the DEV task carries the persistence store switch and the four DynamoDB table names; DEV stays on PostgreSQL until the
-owner switches it with a deploy that follows a recorded migration."""
+"""DLV-970: the DEV task carries the persistence store switch and the four DynamoDB table names; DEV serves DynamoDB since the
+owner switched it on 2026-11-17 with a deploy that followed the recorded migration (data version 4, run 44014416875)."""
 import json
 from pathlib import Path
 import unittest
@@ -34,8 +34,8 @@ class DevPersistenceStoreTests(unittest.TestCase):
         self.assertNotIn('LOOKAHEAD_DYNAMODB_ENDPOINT', self.environment)  # DEV talks to the Region's service, never an endpoint
         self.assertEqual({'Task', 'Service'}, set(self.template['Resources']))  # the migration task is never part of the service stack
 
-    def test_dev_stays_on_postgresql_until_the_owner_switches(self):
-        self.assertEqual('postgresql', self.config['PersistenceStore'])
+    def test_dev_serves_dynamodb_since_the_cutover(self):
+        self.assertEqual('dynamodb', self.config['PersistenceStore'])  # postgresql until the DEV cutover of 2026-11-17
         self.assertEqual({k: self.config[k] for k in TABLES}, deploy.TABLE_PARAMETERS)
         self.assertLessEqual(set(self.config), set(self.template['Parameters']))
         self.assertLessEqual(len((ROOT / 'deployment/dev/service.template.json').read_text()), 51200)

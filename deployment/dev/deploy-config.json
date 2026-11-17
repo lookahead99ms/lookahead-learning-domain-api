@@ -53,7 +53,7 @@
     "DeliveryPrefix": "delivery/",
     "TestAccountIdentity": "dev",
     "EmailEnabled": "false",
-    "PersistenceStore": "postgresql",
+    "PersistenceStore": "dynamodb",
     "UserAccountDetailsTable": "lookahead-dev-user-account-details",
     "AdministratorAuditEventsTable": "lookahead-dev-administrator-audit-events",
     "UserStudyPlanDetailsTable": "lookahead-dev-user-study-plan-details",
