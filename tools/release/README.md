@@ -43,8 +43,8 @@ records the effective times; set both variables before a run, not between its jo
 1. **Security gate** (`validate`): the release and deploy tooling's own tests with at least 85 percent coverage.
 2. **Release tag** (`release`): `pipeline_tag.py cut` creates the next UTC calendar tag
    `vYYYY.MM.DD.HH.NN` at the run commit through the GitHub API (`contents: write` in this job
-   only; an existing tag naming the commit is reused, a name another run claimed fails, nothing is
-   ever moved). `release_version.py resolve` then freezes `{selector, sourceSha, tagObjectSha,
+   only; every run cuts the next name even when an earlier tag names the same commit, a name
+   another run claimed fails, nothing is ever moved). `release_version.py resolve` then freezes `{selector, sourceSha, tagObjectSha,
    mainSha, workflowSha, repository, runId}` as `release-source.json` (artifact `release-source`).
 3. **Build** (`build`): `ci.yml` through `workflow_call` with `source-sha` = S and image export:
    every CI gate unchanged, the image built with `SOURCE_REVISION=S`, and the scanned archive
