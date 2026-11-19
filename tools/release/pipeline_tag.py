@@ -4,9 +4,10 @@
 Tag-driven, never commit-driven. The pipeline cuts the next tag (`release_version.nextVersion`) at
 $GITHUB_SHA: the merge commit on `push`, the main head on `workflow_dispatch` (refused off main).
 The tag is created through the GitHub API with GITHUB_TOKEN (`contents: write` in the tag job only).
-POST git/refs refuses an existing ref, so a tag is never moved or force-updated. A tag of this
-sequence that already names the run commit is reused (a dispatch from the same main head); a name
-another run claimed first fails. Everything downstream resolves the tag with release_version.py;
+POST git/refs refuses an existing ref, so a tag is never moved or force-updated. Every run cuts the
+next name, even when an earlier tag already names the run commit (owner decision 2026-11-19: a version
+is the identity of a run, never of its bytes, so nothing is ever reused); a name another run claimed
+first fails. Everything downstream resolves the tag with release_version.py;
 no commit SHA is ever an input. The DEV deploy runs inside the same pipeline run (candidate.py and
 Infra tooling at Infra's release tag), never as a dispatch of another repository's workflow. This
 file is identical in the Domain, Web and Gateway/BFF repositories.
@@ -49,32 +50,24 @@ def inventory(repository, run=None):
     return result
 
 
-def existing(sha, tags):
-    """Newest calendar tag that already names `sha` directly (lightweight), else None. Annotated tags are not reused."""
-    matches = [tag for tag, kind, target in tags
-               if kind == 'commit' and target == sha and re.fullmatch(versions.PATTERN, tag, re.ASCII)]
-    return max(matches, key=lambda tag: (tag[:14], int(tag.rsplit('.', 1)[1]))) if matches else None
-
-
 def cut(app, repository, sha, runId, record, run=None, now=None):
     run = run or gh
     require(re.fullmatch('[a-f0-9]{40}', str(sha)), 'Exact run commit required')
     require(not Path(record).exists(), 'Release-tag record already exists; use a new run')
     tags = inventory(repository, run)
-    reused = existing(sha, tags)
-    version = reused or versions.nextVersion(app, [tag for tag, _, _ in tags], now)
-    if not reused:
-        try:
-            # POST git/refs refuses an existing ref (422): created exactly once, never force-updated.
-            run(['api', 'repos/' + repository + '/git/refs', '--method', 'POST',
-                 '-f', 'ref=refs/tags/' + version, '-f', 'sha=' + sha])
-        except ValueError:
-            raise ValueError('Release tag ' + version + ' could not be created (another run may have claimed it); start a new run')
+    # Every run cuts the next name; a tag that already names this commit is left alone, never reused.
+    version = versions.nextVersion(app, [tag for tag, _, _ in tags], now)
+    try:
+        # POST git/refs refuses an existing ref (422): created exactly once, never force-updated.
+        run(['api', 'repos/' + repository + '/git/refs', '--method', 'POST',
+             '-f', 'ref=refs/tags/' + version, '-f', 'sha=' + sha])
+    except ValueError:
+        raise ValueError('Release tag ' + version + ' could not be created (another run may have claimed it); start a new run')
     commit, tagObject = versions.peel(version, lambda path: json.loads(run(['api', 'repos/' + repository + '/' + path])))
     require(commit == sha and tagObject is None, 'Release tag ' + version + ' does not name the run commit')
     created = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
     result = {'schema': SCHEMA, **versions.metadata(app, version), 'sourceSha': sha, 'workflowSha': sha, 'runId': str(runId),
-              'repository': repository, 'reused': bool(reused), 'createdAt': created}
+              'repository': repository, 'createdAt': created}
     Path(record).write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
     return result
 

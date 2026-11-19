@@ -52,7 +52,8 @@ class CutTests(unittest.TestCase):
             record = Path(temp) / 'release-tag.json'
             result = m.cut('domain', REPO, SHA, '77', record, fake.run, NOW)
             self.assertEqual(result['releaseVersion'], 'v2026.10.27.14.01')
-            self.assertEqual((result['sourceSha'], result['workflowSha'], result['runId'], result['reused']), (SHA, SHA, '77', False))
+            self.assertEqual((result['sourceSha'], result['workflowSha'], result['runId']), (SHA, SHA, '77'))
+            self.assertNotIn('reused', result)
             self.assertEqual(result['imageTag'], 'domain-v2026.10.27.14.01')
             self.assertEqual(fake.tags['v2026.10.27.14.01'], ('commit', SHA))
             self.assertEqual(json.loads(record.read_text()), result)
@@ -62,15 +63,16 @@ class CutTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'already exists'):
                 m.cut('domain', REPO, SHA, '78', record, fake.run, NOW)
 
-    def test_reuses_the_tag_that_already_names_the_run_commit_and_ignores_annotated_or_foreign_tags(self):
+    def test_cuts_a_new_tag_even_when_earlier_tags_already_name_the_run_commit(self):
+        # Owner decision 2026-11-19: a version is the identity of a run; a dispatch on an unchanged main still gets the next name.
         fake = FakeGithub({'v2026.10.27.14.00': ('commit', SHA), 'v2026.10.27.14.01': ('commit', SHA),
                            'v2026.10.27.14.02': ('tag', 'b' * 40), 'v2026.10.27.13.00': ('commit', OLD)})
-        self.assertEqual(m.existing(SHA, m.inventory(REPO, fake.run)), 'v2026.10.27.14.01')
-        self.assertIsNone(m.existing('c' * 40, m.inventory(REPO, fake.run)))
         with tempfile.TemporaryDirectory() as temp:
             result = m.cut('web', REPO, SHA, '5', Path(temp) / 'r.json', fake.run, NOW)
-        self.assertEqual((result['releaseVersion'], result['reused']), ('v2026.10.27.14.01', True))
-        self.assertFalse(any('--method' in call for call, _ in fake.calls))
+        self.assertEqual(result['releaseVersion'], 'v2026.10.27.14.03')
+        self.assertNotIn('reused', result)
+        self.assertEqual(fake.tags['v2026.10.27.14.03'], ('commit', SHA))
+        self.assertTrue(any('--method' in call for call, _ in fake.calls))
 
     def test_claimed_name_wrong_target_bad_sha_and_hourly_reset_fail_or_advance_safely(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -103,7 +105,7 @@ class CutTests(unittest.TestCase):
             with patch.object(m, 'gh', FakeGithub(main='f' * 40).run), self.assertRaisesRegex(ValueError, 'Main moved'):
                 m.main(['cut', '--app', 'domain', '--record', str(Path(temp) / 'dispatch.json')], {**base, 'GITHUB_EVENT_NAME': 'workflow_dispatch'})
             with patch.object(m, 'gh', FakeGithub().run), patch('builtins.print'):
-                self.assertFalse(m.main(['cut', '--app', 'domain', '--record', str(Path(temp) / 'dispatch.json')], {**base, 'GITHUB_EVENT_NAME': 'workflow_dispatch'})['reused'])
+                self.assertEqual(m.main(['cut', '--app', 'domain', '--record', str(Path(temp) / 'dispatch.json')], {**base, 'GITHUB_EVENT_NAME': 'workflow_dispatch'})['sourceSha'], SHA)
             for key, value in [('GITHUB_REF', 'refs/heads/feature'), ('GITHUB_EVENT_NAME', 'pull_request'), ('GITHUB_RUN_ATTEMPT', '2'), ('GITHUB_REPOSITORY', 'bad')]:
                 with self.subTest(key=key), patch.object(m, 'gh', FakeGithub().run), self.assertRaises(ValueError):
                     m.main(['cut', '--app', 'domain', '--record', str(Path(temp) / 'x.json')], {**base, key: value})

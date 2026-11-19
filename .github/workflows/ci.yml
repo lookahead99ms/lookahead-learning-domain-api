@@ -29,7 +29,7 @@
       "secrets": {
         "CONTENT_READ_TOKEN": {
           "required": false,
-          "description": "Read-only token for the Content repository's docs/contracts/ (Contents: read); a calling workflow passes it with secrets: inherit"
+          "description": "Read-only token for the Content repository's contracts/ (Contents: read); a calling workflow passes it with secrets: inherit"
         }
       }
     }
