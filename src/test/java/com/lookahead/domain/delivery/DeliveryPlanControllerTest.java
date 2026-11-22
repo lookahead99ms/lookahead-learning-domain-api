@@ -61,7 +61,10 @@ class DeliveryPlanControllerTest {
         http.perform(put(ROOT + "/inbox").contentType("application/json").content(local))
                 .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
                 .andExpect(jsonPath("data.synced").value(true)).andExpect(jsonPath("data.version").value(8))
-                .andExpect(jsonPath("data.counts.takenLocal").value(1)).andExpect(jsonPath("data.reason").value(org.hamcrest.Matchers.nullValue()));
+                .andExpect(jsonPath("data.counts.takenLocal").value(1)).andExpect(jsonPath("data.reason").value(org.hamcrest.Matchers.nullValue()))
+                // DLV-1007: the version the merge started from and the ticket ids behind each count.
+                .andExpect(jsonPath("data.versionBefore").value(7)).andExpect(jsonPath("data.details.takenLocal[0]").value("DLV-1"))
+                .andExpect(jsonPath("data.details.conflicts").isEmpty());
         org.assertj.core.api.Assertions.assertThat(Files.exists(root.resolve("delivery/inbox/plan.json"))).isFalse();
         org.assertj.core.api.Assertions.assertThat(Files.exists(root.resolve("delivery/archive/plan-v7.json"))).isTrue();
         http.perform(get(ROOT)).andExpect(jsonPath("data.version").value(8)).andExpect(jsonPath("data.workItems[0].title").value("Renamed locally"));

@@ -28,8 +28,14 @@ public class DeliveryPlanService {
     public static final Set<String> SERVER_FIELDS = Set.of("createdIn", "updatedIn", "updatedAt", "origin", "pendingLocal");
 
     public record Created(long version, JsonNode item) {}
-    /** An inbox sync: merged into {@code version} with {@code counts}, or left alone for {@code reason} (plain words; {@code null} when synced). */
-    public record Sync(boolean synced, DeliveryPlanMerge.Counts counts, long version, String reason) {}
+    /**
+     * An inbox sync: merged into {@code version} (from {@code versionBefore}) with {@code counts} and the ticket ids behind
+     * them ({@code details}), or left alone for {@code reason} (plain words; {@code null} when synced). DLV-1007 (owner,
+     * 2026-11-22): the Delivery Plan page lists every ticket an upload touched and the conflicts awaiting a choice.
+     */
+    public record Sync(boolean synced, DeliveryPlanMerge.Counts counts, long version, String reason, long versionBefore, DeliveryPlanMerge.Details details) {
+        public Sync(boolean synced, DeliveryPlanMerge.Counts counts, long version, String reason) { this(synced, counts, version, reason, version, null); }
+    }
 
     private final DeliveryPlanStore store;
     private final StaffAccessService access;
@@ -197,7 +203,8 @@ public class DeliveryPlanService {
         }
         long baseVersion = inbox.get().plan().path("baseVersion").isIntegralNumber() ? inbox.get().plan().path("baseVersion").asLong() : inbox.get().version();
         var counts = new DeliveryPlanMerge.Counts[1];
-        long version;
+        var details = new DeliveryPlanMerge.Details[1];
+        long version, versionBefore;
         writes.lock();
         try {
             for (int attempt = 0; ; attempt++) {
@@ -209,8 +216,8 @@ public class DeliveryPlanService {
                     return new Sync(false, null, loaded.version(), "base version " + baseVersion + " not in the archive");
                 }
                 var merged = DeliveryPlanMerge.merge(loaded.plan(), base, inbox.get().plan(), clock.instant().toString());
-                counts[0] = merged.counts();
-                if (store.save(loaded, merged.plan())) { version = loaded.version() + 1; break; }
+                counts[0] = merged.counts(); details[0] = merged.details();
+                if (store.save(loaded, merged.plan())) { versionBefore = loaded.version(); version = versionBefore + 1; break; }
                 if (attempt >= WRITE_ATTEMPTS - 1) throw DeliveryPlanStore.unavailable();
             }
         } finally { writes.unlock(); }
@@ -220,7 +227,7 @@ public class DeliveryPlanService {
                 .addKeyValue("count", c.added() + c.takenLocal() + c.conflicts()).addKeyValue("added", c.added()).addKeyValue("taken", c.takenLocal())
                 .addKeyValue("kept", c.keptDev()).addKeyValue("conflicts", c.conflicts()).addKeyValue("unchanged", c.unchanged()).addKeyValue("deleted", c.deletedOnDev())
                 .log("Delivery inbox merged into plan version {} (base {}): {}", version, baseVersion, c.words());
-        return new Sync(true, c, version, null);
+        return new Sync(true, c, version, null, versionBefore, details[0]);
     }
 
     /**
