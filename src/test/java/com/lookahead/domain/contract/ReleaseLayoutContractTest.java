@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * DLV-968 (owner decisions 2026-11-05 and 2026-11-06): the Content-owned release-layout contract,
- * {@code docs/contracts/release-layout.json} on Content main, the only home of the file. {@code scripts/fetch-contracts.sh}
+ * {@code contracts/release-layout.json} on Content main, the only home of the file. {@code scripts/fetch-contracts.sh}
  * fetches it into {@code .contracts/} (CI step "Fetch contracts from Content" with {@code CONTENT_READ_TOKEN}; a
  * developer's own {@code gh} login locally); this repository keeps no copy and a missing file fails with that
  * instruction. A minimal release is built from the contract alone

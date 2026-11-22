@@ -150,7 +150,7 @@ class StageContractTests(unittest.TestCase):
         self.assertEqual({'release-version': '${{ steps.source.outputs.release_version }}', 'source-sha': '${{ steps.source.outputs.source_sha }}'}, release['outputs'])
         steps = {s['name']: s for s in release['steps'] if 'name' in s}
         self.assertEqual('test "$GITHUB_REF" = refs/heads/main', steps['Refuse any run that is not on main']['run'])
-        cut = steps['Cut the next release tag at the run commit, or reuse the one that already names it']
+        cut = steps['Cut the next release tag at the run commit; never reuse one']
         self.assertEqual('cut', cut['id']); self.assertNotIn('if', cut)
         self.assertEqual('python3 tools/release/pipeline_tag.py cut --app ' + APP + ' --record "$RUNNER_TEMP/release-tag.json"', cut['run'])
         source = steps['Resolve the release tag once and freeze its main commit']

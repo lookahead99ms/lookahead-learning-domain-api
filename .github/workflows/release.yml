@@ -100,7 +100,7 @@
           "run": "test \"$GITHUB_REF\" = refs/heads/main"
         },
         {
-          "name": "Cut the next release tag at the run commit, or reuse the one that already names it",
+          "name": "Cut the next release tag at the run commit; never reuse one",
           "id": "cut",
           "run": "python3 tools/release/pipeline_tag.py cut --app domain --record \"$RUNNER_TEMP/release-tag.json\""
         },

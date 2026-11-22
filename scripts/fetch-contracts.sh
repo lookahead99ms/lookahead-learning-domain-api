@@ -3,7 +3,7 @@
 # every cross-repository contract (owner decision 2026-11-06). Read-only: the files land in a git-ignored
 # folder and are never committed here.
 #
-#   scripts/fetch-contracts.sh     docs/contracts/domain-api-v1.json and docs/contracts/release-layout.json
+#   scripts/fetch-contracts.sh     contracts/domain-api-v1.json and contracts/release-layout.json
 #                                  from Content main into .contracts/ (DomainProviderContractTest,
 #                                  ReleaseLayoutContractTest read them; -Dcontracts.dir=<folder> points elsewhere)
 #
@@ -18,7 +18,7 @@ set +x  # a traced shell (bash -x) would otherwise echo the token
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPOSITORY="lookahead99ms/lookahead-learning-content"
-FOLDER="docs/contracts"
+FOLDER="contracts"
 FILES="domain-api-v1.json release-layout.json"
 CONTRACTS_DIR="${CONTRACTS_DIR:-$ROOT/.contracts}"
 CONTENT_REF="${CONTENT_REF:-main}"

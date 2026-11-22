@@ -55,7 +55,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * DLV-968 T13: provider side of the Gateway-owned Domain API contract. The file is Content's
- * {@code docs/contracts/domain-api-v1.json} (the only home of every cross-repository contract; the Gateway edits it
+ * {@code contracts/domain-api-v1.json} (the only home of every cross-repository contract; the Gateway edits it
  * there first), fetched from Content main into {@code .contracts/} by {@code scripts/fetch-contracts.sh}: in CI the
  * step "Fetch contracts from Content" runs it with {@code CONTENT_READ_TOKEN} before the Maven tests, locally a developer
  * runs it with their own {@code gh} login. This repository keeps no copy; a missing file fails with that instruction.
