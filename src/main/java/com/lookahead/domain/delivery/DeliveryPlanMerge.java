@@ -31,7 +31,10 @@ public final class DeliveryPlanMerge {
                     + unchanged + " unchanged, " + deletedOnDev + " deleted on DEV";
         }
     }
-    public record Result(ObjectNode plan, Counts counts) {}
+    /** The ticket ids behind each count, in plan order; DLV-1007 (owner, 2026-11-22): the page lists them after an upload. */
+    public record Details(List<String> added, List<String> takenLocal, List<String> keptDev, List<String> conflicts,
+                          List<String> unchanged, List<String> deletedOnDev) {}
+    public record Result(ObjectNode plan, Counts counts, Details details) {}
 
     private DeliveryPlanMerge() {}
 
@@ -54,26 +57,29 @@ public final class DeliveryPlanMerge {
             if (chosen != null) result.set(key, chosen.deepCopy());
         }
         int added = 0, taken = 0, kept = 0, conflicts = 0, unchanged = 0, deleted = 0;
+        List<String> addedIds = new ArrayList<>(), takenIds = new ArrayList<>(), keptIds = new ArrayList<>(), conflictIds = new ArrayList<>(),
+                unchangedIds = new ArrayList<>(), deletedIds = new ArrayList<>();
         ArrayNode merged = result.putArray("workItems");
         var seen = new LinkedHashSet<String>();
         for (var entry : devItems.entrySet()) {
             String id = entry.getKey(); ObjectNode devItem = entry.getValue(), baseItem = baseItems.get(id), localItem = localItems.get(id);
             seen.add(id);
-            if (localItem == null) { merged.add(devItem.deepCopy()); if (baseItem == null) kept++; else unchanged++; continue; }
+            if (localItem == null) { merged.add(devItem.deepCopy()); if (baseItem == null) { kept++; keptIds.add(id); } else { unchanged++; unchangedIds.add(id); } continue; }
             boolean localChanged = baseItem == null || !same(localItem, baseItem), devChanged = baseItem == null || !same(devItem, baseItem);
-            if (same(localItem, devItem)) { merged.add(devItem.deepCopy()); unchanged++; continue; }
-            if (localChanged && !devChanged) { merged.add(takeLocal(localItem, devItem, now)); taken++; continue; }
-            if (!localChanged) { merged.add(devItem.deepCopy()); kept++; continue; }
+            if (same(localItem, devItem)) { merged.add(devItem.deepCopy()); unchanged++; unchangedIds.add(id); continue; }
+            if (localChanged && !devChanged) { merged.add(takeLocal(localItem, devItem, now)); taken++; takenIds.add(id); continue; }
+            if (!localChanged) { merged.add(devItem.deepCopy()); kept++; keptIds.add(id); continue; }
             ObjectNode conflict = devItem.deepCopy();
             conflict.set("pendingLocal", stripped(localItem));
-            merged.add(conflict); conflicts++;
+            merged.add(conflict); conflicts++; conflictIds.add(id);
         }
         for (var entry : localItems.entrySet()) {
             if (seen.contains(entry.getKey())) continue;
-            if (baseItems.containsKey(entry.getKey())) { deleted++; continue; }
-            merged.add(takeLocal(entry.getValue(), null, now)); added++;
+            if (baseItems.containsKey(entry.getKey())) { deleted++; deletedIds.add(entry.getKey()); continue; }
+            merged.add(takeLocal(entry.getValue(), null, now)); added++; addedIds.add(entry.getKey());
         }
-        return new Result(result, new Counts(added, taken, kept, conflicts, unchanged, deleted));
+        return new Result(result, new Counts(added, taken, kept, conflicts, unchanged, deleted),
+                new Details(List.copyOf(addedIds), List.copyOf(takenIds), List.copyOf(keptIds), List.copyOf(conflictIds), List.copyOf(unchangedIds), List.copyOf(deletedIds)));
     }
 
     /** Work items by id, in file order; an item without a string id is skipped. */

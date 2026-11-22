@@ -35,6 +35,8 @@ class DeliveryPlanMergeTest {
         assertThat(merged.path("createdIn").asString()).isEqualTo("dev");
         assertThat(merged.has("pendingLocal")).isFalse();
         assertThat(result.counts()).isEqualTo(new DeliveryPlanMerge.Counts(0, 1, 0, 0, 0, 0));
+        assertThat(result.details().takenLocal()).containsExactly("A");
+        assertThat(result.details().added()).isEmpty();
     }
 
     @Test void changedOnDevOnlyKeepsDev() {
@@ -79,6 +81,8 @@ class DeliveryPlanMergeTest {
         assertThat(find(result.plan(), "B").path("title").asString()).isEqualTo("Both dev");
         assertThat(find(result.plan(), "B").path("pendingLocal").path("title").asString()).isEqualTo("Both local");
         assertThat(result.counts()).isEqualTo(new DeliveryPlanMerge.Counts(1, 0, 1, 1, 0, 0));
+        // DLV-1007: the ids behind the counts, in plan order, so the page can list what an upload touched.
+        assertThat(result.details()).isEqualTo(new DeliveryPlanMerge.Details(java.util.List.of("L"), java.util.List.of(), java.util.List.of("D"), java.util.List.of("B"), java.util.List.of(), java.util.List.of()));
     }
 
     @Test void missingFromTheInboxIsNotADeletionAndDeletedOnDevStaysDeleted() {
@@ -89,6 +93,8 @@ class DeliveryPlanMergeTest {
         assertThat(DeliveryPlanMerge.items(result.plan()).keySet()).containsExactly("A");
         assertThat(result.counts().unchanged()).isEqualTo(1);
         assertThat(result.counts().deletedOnDev()).isEqualTo(1);
+        assertThat(result.details().unchanged()).containsExactly("A");
+        assertThat(result.details().deletedOnDev()).containsExactly("G");
         assertThat(result.counts().words()).isEqualTo("0 added, 0 taken from local, 0 kept from DEV, 0 conflict(s), 1 unchanged, 1 deleted on DEV");
     }
 
