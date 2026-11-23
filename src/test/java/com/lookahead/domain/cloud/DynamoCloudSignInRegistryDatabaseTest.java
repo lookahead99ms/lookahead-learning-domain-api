@@ -268,12 +268,16 @@ class DynamoCloudSignInRegistryDatabaseTest {
         assertThat(accounts.sameEmailAccounts(id, "paula@example.invalid")).isEqualTo(1);
         var merge = registry.admit(identity("s-6", "paula@example.invalid", "paula@example.invalid"), proof('m'));
         assertThat(merge.mergeAvailable()).isTrue();
-        // Several eligible accounts share the email: a third identity is not linked but recorded as a new waiting account.
+        // Several eligible accounts share the email and all are admitted: a third identity is not linked to one of them
+        // but admitted as its own account at once, with no waiting row for the owner.
         try (var log = LogCapture.start()) {
-            failsWith(() -> registry.admit(identity("s-8", "third@example.invalid", "paula@example.invalid"), proof('t')), 403, "ACCOUNT_ADMISSION_REQUIRED");
-            assertThat(LogCapture.keys(log.only("identity.link-skipped"))).containsEntry("reason", "SEVERAL_SAME_EMAIL_ACCOUNTS").containsEntry("count", 2);
+            var third = registry.admit(identity("s-8", "third@example.invalid", "paula@example.invalid"), proof('t'));
+            assertThat(third.accountId()).isNotIn(id, other);
+            assertThat(LogCapture.keys(log.only("identity.link-skipped"))).containsEntry("reason", "SEVERAL_SAME_EMAIL_ACCOUNTS").containsEntry("count", 2).containsEntry("allAdmitted", true);
+            assertThat(log.only("admission.admitted-same-email").getFormattedMessage()).contains("admitted at first contact");
         }
         assertThat(accounts.emailAccounts("paula@example.invalid")).hasSize(3);
+        assertThat(admissions.waiting()).isEmpty();
         assertThat(accounts.accountOf(ISSUER, "s-8")).isNotIn(id, other);
         assertThat(accounts.mergeable(id, "paula@example.invalid")).isTrue();
         // No verified email: never linked.

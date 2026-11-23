@@ -36,7 +36,8 @@ public final class DynamoCloudSignInRegistry extends CloudSignInRegistry {
     private record Account(UUID id, String username, String name, boolean author, String provider, Control control) {}
     record Session(UUID id, String family, String binding, Instant created, Instant active, Instant recent, Instant revoked, long generation, String label, String client) {}
     private record Challenge(String digest, String family, String binding, Instant created, Instant expires, Instant auth, boolean cancelled, UUID selected, UUID admitted, long generation) {}
-    private record Linking(Control linked, long emailRevision) {}
+    /** {@code admitNew}: several accounts share the email and all are admitted, so the sign-in becomes its own admitted account. */
+    private record Linking(Control linked, long emailRevision, boolean admitNew) {}
     private final DynamoCloudAccounts accounts;
     private final DynamoDbClient client;
     private final ProtectedOwnerIdentityStore owner;
@@ -330,7 +331,7 @@ public final class DynamoCloudSignInRegistry extends CloudSignInRegistry {
             var linking = link(identity, now);
             provider = CloudIdentities.provider(identity.issuer(), identity.username());
             if (linking.linked == null) {
-                UUID created = request(identity, now, linking.emailRevision); row = accounts.control(created);
+                UUID created = request(identity, now, linking.emailRevision, linking.admitNew); row = accounts.control(created);
                 if (row == null) throw denied();
                 if (!row.admitted()) throw waiting(created, "created");
                 binding = accounts.binding(identity.issuer(), identity.subject());
@@ -393,17 +394,20 @@ public final class DynamoCloudSignInRegistry extends CloudSignInRegistry {
      */
     private Linking link(CognitoIdentity identity, Instant now) {
         String email = email(identity);
-        if (email == null) return new Linking(null, 0);
+        if (email == null) return new Linking(null, 0, false);
         long emailRevision = accounts.emailRevision(email);
         var candidates = accounts.candidates(email);
         String provider = CloudIdentities.provider(identity.issuer(), identity.username());
         if (candidates.size() > 1) {
             int several = candidates.size();
+            boolean allAdmitted = candidates.stream().allMatch(Control::admitted);
             Events.success(Events.EVENT, "identity.link-skipped").addKeyValue("reason", "SEVERAL_SAME_EMAIL_ACCOUNTS").addKeyValue("provider", provider).addKeyValue("count", several)
-                .log("New {} sign-in not linked: {} eligible accounts already share its verified email; recorded as a new waiting account", provider, several);
-            return new Linking(null, emailRevision);
+                .addKeyValue("allAdmitted", allAdmitted)
+                .log("New {} sign-in not linked: {} eligible accounts already share its verified email{}", provider, several,
+                    allAdmitted ? "; all are admitted, so the sign-in is admitted as its own account" : "; recorded as a new waiting account");
+            return new Linking(null, emailRevision, allAdmitted);
         }
-        if (candidates.size() != 1) return new Linking(null, emailRevision);
+        if (candidates.size() != 1) return new Linking(null, emailRevision, false);
         Control row = candidates.getFirst();
         var identityRecord = new Identity(UUID.randomUUID(), identity.issuer(), identity.subject(), identity.username(), provider, email, "linked", now);
         var tx = accounts.transaction();
@@ -417,31 +421,38 @@ public final class DynamoCloudSignInRegistry extends CloudSignInRegistry {
         tx.commit();
         Events.success(Events.EVENT, "identity.linked").addKeyValue("account.id", row.id()).addKeyValue("provider", provider).addKeyValue("admitted", row.admitted())
             .log("New {} sign-in linked to account {}: its verified email matched exactly one eligible account{}", provider, row.id(), row.admitted() ? "" : " (still waiting for the owner to admit it)");
-        return new Linking(row, emailRevision);
+        return new Linking(row, emailRevision, false);
     }
-    private UUID request(CognitoIdentity identity, Instant now, long emailRevision) {
+    private UUID request(CognitoIdentity identity, Instant now, long emailRevision, boolean sameEmailAdmitted) {
         UUID id = UUID.randomUUID(); String email = email(identity);
         String provider = CloudIdentities.provider(identity.issuer(), identity.username());
         // DLV-970: the owner identity (Protected Owner Identity) is admitted at its own first contact. On PostgreSQL the operator's
         // command-line admit did this; on DynamoDB nothing else could, and the protected table is the reviewed admission decision.
         boolean author = ownerIdentity(identity);
-        var control = new Control(id, identity.issuer(), identity.subject(), identity.username(), identity.displayName(), email, author, true, author, false, false, "ACTIVE", 1, 0, now, author ? now : null);
+        // DLV-969 (owner, 2026-11-22): a new sign-in whose verified email already belongs to admitted accounts is admitted at once.
+        boolean admitted = author || sameEmailAdmitted;
+        var control = new Control(id, identity.issuer(), identity.subject(), identity.username(), identity.displayName(), email, admitted, true, author, false, false, "ACTIVE", 1, 0, now, admitted ? now : null);
         var identityRecord = new Identity(UUID.randomUUID(), identity.issuer(), identity.subject(), identity.username(), provider, email, "first_contact", now);
         var tx = accounts.transaction();
         tx.insertOnly(table, item(account(id), "META", attrs("revision", n(1), "lastPlanNumber", n(0), "createdAt", time(now))));
         tx.insertOnly(table, item(account(id), "CONTROL", attrs("issuer", s(identity.issuer()), "subject", s(identity.subject()), "username", s(identity.username()),
-            "displayName", s(identity.displayName()), "verifiedEmail", s(email), "admitted", bool(author), "author", bool(author), "managedTest", bool(false), "enabled", bool(true),
-            "credentialChangePending", bool(false), "accountState", s("ACTIVE"), "revision", n(1), "authGeneration", n(0), "requestedAt", time(now), "admittedAt", author ? time(now) : null)));
+            "displayName", s(identity.displayName()), "verifiedEmail", s(email), "admitted", bool(admitted), "author", bool(author), "managedTest", bool(false), "enabled", bool(true),
+            "credentialChangePending", bool(false), "accountState", s("ACTIVE"), "revision", n(1), "authGeneration", n(0), "requestedAt", time(now), "admittedAt", admitted ? time(now) : null)));
         accounts.identity(tx, id, identityRecord);
         if (email != null) { accounts.emailCarrier(tx, email, id, identity.issuer(), List.of(identityRecord.identityId().toString(), "account")); accounts.emailSentinel(tx, email, emailRevision); }
-        if (!author) tx.insertOnly(table, item(WAITING, waitingSk(now, id), attrs("accountId", s(id.toString()), "requestedAt", time(now))));
+        if (!admitted) tx.insertOnly(table, item(WAITING, waitingSk(now, id), attrs("accountId", s(id.toString()), "requestedAt", time(now))));
         tx.insertOnly(table, accounts.directoryItem(control, List.of(identity.username())));
         accounts.admission(tx, id, identity.issuer(), identity.subject(), null, "request", List.of(), now);
-        if (author) accounts.admission(tx, id, identity.issuer(), identity.subject(), null, "admit", List.of(), now);
+        if (admitted) accounts.admission(tx, id, identity.issuer(), identity.subject(), null, "admit", List.of(), now);
         tx.commit();
         if (author) {
             Events.success(Events.EVENT, "admission.admitted-owner").addKeyValue("account.id", id)
                 .log("Account {} admitted at first contact: its sign-in is the protected owner identity", id);
+            return id;
+        }
+        if (sameEmailAdmitted) {
+            Events.success(Events.EVENT, "admission.admitted-same-email").addKeyValue("account.id", id)
+                .log("Account {} admitted at first contact: its verified email belongs only to admitted accounts", id);
             return id;
         }
         // DLV-971 (owner, 2026-11-07): prepared access by email is a pass through the DEV gate: the invitation is claimed
