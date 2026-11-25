@@ -117,10 +117,11 @@ public class TestAccountsService {
     // DLV-969 (owner, 2026-11-04): each reader sees the test accounts the one hierarchy lets them act on.
     String hierarchyRole=TestAccountTemplates.role(permissions);
     boolean named=aliases==null||aliases.seesIdentities(actor);
-    var markers=markers();var people=new HashMap<String,String>();
+    // The rows are read side by side (ParallelRows), so the memo of names is shared between threads.
+    var markers=markers();var people=new java.util.concurrent.ConcurrentHashMap<String,String>();
     // Cloud mode: learners created through CreatedTestAccounts, and the DEV roster the owner created (it records its
     // creator; Local's seed does not, and never runs in cloud mode).
-    return store.activeRegistry(policy.cloud()).stream().map(r->{
+    return com.lookahead.domain.ParallelRows.map(store.activeRegistry(policy.cloud()),r->{
         UUID id=r.accountId();
         var roles=store.staffRoles(id);
         var targetRoles=new HashSet<String>(roles);
@@ -148,7 +149,7 @@ public class TestAccountsService {
         catch(AccountFailure refused){canReset=false;}
         item.put("canReset",canReset);
         return item;
-    }).filter(Objects::nonNull).toList();}
+    }).stream().filter(Objects::nonNull).toList();}
     /**
      * DLV-969 (owner, 2026-11-04): the request with who sent it: {@code {"self": true}} for the viewer's own, otherwise
      * the sender's permanent role label, and for the owner also their display name. Null: no request, or sender unknown.

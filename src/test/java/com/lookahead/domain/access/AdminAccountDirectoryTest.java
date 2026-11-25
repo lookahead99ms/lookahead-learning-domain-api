@@ -102,11 +102,9 @@ class AdminAccountDirectoryTest {
   when(summaries.get(any(),any())).thenReturn(new AccessSummaryService.Summary("Free",List.of("Free"),List.of()));
   when(removal.options(any(),any(),anyBoolean())).thenReturn(AccountRemovalService.Options.NONE);
   var service=new AdminAccountDirectory(directory,access,staff,summaries,jdbc,localPolicy,removal);
-  try {
-   var result=service.list(actor,"",0);
-   assertThat(result.accounts()).extracting(AdminAccountDirectory.Row::accountId).containsExactlyElementsOf(accounts.stream().map(AccountDirectory.Account::accountId).toList());
-   assertThat(peak.get()).isBetween(2, AdminAccountDirectory.ROW_PARALLELISM);
-  } finally { service.close(); }
+  var result=service.list(actor,"",0);
+  assertThat(result.accounts()).extracting(AdminAccountDirectory.Row::accountId).containsExactlyElementsOf(accounts.stream().map(AccountDirectory.Account::accountId).toList());
+  assertThat(peak.get()).isBetween(2, com.lookahead.domain.ParallelRows.PARALLELISM);
  }
 
  @Test void aFailedRowReachesTheCallerAsItsOwnException() {
@@ -116,8 +114,6 @@ class AdminAccountDirectoryTest {
   when(directory.list("",0)).thenReturn(new AccountDirectory.Page(List.of(new AccountDirectory.Account(UUID.randomUUID(),"a","A",null)),0,false));
   when(jdbc.testAccount(any())).thenThrow(new AccountFailure(503,"SERVICE_UNAVAILABLE","Try again"));
   var service=new AdminAccountDirectory(directory,access,staff,summaries,jdbc,mock(TestAccountPolicy.class),mock(AccountRemovalService.class));
-  try {
-   assertThatThrownBy(()->service.list(actor,"",0)).isInstanceOf(AccountFailure.class).hasMessageContaining("Try again");
-  } finally { service.close(); }
+  assertThatThrownBy(()->service.list(actor,"",0)).isInstanceOf(AccountFailure.class).hasMessageContaining("Try again");
  }
 }

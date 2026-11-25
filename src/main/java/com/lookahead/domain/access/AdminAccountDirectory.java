@@ -3,11 +3,8 @@ package com.lookahead.domain.access;
 import com.lookahead.domain.membership.AccessSummaryService;
 import com.lookahead.domain.testaccounts.TestAccountPolicy;
 import com.lookahead.learning.content.security.AccountPrincipal;
+import com.lookahead.domain.ParallelRows;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import org.springframework.stereotype.Service;
 
 /** Owner-only directory: Identity owns identity fields; Domain owns roles and access. */
@@ -52,38 +49,14 @@ public class AdminAccountDirectory {
         this.directory=directory;this.access=access;this.staff=staff;this.summaries=summaries;this.store=store;this.localPolicy=localPolicy;this.removal=removal;
     }
     /**
-     * DLV-969: each row is about ten independent reads. They ran one row after another, so a page of 35 took about 7 s on
-     * DEV. Rows now run on a small fixed pool and come back in page order. Every read here is a query: no row
-     * writes, so a retry or an overlapping request can only repeat a read, never a change.
+     * Each row is about ten independent reads, so the rows are read side by side ({@link ParallelRows}) and come back in
+     * page order. Every read here is a query: no row writes, so a retry or an overlapping request can only repeat a
+     * read, never a change.
      */
-    static final int ROW_PARALLELISM = 8;
-    private final ExecutorService rowPool = Executors.newFixedThreadPool(ROW_PARALLELISM, runnable -> {
-        Thread thread = new Thread(runnable, "admin-directory-row");
-        thread.setDaemon(true);
-        return thread;
-    });
     public Page list(AccountPrincipal actor,String query,int page) {
         access.requireOwner(actor); // Before any identity request or database enumeration.
         var source=directory.list(query,page);
-        var futures=source.accounts().stream()
-            .map(account->CompletableFuture.supplyAsync(()->row(actor,account),rowPool)).toList();
-        var rows=futures.stream().map(AdminAccountDirectory::await).toList();
-        return new Page(rows,source.page(),source.hasNext());
-    }
-
-    /** The row's own failure (an AccountFailure, say) reaches the caller as itself, not wrapped. */
-    private static Row await(CompletableFuture<Row> future) {
-        try {
-            return future.join();
-        } catch (CompletionException failure) {
-            if (failure.getCause() instanceof RuntimeException cause) throw cause;
-            throw failure;
-        }
-    }
-
-    @jakarta.annotation.PreDestroy
-    public void close() {
-        rowPool.shutdownNow();
+        return new Page(ParallelRows.map(source.accounts(),account->row(actor,account)),source.page(),source.hasNext());
     }
 
     private Row row(AccountPrincipal actor, AccountDirectory.Account account) {
