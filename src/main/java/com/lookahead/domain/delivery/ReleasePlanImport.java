@@ -19,7 +19,7 @@ import tools.jackson.databind.node.ObjectNode;
  * DLV-998 (owner, 2026-11-09): the plan file travels with the publication and the Domain merges it at start, the way
  * it loads content. The release carries the repository's {@code runtime/delivery/delivery-plan.json} as the staff asset
  * {@code content/staff/delivery-plan.json} (a local Domain serving the repository tree reads {@code delivery/delivery-plan.json}
- * under its content root). At each start, after the legacy import and before the sweeps:
+ * under its content root). At each start, before the sweeps:
  * <ul>
  * <li>no {@code delivery/plan.json} yet: the released plan becomes the first plan as it is (its own version);</li>
  * <li>otherwise the released plan becomes the inbox and the existing three-way merge runs at once, so DEV edits win

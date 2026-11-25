@@ -25,8 +25,11 @@ class DevEmailSettingsTests(unittest.TestCase):
         secrets = self.template['Resources']['Task']['Properties']['ContainerDefinitions'][0].get('Secrets', [])
         self.assertFalse([s for s in secrets if 'EMAIL' in s['Name'] or 'SES' in s['Name']])
 
-    def test_dev_keeps_sending_off(self):
-        self.assertEqual(self.config['EmailEnabled'], 'false')
+    def test_dev_sends_email(self):
+        # DLV-1012 (owner, 2026-11-25): SES production access is granted, so DEV sends the merge email. It goes only to an
+        # address Cognito has already verified; Cognito keeps its own sender for sign-up and reset codes.
+        # To stop the Domain's own emails again, set this back to "false" and deploy.
+        self.assertEqual(self.config['EmailEnabled'], 'true')
         # Every DEV value names a template parameter, so CloudFormation accepts the deploy.
         self.assertLessEqual(set(self.config), set(self.template['Parameters']))
 

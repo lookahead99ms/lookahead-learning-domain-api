@@ -154,7 +154,6 @@ local store passes do not certify live Cognito, S3 IAM, DynamoDB IAM or ECS secr
 | `app.content.root` | `LOOKAHEAD_CONTENT_ROOT` | Read-only published content directory |
 | `app.publication.live-prefix` | `LOOKAHEAD_PUBLICATION_LIVE_PREFIX` | DLV-971: the prefix holding exactly one publication tar (DEV `release/live/` after the AWS lane's cutover; empty keeps today's `live/<tag>/` discovery) |
 | `app.reviews.prefix`, `app.support-requests.prefix`, `app.delivery.prefix` | `LOOKAHEAD_REVIEWS_PREFIX`, `LOOKAHEAD_SUPPORT_REQUESTS_PREFIX`, `LOOKAHEAD_DELIVERY_PREFIX` | DLV-971 runtime store roots in the assets bucket (`reviews/`, `support-requests/`, `delivery/`) |
-| `app.platform-reviews.legacy-prefix` | `LOOKAHEAD_PLATFORM_REVIEWS_LEGACY_PREFIX` | DLV-971: the retired day-file prefix imported once at start; empty on DEV since 2026-11-09 (DLV-976 transition B removed the grant; the prefix held no day files) |
 
 Configuration-tree files can supply the corresponding dotted property names;
 `LOOKAHEAD_SECRETS_DIRECTORY` selects their directory. Never mount Identity DB
@@ -515,12 +514,11 @@ and `ticketStatus` (the ticket's `statusId` read from the delivery plan when `ti
 
 | Setting | Meaning |
 | --- | --- |
-| `LOOKAHEAD_PLATFORM_REVIEW_DIRECTORY` | Local private directory; the stores are its `reviews/`, `support-requests/` and `delivery/` sub-folders and the directory itself is the legacy day-file store. Unconfigured storage answers 503; cloud uses the S3 settings |
+| `LOOKAHEAD_PLATFORM_REVIEW_DIRECTORY` | Local private directory; the stores are its `reviews/`, `support-requests/` and `delivery/` sub-folders. Unconfigured storage answers 503; cloud uses the S3 settings |
 | `LOOKAHEAD_PLATFORM_REVIEWS_BUCKET`, `LOOKAHEAD_PLATFORM_REVIEWS_KMS_KEY` | The assets bucket and the publication KMS key, shared by every store (`app.platform-reviews.bucket`, `.kms-key`) |
 | `LOOKAHEAD_REVIEWS_PREFIX` | `app.reviews.prefix`, the review store root (DEV `reviews/`) |
 | `LOOKAHEAD_SUPPORT_REQUESTS_PREFIX` | `app.support-requests.prefix`, the support request store root (DEV `support-requests/`) |
 | `LOOKAHEAD_DELIVERY_PREFIX` | `app.delivery.prefix`, the delivery plan root (DEV `delivery/`) |
-| `LOOKAHEAD_PLATFORM_REVIEWS_LEGACY_PREFIX` | `app.platform-reviews.legacy-prefix`, the retired day-file prefix read once by the import; empty skips it, and DEV passes empty since 2026-11-09 (DLV-976). `LOOKAHEAD_PLATFORM_REVIEWS_PREFIX` is no longer read for records |
 | `LOOKAHEAD_PLATFORM_REVIEWERS` | Legacy compatibility setting; ignored by the wired runtime. Current authorization uses Domain staff assignments. The owner is the author capability |
 
 Limits: 6 images per item, 5 MB each, 20 MB per item, PNG/JPEG/WebP checked by file signature,
@@ -563,37 +561,6 @@ first status; the plan's current stage; `origin {id, kind}`; the environment sta
 record, an admin a learner's request only; a record already promoted answers
 `409 PLATFORM_REVIEW_ALREADY_PROMOTED`; 404 for an unknown record; 503 when the plan storage is
 unavailable (the record stays unlinked).
-
-Legacy import (`LegacyReviewImport`): at start, while no marker exists and the legacy prefix has
-`reviews/<day>.json` files, every item is rewritten as a record in the right store (reviews to
-`reviews/`, kind request to `support-requests/`, oldest first so the ids follow the original order),
-images are copied from `review-images/<itemId>/` to `attachments/<ID>/NN-name.ext`, the counts are
-logged (`platform-review.import`) and a marker `reviews/.imported.json` keeps it from running twice.
-Legacy objects are never deleted here; the AWS lane removes the prefix after the counts match.
-
-The import resumes after a partial failure (DLV-971/F9). Before anything is written for an item, its
-destination is fixed in `reviews/.import-progress/<day>/<itemId>.json` (legacy day and item id, kind,
-the record id drawn from the sequence, the legacy `createdAt` that decides the record key), created
-if-none-match so the first writer wins. A restarted task, or a second task starting at the same
-moment, reads the progress back and uses the same id and attachment keys: an attachment put is
-idempotent, a record create is if-none-match (`RecordStore.createIfAbsent`), and a record already in
-place is verified (id and kind), its images checked and re-copied from the legacy object if lost,
-and counted instead of written. A number drawn before a failed progress write is a gap in the
-sequence, never a second record. The marker is written only after every legacy item has a verified
-record; its counts come from what is in the stores, not from the attempt: `reviews`, `requests`,
-`images`, `days`, `legacyRecords`, `migratedRecords`, `legacyAttachments`, `migratedAttachments`,
-`missingAttachments` (legacy image objects that do not exist, listed under `missing`, never
-invented), `resumedRecords`, `domainSourceSha` (the deployed source revision from build info,
-"unknown" without it), `importedAt`/`verifiedAt`. Transition B requires `legacyAttachments ==
-migratedAttachments`, so a missing legacy image blocks B until the owner has read the list.
-A storage failure stops the run (`IMPORT_FAILED`), keeps the progress and is retried at the next
-start. Records in the stores without any progress object block the import (`IMPORT_BLOCKED`,
-nothing written) because their origin is unknown; the owner reads them and either removes them or
-writes the marker by hand. A progress object that does not describe its item, or a record under
-the fixed id of another kind, stops the run (`IMPORT_PROGRESS_MISMATCH`). Tests:
-`LegacyReviewImportTest`, `LegacyReviewImportRetryTest` (failure injection at each step, two tasks
-at once), `LegacyReviewImportStrandingTest` (the regression, which fails against the import before
-the fix).
 
 ## Delivery plan (DLV-971)
 

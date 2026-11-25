@@ -3,7 +3,6 @@ package com.lookahead.domain.sweeps;
 import com.lookahead.domain.cloud.CloudAdmissionCleanup;
 import com.lookahead.domain.delivery.DeliveryPlanService;
 import com.lookahead.domain.delivery.ReleasePlanImport;
-import com.lookahead.domain.review.platform.LegacyReviewImport;
 import com.lookahead.domain.review.platform.PlatformReviewService;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -20,7 +19,6 @@ import static org.mockito.Mockito.*;
 class RuntimeSweepsTest {
     final PlatformReviewService reviews = mock(PlatformReviewService.class);
     final DeliveryPlanService plans = mock(DeliveryPlanService.class);
-    final LegacyReviewImport legacy = mock(LegacyReviewImport.class);
     final ReleasePlanImport release = mock(ReleasePlanImport.class);
     final CloudAdmissionCleanup cleanup = mock(CloudAdmissionCleanup.class);
     @SuppressWarnings("unchecked")
@@ -28,12 +26,10 @@ class RuntimeSweepsTest {
 
     @Test void startRunsTheImportThenEverySweepAndTheScheduleIsFourHourly() throws Exception {
         when(admissions.getIfAvailable()).thenReturn(cleanup);
-        when(legacy.run()).thenReturn(Optional.empty());
         when(plans.syncInbox()).thenReturn(new DeliveryPlanService.Sync(false, null, 1, "no inbox file"));
-        var sweeps = new RuntimeSweeps(reviews, plans, legacy, release, admissions);
+        var sweeps = new RuntimeSweeps(reviews, plans, release, admissions);
         sweeps.atStart();
-        var order = inOrder(legacy, release, reviews, plans, cleanup);
-        order.verify(legacy).run();
+        var order = inOrder(release, reviews, plans, cleanup);
         order.verify(release).run();
         order.verify(reviews).closeStaleRequests();
         order.verify(plans).syncInbox();
@@ -48,13 +44,12 @@ class RuntimeSweepsTest {
     @Test void localModeHasNoAdmissionCleanupAndAFailingSweepDoesNotStopTheOthers() {
         when(admissions.getIfAvailable()).thenReturn(null);
         when(reviews.closeStaleRequests()).thenThrow(new IllegalStateException("synthetic storage outage"));
-        when(legacy.run()).thenThrow(new IllegalStateException("synthetic import outage"));
         when(release.run()).thenThrow(new IllegalStateException("synthetic release outage"));
         when(plans.syncInbox()).thenReturn(new DeliveryPlanService.Sync(false, null, 1, "no inbox file"));
-        var sweeps = new RuntimeSweeps(reviews, plans, legacy, release, admissions);
+        var sweeps = new RuntimeSweeps(reviews, plans, release, admissions);
         try (var log = com.lookahead.domain.LogCapture.start()) {
             assertThatCode(sweeps::atStart).doesNotThrowAnyException();
-            assertThat(log.lines("sweep")).extracting(line -> com.lookahead.domain.LogCapture.keys(line).get("sweep")).containsExactly("legacy import", "release plan import", "support request close");
+            assertThat(log.lines("sweep")).extracting(line -> com.lookahead.domain.LogCapture.keys(line).get("sweep")).containsExactly("release plan import", "support request close");
             assertThat(log.lines("sweep").getLast().getFormattedMessage()).isEqualTo("The support request close sweep did not complete (IllegalStateException); the next run tries again");
             log.containsNone("synthetic storage outage");
         }
@@ -69,7 +64,7 @@ class RuntimeSweepsTest {
         when(reviews.closeStaleRequests()).thenReturn(3);
         when(plans.syncInbox()).thenReturn(new DeliveryPlanService.Sync(true, new com.lookahead.domain.delivery.DeliveryPlanMerge.Counts(1, 0, 2, 0, 5, 0), 12, null));
         when(cleanup.run()).thenReturn(1);
-        var sweeps = new RuntimeSweeps(reviews, plans, legacy, release, admissions, clock);
+        var sweeps = new RuntimeSweeps(reviews, plans, release, admissions, clock);
         var actor = java.util.UUID.randomUUID();
         RuntimeSweeps.Result result;
         try (var log = com.lookahead.domain.LogCapture.start()) {
@@ -84,7 +79,6 @@ class RuntimeSweepsTest {
         order.verify(reviews).closeStaleRequests();
         order.verify(plans).syncInbox();
         order.verify(cleanup).run();
-        verifyNoInteractions(legacy);
         // The scheduled run is the same sweep of every job, without the manual line.
         try (var log = com.lookahead.domain.LogCapture.start()) {
             sweeps.run();
@@ -101,7 +95,7 @@ class RuntimeSweepsTest {
         when(reviews.closeStaleRequests()).thenReturn(2);
         when(plans.syncInbox()).thenReturn(new DeliveryPlanService.Sync(false, null, 5, "no inbox file"));
         when(cleanup.run()).thenReturn(4);
-        var sweeps = new RuntimeSweeps(reviews, plans, legacy, release, admissions);
+        var sweeps = new RuntimeSweeps(reviews, plans, release, admissions);
         var actor = java.util.UUID.randomUUID();
         try (var log = com.lookahead.domain.LogCapture.start()) {
             var support = sweeps.runNow(actor, RuntimeSweeps.Job.SUPPORT_REQUESTS);
@@ -131,7 +125,7 @@ class RuntimeSweepsTest {
         when(admissions.getIfAvailable()).thenReturn(null);
         when(reviews.closeStaleRequests()).thenReturn(0);
         when(plans.syncInbox()).thenReturn(new DeliveryPlanService.Sync(false, null, 5, "no inbox file"));
-        var sweeps = new RuntimeSweeps(reviews, plans, legacy, release, admissions);
+        var sweeps = new RuntimeSweeps(reviews, plans, release, admissions);
         var quiet = sweeps.sweep(RuntimeSweeps.Job.ALL);
         assertThat(quiet.supportRequestsClosed()).isZero();
         assertThat(quiet.inboxMerged()).isFalse();
@@ -159,18 +153,16 @@ class RuntimeSweepsTest {
     /** DLV-998: a Domain wired without the release import (older tests, no publication) still sweeps at start. */
     @Test void startWithoutAReleaseImportStillSweeps() {
         when(admissions.getIfAvailable()).thenReturn(null);
-        when(legacy.run()).thenReturn(Optional.empty());
         when(plans.syncInbox()).thenReturn(new DeliveryPlanService.Sync(false, null, 1, "no inbox file"));
-        var sweeps = new RuntimeSweeps(reviews, plans, legacy, null, admissions);
+        var sweeps = new RuntimeSweeps(reviews, plans, null, admissions);
         assertThatCode(sweeps::atStart).doesNotThrowAnyException();
         verify(plans).syncInbox();
     }
 
     @Test void prodRunsOnlyTheSupportRequestCloseAtStartAndOnTheSchedule() {
-        when(legacy.run()).thenReturn(Optional.empty());
         when(admissions.getIfAvailable()).thenReturn(cleanup);
         var maintenance = mock(MaintenanceJobs.class, withSettings().mockMaker(MockMakers.SUBCLASS));
-        var sweeps = new RuntimeSweeps(reviews, plans, legacy, release, admissions, maintenance, Clock.systemUTC(), "prod");
+        var sweeps = new RuntimeSweeps(reviews, plans, release, admissions, maintenance, Clock.systemUTC(), "prod");
         sweeps.atStart();
         sweeps.run();
         verify(reviews, times(2)).closeStaleRequests();
@@ -178,11 +170,10 @@ class RuntimeSweepsTest {
     }
 
     @Test void devRunsEveryJobAtStartAndOnTheSchedule() {
-        when(legacy.run()).thenReturn(Optional.empty());
         when(admissions.getIfAvailable()).thenReturn(cleanup);
         when(plans.syncInbox()).thenReturn(new DeliveryPlanService.Sync(false, null, 1, "no inbox file"));
         var maintenance = mock(MaintenanceJobs.class, withSettings().mockMaker(MockMakers.SUBCLASS));
-        var sweeps = new RuntimeSweeps(reviews, plans, legacy, release, admissions, maintenance, Clock.systemUTC(), "dev");
+        var sweeps = new RuntimeSweeps(reviews, plans, release, admissions, maintenance, Clock.systemUTC(), "dev");
         sweeps.atStart();
         verify(release).run();
         verify(plans).syncInbox();

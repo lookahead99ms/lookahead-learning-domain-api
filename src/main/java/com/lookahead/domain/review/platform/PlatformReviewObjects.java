@@ -6,7 +6,7 @@ import java.util.Optional;
 
 /**
  * DLV-928: byte storage for platform review records and images; DLV-971 (owner, 2026-11-06): one instance per
- * runtime store root in the assets bucket (reviews/, support-requests/, delivery/, the legacy platform-reviews/).
+ * runtime store root in the assets bucket (reviews/, support-requests/, delivery/).
  * The operations map one-to-one to S3 (GetObject, conditional PutObject with If-Match / If-None-Match,
  * ListObjectsV2, DeleteObject), so the Local disk store can be replaced by an S3 store without changing the service.
  * Keys are relative to the store's root: path segments of letters, digits, dot, dash and underscore, never a
