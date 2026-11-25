@@ -82,4 +82,38 @@ class AdminAccountDirectoryTest {
   new AdminAccountDirectoryController(service).list(null,"",2,response);
   assertThat(response.getHeader("Cache-Control")).isEqualTo("no-store");verify(service).list(null,"",2);
  }
+
+ @Test void readsRowsInParallelAndKeepsThePageOrder() throws Exception {
+  var directory=mock(AccountDirectory.class);var access=mock(StaffAccessService.class);var staff=mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
+  var summaries=mock(AccessSummaryService.class);var jdbc=mock(AdminDirectoryStore.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
+  var localPolicy=mock(TestAccountPolicy.class);var removal=mock(AccountRemovalService.class);
+  var actor=new AccountPrincipal(UUID.randomUUID(),"owner","Owner",true);
+  var accounts=new ArrayList<AccountDirectory.Account>();
+  for (int i=0;i<20;i++) accounts.add(new AccountDirectory.Account(UUID.randomUUID(),"user"+i,"User "+i,"user"+i+"@example.test"));
+  when(directory.list("",0)).thenReturn(new AccountDirectory.Page(accounts,0,false));
+  // Count the rows inside the store at once: serial reads would never exceed one.
+  var inside=new java.util.concurrent.atomic.AtomicInteger();var peak=new java.util.concurrent.atomic.AtomicInteger();
+  when(jdbc.testAccount(any())).thenAnswer(call -> {
+   peak.accumulateAndGet(inside.incrementAndGet(), Math::max);
+   Thread.sleep(40);
+   inside.decrementAndGet();
+   return false;
+  });
+  when(summaries.get(any(),any())).thenReturn(new AccessSummaryService.Summary("Free",List.of("Free"),List.of()));
+  when(removal.options(any(),any(),anyBoolean())).thenReturn(AccountRemovalService.Options.NONE);
+  var service=new AdminAccountDirectory(directory,access,staff,summaries,jdbc,localPolicy,removal);
+  var result=service.list(actor,"",0);
+  assertThat(result.accounts()).extracting(AdminAccountDirectory.Row::accountId).containsExactlyElementsOf(accounts.stream().map(AccountDirectory.Account::accountId).toList());
+  assertThat(peak.get()).isBetween(2, com.lookahead.domain.ParallelRows.PARALLELISM);
+ }
+
+ @Test void aFailedRowReachesTheCallerAsItsOwnException() {
+  var directory=mock(AccountDirectory.class);var access=mock(StaffAccessService.class);var staff=mock(StaffAccessRepository.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
+  var summaries=mock(AccessSummaryService.class);var jdbc=mock(AdminDirectoryStore.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
+  var actor=new AccountPrincipal(UUID.randomUUID(),"owner","Owner",true);
+  when(directory.list("",0)).thenReturn(new AccountDirectory.Page(List.of(new AccountDirectory.Account(UUID.randomUUID(),"a","A",null)),0,false));
+  when(jdbc.testAccount(any())).thenThrow(new AccountFailure(503,"SERVICE_UNAVAILABLE","Try again"));
+  var service=new AdminAccountDirectory(directory,access,staff,summaries,jdbc,mock(TestAccountPolicy.class),mock(AccountRemovalService.class));
+  assertThatThrownBy(()->service.list(actor,"",0)).isInstanceOf(AccountFailure.class).hasMessageContaining("Try again");
+ }
 }

@@ -362,7 +362,7 @@ class PlatformReviewServiceTest {
         assertThat(sent.page()).isEqualTo("Blaze Catalog");
         assertThat(sent.pageUrl()).isEqualTo("/look-ahead");
 
-        // The record stores the current name; a legacy day file with the old name is repaired by the import (LegacyReviewImportTest).
+        // The record stores the current name.
         Path record = root.resolve("reviews/records/2026/10/12/" + sent.id() + ".json");
         assertThat(Files.readString(record)).contains("\"Blaze Catalog\"").doesNotContain("Look Ahead Catalog");
         assertThat(reviews.list(owner, null).items()).extracting(Summary::page).containsExactly("Blaze Catalog");
@@ -391,7 +391,7 @@ class PlatformReviewServiceTest {
     @Test void unconfiguredStorageAnswersUnavailable() {
         var author = mock(LocalAuthorAccess.class);
         when(author.allowed(owner)).thenReturn(true);
-        var settings = new PlatformReviewConfiguration.StoreSettings("", "", "", "reviews/", "support-requests/", "delivery/", "");
+        var settings = new PlatformReviewConfiguration.StoreSettings("", "", "", "reviews/", "support-requests/", "delivery/");
         var publication = com.lookahead.domain.publication.PublicationSettings.from(new org.springframework.mock.env.MockEnvironment().withProperty("app.deployment-environment","local"));
         var mapper = JsonMapper.builder().build();
         var numbers = new ReviewRecordNumbers.InMemory();
@@ -399,7 +399,6 @@ class PlatformReviewServiceTest {
         var stores = new PlatformReviewService.Stores(
                 new RecordStore(PlatformReviewConfiguration.objects(settings, publication, clients, "reviews/"), KIND_REVIEW, mapper, numbers),
                 new RecordStore(PlatformReviewConfiguration.objects(settings, publication, clients, "support-requests/"), KIND_REQUEST, mapper, numbers));
-        assertThat(PlatformReviewConfiguration.objects(settings, publication, clients, null)).isNull();
         var service = new PlatformReviewService(stores, author, mapper, "", clock, history);
         assertFailure(() -> service.list(owner, null), 503);
         assertFailure(() -> service.recordRequest(owner, "question", "Q", "Body", List.of(), "ref-1"), 503);

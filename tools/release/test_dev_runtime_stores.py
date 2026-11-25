@@ -15,7 +15,7 @@ class DevRuntimeStoreSettingsTests(unittest.TestCase):
 
     def test_every_store_prefix_is_a_template_parameter_passed_to_the_container(self):
         for parameter, variable in [('ReviewsPrefix', 'LOOKAHEAD_REVIEWS_PREFIX'), ('SupportRequestsPrefix', 'LOOKAHEAD_SUPPORT_REQUESTS_PREFIX'),
-                                    ('DeliveryPrefix', 'LOOKAHEAD_DELIVERY_PREFIX'), ('PlatformReviewsLegacyPrefix', 'LOOKAHEAD_PLATFORM_REVIEWS_LEGACY_PREFIX'),
+                                    ('DeliveryPrefix', 'LOOKAHEAD_DELIVERY_PREFIX'),
                                     ('PublicationLivePrefix', 'LOOKAHEAD_PUBLICATION_LIVE_PREFIX')]:
             self.assertIn(parameter, self.template['Parameters'], parameter)
             self.assertEqual(self.environment[variable], {'Ref': parameter}, variable)
@@ -24,9 +24,10 @@ class DevRuntimeStoreSettingsTests(unittest.TestCase):
         self.assertEqual(self.config['ReviewsPrefix'], 'reviews/')
         self.assertEqual(self.config['SupportRequestsPrefix'], 'support-requests/')
         self.assertEqual(self.config['DeliveryPrefix'], 'delivery/')
-        # DLV-976 (2026-11-09): runtime stores transition B removed the app task's platform-reviews/ grant, so the legacy
-        # import is switched off; a non-empty prefix would only produce a refused S3 listing (a WARN) at every start.
-        self.assertEqual(self.config['PlatformReviewsLegacyPrefix'], '')
+        # The legacy day-file import is removed: no parameter, no variable.
+        self.assertNotIn('PlatformReviewsLegacyPrefix', self.config)
+        self.assertNotIn('PlatformReviewsLegacyPrefix', self.template['Parameters'])
+        self.assertNotIn('LOOKAHEAD_PLATFORM_REVIEWS_LEGACY_PREFIX', self.environment)
         # 2026-11-06 late evening: the owner copied the live tar to release/live/ and IAM A is installed, so DEV serves the single tar.
         self.assertEqual(self.config['PublicationLivePrefix'], 'release/live/')
         self.assertEqual(self.template['Parameters']['PublicationLivePrefix']['Default'], '', 'the template default stays empty; the DEV value is the config')

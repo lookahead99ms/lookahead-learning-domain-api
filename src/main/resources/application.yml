@@ -40,7 +40,6 @@ app:
     # DLV-971: the retired day-file prefix (DEV platform-reviews/), read once at start to import its items into the
     # record stores below; empty skips the import. Never written or deleted by the Domain. "prefix" above is no longer
     # read for records; the DEV task definition still passes it.
-    legacy-prefix: ${LOOKAHEAD_PLATFORM_REVIEWS_LEGACY_PREFIX:}
     # Interim reviewer list (account usernames, comma separated) until roles are managed in the admin pages.
     reviewers: ${LOOKAHEAD_PLATFORM_REVIEWERS:}
   # DLV-971 (owner, 2026-11-06): runtime stores in the assets bucket, one root each (records/YYYY/MM/DD/<ID>.json and

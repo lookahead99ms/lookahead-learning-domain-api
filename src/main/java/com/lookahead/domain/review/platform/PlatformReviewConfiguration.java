@@ -20,8 +20,7 @@ import tools.jackson.databind.ObjectMapper;
 
 /**
  * DLV-971 (owner, 2026-11-06): the runtime stores in the assets bucket, one object store per root: reviews/,
- * support-requests/, delivery/ and, for the one-time import, the legacy platform-reviews/ prefix. Local uses the
- * named-volume directory with the same roots as sub-folders (the directory itself is the legacy day-file store);
+ * support-requests/ and delivery/. Local uses the named-volume directory with the same roots as sub-folders;
  * cloud uses explicitly configured private S3 storage with the publication's KMS key. Unconfigured storage answers
  * 503 instead of silently saving ephemeral data.
  */
@@ -29,12 +28,12 @@ import tools.jackson.databind.ObjectMapper;
 @Profile("accounts")
 public class PlatformReviewConfiguration {
     /** The settings of every store: the bucket and key shared by all, one prefix per root. */
-    record StoreSettings(String directory, String bucket, String kmsKey, String reviews, String requests, String delivery, String legacy) {}
+    record StoreSettings(String directory, String bucket, String kmsKey, String reviews, String requests, String delivery) {}
 
     @Bean StoreSettings reviewStoreSettings(@Value("${app.platform-reviews.directory:}") String directory,
             @Value("${app.platform-reviews.bucket:}") String bucket, @Value("${app.platform-reviews.kms-key:}") String kmsKey,
             @Value("${app.reviews.prefix:reviews/}") String reviews, @Value("${app.support-requests.prefix:support-requests/}") String requests,
-            @Value("${app.delivery.prefix:delivery/}") String delivery, @Value("${app.platform-reviews.legacy-prefix:}") String legacy,
+            @Value("${app.delivery.prefix:delivery/}") String delivery,
             PublicationSettings publication) {
         boolean configured = !bucket.isBlank() || !kmsKey.isBlank();
         if (publication.cloud() && !directory.isBlank()) throw new IllegalStateException("Cloud review storage must use S3");
@@ -46,22 +45,16 @@ public class PlatformReviewConfiguration {
                 if (prefix[1].isBlank()) throw StartupChecks.refuse(prefix[0], "SETTING_MISSING", "is not set; every runtime store needs its prefix in the assets bucket",
                         "Runtime store prefixes are required with S3 review storage");
         }
-        return new StoreSettings(directory, bucket, kmsKey, reviews, requests, delivery, legacy);
+        return new StoreSettings(directory, bucket, kmsKey, reviews, requests, delivery);
     }
 
-    /** One object store for a root; null for the legacy root when no legacy prefix (or directory) is configured. */
+    /** One object store for a root. */
     static PlatformReviewObjects objects(StoreSettings settings, PublicationSettings publication, ObjectProvider<S3Client> clients, String root) {
-        boolean legacy = root == null;
-        if (!settings.bucket().isBlank()) {
-            String prefix = legacy ? settings.legacy() : root;
-            if (prefix.isBlank()) return null;
-            return new S3PlatformReviewObjects(clients.getObject(), settings.bucket(), prefix, publication.accountId(), settings.kmsKey());
-        }
-        if (!settings.directory().isBlank()) {
-            Path directory = Path.of(settings.directory());
-            return new FileSystemPlatformReviewObjects(legacy ? directory : directory.resolve(root.substring(0, root.length() - 1)));
-        }
-        return legacy ? null : new PlatformReviewObjects() {
+        if (!settings.bucket().isBlank())
+            return new S3PlatformReviewObjects(clients.getObject(), settings.bucket(), root, publication.accountId(), settings.kmsKey());
+        if (!settings.directory().isBlank())
+            return new FileSystemPlatformReviewObjects(Path.of(settings.directory()).resolve(root.substring(0, root.length() - 1)));
+        return new PlatformReviewObjects() {
             private UncheckedIOException missing() { return new UncheckedIOException(new java.io.IOException("Platform review storage is not configured")); }
             public Optional<Stored> read(String key) { throw missing(); }
             public boolean write(String key, byte[] bytes, String expectedVersion) { throw missing(); }
@@ -81,13 +74,6 @@ public class PlatformReviewConfiguration {
         return new PlatformReviewService.Stores(
                 new RecordStore(objects(settings, publication, clients, settings.reviews()), PlatformReviewModels.KIND_REVIEW, mapper, numbers),
                 new RecordStore(objects(settings, publication, clients, settings.requests()), PlatformReviewModels.KIND_REQUEST, mapper, numbers));
-    }
-
-    @Bean LegacyReviewImport legacyReviewImport(StoreSettings settings, PublicationSettings publication, ObjectProvider<S3Client> clients,
-            PlatformReviewService.Stores stores, ObjectMapper mapper, ObjectProvider<org.springframework.boot.info.BuildProperties> build) {
-        var properties = build.getIfAvailable();
-        return new LegacyReviewImport(objects(settings, publication, clients, null), stores, mapper,
-                properties == null ? null : properties.get("sourceRevision"));
     }
 
     @Bean DeliveryPlanStore deliveryPlanStore(StoreSettings settings, PublicationSettings publication, ObjectProvider<S3Client> clients, ObjectMapper mapper) {

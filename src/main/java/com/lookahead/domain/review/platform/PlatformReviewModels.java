@@ -8,8 +8,7 @@ import java.util.UUID;
  * DLV-928 shapes. DLV-971 (owner, 2026-11-06): one JSON record per item in the assets bucket, reviews under
  * {@code reviews/records/YYYY/MM/DD/REV-000001.json} and learner support requests under
  * {@code support-requests/records/YYYY/MM/DD/SUP-000001.json}, attachments beside them under
- * {@code attachments/<ID>/NN-name.ext}. API records never expose storage keys or account IDs. The day-file shapes
- * ({@link DayFile}, {@link StoredItem}) remain for the one-time import of the legacy {@code platform-reviews/} prefix.
+ * {@code attachments/<ID>/NN-name.ext}. API records never expose storage keys or account IDs.
  */
 public final class PlatformReviewModels {
     private PlatformReviewModels() {}
@@ -72,23 +71,6 @@ public final class PlatformReviewModels {
                     closedAt, closedBy, createKey, createHash, lastWriteKey);
         }
     }
-
-    // ---- Legacy day files, platform-reviews/reviews/{day}.json (read by the import only)
-    public record StoredItem(String id, UUID reviewerAccountId, String reviewerId, String reviewerName,
-                             String category, String page, String pageUrl, String title, String details,
-                             String priority, List<StoredAttachment> attachments, String status, String ownerNote,
-                             String createdAt, String updatedAt, UUID createKey, String createHash, UUID lastWriteKey, String submitterRole,
-                             String kind, String requestType, String reference) {
-        public boolean request() { return KIND_REQUEST.equals(kind); }
-        /** Read-time repair of a day file saved by an older version: the renamed page, the missing kind. */
-        public StoredItem repaired() {
-            if (!LEGACY_BLAZE_PAGE.equals(page) && kind != null) return this;
-            return new StoredItem(id, reviewerAccountId, reviewerId, reviewerName, category, currentPage(page), pageUrl, title, details, priority,
-                    attachments, status, ownerNote, createdAt, updatedAt, createKey, createHash, lastWriteKey, submitterRole,
-                    kind == null ? KIND_REVIEW : kind, requestType, reference);
-        }
-    }
-    public record DayFile(String schema, String day, List<StoredItem> items) {}
 
     // ---- API (the Web's shape; DLV-971 adds ticketId and ticketStatus)
     public record Viewer(String role, String reviewerId, String displayName) {}

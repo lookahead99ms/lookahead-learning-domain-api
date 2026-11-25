@@ -98,12 +98,6 @@
       "AllowedPattern": "^(|arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]{36})$",
       "Description": "DLV-968: KMS key ARN for SSE-KMS on review objects (app.platform-reviews.kms-key)"
     },
-    "PlatformReviewsLegacyPrefix": {
-      "Type": "String",
-      "Default": "",
-      "AllowedPattern": "^(|[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*/)$",
-      "Description": "DLV-971: the retired day-file prefix imported once at start (app.platform-reviews.legacy-prefix); empty skips the import"
-    },
     "ReviewsPrefix": {
       "Type": "String",
       "Default": "reviews/",
@@ -371,12 +365,6 @@
                 "Name": "LOOKAHEAD_PLATFORM_REVIEWS_KMS_KEY",
                 "Value": {
                   "Ref": "PlatformReviewsKmsKeyArn"
-                }
-              },
-              {
-                "Name": "LOOKAHEAD_PLATFORM_REVIEWS_LEGACY_PREFIX",
-                "Value": {
-                  "Ref": "PlatformReviewsLegacyPrefix"
                 }
               },
               {

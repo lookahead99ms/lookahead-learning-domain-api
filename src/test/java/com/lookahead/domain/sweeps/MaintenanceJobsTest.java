@@ -5,7 +5,6 @@ import com.lookahead.domain.cloud.CloudAdmissionCleanup;
 import com.lookahead.domain.delivery.DeliveryPlanService;
 import com.lookahead.domain.persistence.dynamodb.StudyPlanDocumentMaintenance;
 import com.lookahead.domain.persistence.dynamodb.StudyPlanDocumentRetirement;
-import com.lookahead.domain.review.platform.LegacyReviewImport;
 import com.lookahead.domain.review.platform.PlatformReviewService;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -24,7 +23,6 @@ import static org.mockito.Mockito.*;
 class MaintenanceJobsTest {
     final PlatformReviewService reviews = mock(PlatformReviewService.class);
     final DeliveryPlanService plans = mock(DeliveryPlanService.class);
-    final LegacyReviewImport legacy = mock(LegacyReviewImport.class);
     @SuppressWarnings("unchecked") final ObjectProvider<CloudAdmissionCleanup> admissions = mock(ObjectProvider.class, withSettings().mockMaker(MockMakers.SUBCLASS));
     final RegisteredMaintenanceJobs registry = new RegisteredMaintenanceJobs();
 
@@ -45,7 +43,7 @@ class MaintenanceJobsTest {
         when(admissions.getIfAvailable()).thenReturn(null);
         when(reviews.closeStaleRequests()).thenReturn(0);
         when(plans.syncInbox()).thenReturn(new DeliveryPlanService.Sync(false, null, 1, "no inbox file"));
-        return new RuntimeSweeps(reviews, plans, legacy, null, admissions, registry, java.time.Clock.fixed(Instant.parse("2026-11-10T08:00:00Z"), java.time.ZoneOffset.UTC));
+        return new RuntimeSweeps(reviews, plans, null, admissions, registry, java.time.Clock.fixed(Instant.parse("2026-11-10T08:00:00Z"), java.time.ZoneOffset.UTC));
     }
 
     @Test void theRegistryKeepsOrderRefusesDuplicatesAndBadNamesAndCollectsBeans() {
@@ -119,7 +117,7 @@ class MaintenanceJobsTest {
         // A single other job does not run maintenance.
         assertThat(sweeps.sweep(RuntimeSweeps.Job.SUPPORT_REQUESTS).maintenance()).isEmpty();
         assertThat(done.calls).hasSize(2);
-        assertThat(new RuntimeSweeps(reviews, plans, legacy, null, admissions, null, java.time.Clock.systemUTC()).sweep(RuntimeSweeps.Job.MAINTENANCE).maintenance()).isEmpty();
+        assertThat(new RuntimeSweeps(reviews, plans, null, admissions, null, java.time.Clock.systemUTC()).sweep(RuntimeSweeps.Job.MAINTENANCE).maintenance()).isEmpty();
     }
 
     @Test void theDynamoDocumentJobsPageThroughTheirCleanupsAndRestartTheCursorEachSweep() {

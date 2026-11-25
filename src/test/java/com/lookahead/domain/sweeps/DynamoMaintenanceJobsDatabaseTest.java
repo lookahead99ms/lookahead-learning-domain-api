@@ -4,7 +4,6 @@ import com.lookahead.domain.cloud.CloudAdmissionCleanup;
 import com.lookahead.domain.delivery.DeliveryPlanService;
 import com.lookahead.domain.persistence.dynamodb.*;
 import com.lookahead.domain.review.DynamoAuthorReviewDatabaseTestSupport;
-import com.lookahead.domain.review.platform.LegacyReviewImport;
 import com.lookahead.domain.review.platform.PlatformReviewService;
 import java.net.URI;
 import java.time.Clock;
@@ -68,7 +67,7 @@ class DynamoMaintenanceJobsDatabaseTest {
         @SuppressWarnings("unchecked") ObjectProvider<CloudAdmissionCleanup> admissions = mock(ObjectProvider.class, withSettings().mockMaker(MockMakers.SUBCLASS));
         var plans = mock(DeliveryPlanService.class);
         when(plans.syncInbox()).thenReturn(new DeliveryPlanService.Sync(false, null, 1, "no inbox file"));
-        var sweeps = new RuntimeSweeps(mock(PlatformReviewService.class), plans, mock(LegacyReviewImport.class), null, admissions, registry, Clock.fixed(NOW, ZoneOffset.UTC));
+        var sweeps = new RuntimeSweeps(mock(PlatformReviewService.class), plans, null, admissions, registry, Clock.fixed(NOW, ZoneOffset.UTC));
         var result = sweeps.sweep(RuntimeSweeps.Job.MAINTENANCE);
         assertThat(result.maintenance()).containsExactly(
                 new RuntimeSweeps.Maintenance("study-plan-documents", 1, 1, 0, 0, false, null),
