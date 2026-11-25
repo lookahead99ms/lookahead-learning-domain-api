@@ -14,6 +14,7 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Profile;
 import org.springframework.context.event.EventListener;
@@ -43,6 +44,8 @@ public class RuntimeSweeps {
     private final ObjectProvider<CloudAdmissionCleanup> admissions;
     private final MaintenanceJobs maintenance;
     private final Clock clock;
+    /** DLV-971: only the support-request close runs in prod; every other job is DEV only (owner, 2026-11-24). */
+    private final boolean production;
 
     /** The jobs the owner can run, by the name the request carries. */
     public enum Job {
@@ -78,8 +81,9 @@ public class RuntimeSweeps {
 
     @Autowired
     public RuntimeSweeps(PlatformReviewService reviews, DeliveryPlanService plans, LegacyReviewImport legacyImport, ReleasePlanImport releaseImport,
-            ObjectProvider<CloudAdmissionCleanup> admissions, MaintenanceJobs maintenance) {
-        this(reviews, plans, legacyImport, releaseImport, admissions, maintenance, Clock.systemUTC());
+            ObjectProvider<CloudAdmissionCleanup> admissions, MaintenanceJobs maintenance,
+            @Value("${app.deployment-environment:local}") String environment) {
+        this(reviews, plans, legacyImport, releaseImport, admissions, maintenance, Clock.systemUTC(), environment);
     }
 
     public RuntimeSweeps(PlatformReviewService reviews, DeliveryPlanService plans, LegacyReviewImport legacyImport, ReleasePlanImport releaseImport,
@@ -94,14 +98,25 @@ public class RuntimeSweeps {
 
     public RuntimeSweeps(PlatformReviewService reviews, DeliveryPlanService plans, LegacyReviewImport legacyImport, ReleasePlanImport releaseImport,
             ObjectProvider<CloudAdmissionCleanup> admissions, MaintenanceJobs maintenance, Clock clock) {
+        this(reviews, plans, legacyImport, releaseImport, admissions, maintenance, clock, "local");
+    }
+
+    public RuntimeSweeps(PlatformReviewService reviews, DeliveryPlanService plans, LegacyReviewImport legacyImport, ReleasePlanImport releaseImport,
+            ObjectProvider<CloudAdmissionCleanup> admissions, MaintenanceJobs maintenance, Clock clock, String environment) {
         this.reviews = reviews; this.plans = plans; this.legacyImport = legacyImport; this.releaseImport = releaseImport; this.admissions = admissions;
         this.maintenance = maintenance == null ? new RegisteredMaintenanceJobs() : maintenance; this.clock = clock;
+        this.production = "prod".equals(environment);
+    }
+
+    /** DLV-971: in prod only the support-request close runs (at start, on the schedule and by hand); the rest are DEV only. */
+    private boolean runsHere(Job job) {
+        return !production || job == Job.SUPPORT_REQUESTS;
     }
 
     @EventListener(ApplicationReadyEvent.class)
     public void atStart() {
         guarded("legacy import", () -> { legacyImport.run(); return null; }, failure -> null);
-        if (releaseImport != null) guarded("release plan import", releaseImport::run, failure -> null);
+        if (releaseImport != null && !production) guarded("release plan import", releaseImport::run, failure -> null);
         sweep(Job.ALL);
     }
 
@@ -115,18 +130,18 @@ public class RuntimeSweeps {
         String ranAt = clock.instant().toString();
         Integer closed = null; Boolean merged = null; String inboxResult = null; Integer removed = null;
         if (job.includes(Job.SUPPORT_REQUESTS)) closed = guarded("support request close", reviews::closeStaleRequests, failure -> 0);
-        if (job.includes(Job.DELIVERY_INBOX)) {
+        if (job.includes(Job.DELIVERY_INBOX) && runsHere(Job.DELIVERY_INBOX)) {
             DeliveryPlanService.Sync sync = guarded("delivery inbox sync", plans::syncInbox,
                     failure -> new DeliveryPlanService.Sync(false, null, 0, "did not complete (" + Events.types(failure) + ")"));
             merged = sync.synced();
             inboxResult = sync.synced() ? Long.toString(sync.version()) : sync.reason();
         }
-        if (job.includes(Job.ADMISSIONS)) {
+        if (job.includes(Job.ADMISSIONS) && runsHere(Job.ADMISSIONS)) {
             CloudAdmissionCleanup cleanup = admissions.getIfAvailable();
             if (cleanup != null) removed = cleanup.run();
         }
         var maintained = new java.util.ArrayList<Maintenance>();
-        if (job.includes(Job.MAINTENANCE)) for (MaintenanceJobs.Job registered : maintenance.jobs()) maintained.add(maintain(registered));
+        if (job.includes(Job.MAINTENANCE) && runsHere(Job.MAINTENANCE)) for (MaintenanceJobs.Job registered : maintenance.jobs()) maintained.add(maintain(registered));
         return new Result(job.id, ranAt, closed, merged, inboxResult, removed, maintained);
     }
 

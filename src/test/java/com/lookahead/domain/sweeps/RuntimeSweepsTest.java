@@ -7,6 +7,7 @@ import com.lookahead.domain.review.platform.LegacyReviewImport;
 import com.lookahead.domain.review.platform.PlatformReviewService;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import java.time.Clock;
 import org.mockito.MockMakers;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -163,5 +164,29 @@ class RuntimeSweepsTest {
         var sweeps = new RuntimeSweeps(reviews, plans, legacy, null, admissions);
         assertThatCode(sweeps::atStart).doesNotThrowAnyException();
         verify(plans).syncInbox();
+    }
+
+    @Test void prodRunsOnlyTheSupportRequestCloseAtStartAndOnTheSchedule() {
+        when(legacy.run()).thenReturn(Optional.empty());
+        when(admissions.getIfAvailable()).thenReturn(cleanup);
+        var maintenance = mock(MaintenanceJobs.class, withSettings().mockMaker(MockMakers.SUBCLASS));
+        var sweeps = new RuntimeSweeps(reviews, plans, legacy, release, admissions, maintenance, Clock.systemUTC(), "prod");
+        sweeps.atStart();
+        sweeps.run();
+        verify(reviews, times(2)).closeStaleRequests();
+        verifyNoInteractions(plans, cleanup, release, maintenance);
+    }
+
+    @Test void devRunsEveryJobAtStartAndOnTheSchedule() {
+        when(legacy.run()).thenReturn(Optional.empty());
+        when(admissions.getIfAvailable()).thenReturn(cleanup);
+        when(plans.syncInbox()).thenReturn(new DeliveryPlanService.Sync(false, null, 1, "no inbox file"));
+        var maintenance = mock(MaintenanceJobs.class, withSettings().mockMaker(MockMakers.SUBCLASS));
+        var sweeps = new RuntimeSweeps(reviews, plans, legacy, release, admissions, maintenance, Clock.systemUTC(), "dev");
+        sweeps.atStart();
+        verify(release).run();
+        verify(plans).syncInbox();
+        verify(cleanup).run();
+        verify(maintenance).jobs();
     }
 }
