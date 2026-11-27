@@ -66,7 +66,7 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}"
           },
-          "run": "python3 tools/release/release_version.py check --app domain"
+          "run": "python3 .github/pipeline/shared/release_version.py check --app domain"
         },
         {
           "uses": "actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6",
@@ -77,11 +77,11 @@
         },
         {
           "name": "Test Maven bootstrap retry, fallback and checksum protection",
-          "run": "python3 -m unittest discover -s tools/build -p 'test_*.py'"
+          "run": "python3 -m unittest discover -s .github/pipeline/build -p 'test_maven_wrapper.py'"
         },
         {
           "name": "Test security gates with clean, finding and incomplete fixtures",
-          "run": "python3 -m unittest discover -s tools/security -p 'test_*.py'"
+          "run": "python3 -m unittest discover -s .github/pipeline/build -p 'test_checks.py'"
         },
         {
           "name": "Set up Python for release verification",
@@ -92,11 +92,11 @@
         },
         {
           "name": "Install hash-locked release coverage tooling",
-          "run": "python -m pip install --only-binary=:all: --require-hashes -r tools/release/requirements-coverage.txt"
+          "run": "python -m pip install --only-binary=:all: --require-hashes -r .github/pipeline/shared/requirements-coverage.txt"
         },
         {
           "name": "Verify immutable image binding",
-          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py' --fail-under=85",
+          "run": "src=.github/pipeline/shared,.github/pipeline/publish,.github/pipeline/deploy\npython -m coverage erase\nfor step in shared publish deploy; do python -m coverage run --append --source=\"$src\" -m unittest discover -s \".github/pipeline/$step\" -p 'test_*.py' || exit 1; done\npython -m coverage report --include='*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py' --fail-under=85",
           "env": {
             "COVERAGE_FILE": "${{ runner.temp }}/domain-release.coverage"
           }
@@ -113,7 +113,7 @@
         },
         {
           "name": "Fetch contracts from Content",
-          "run": "scripts/fetch-contracts.sh",
+          "run": "./.github/pipeline/build/fetch-contracts.sh",
           "env": {
             "CONTENT_READ_TOKEN": "${{ secrets.CONTENT_READ_TOKEN }}"
           }
@@ -141,27 +141,27 @@
         },
         {
           "name": "Require completed SAST and no high-severity findings",
-          "run": "python3 tools/security/check.py sarif"
+          "run": "python3 .github/pipeline/build/check.py sarif"
         },
         {
           "name": "Install checksum-pinned security scanners",
-          "run": "python3 tools/security/check.py install --tool trivy\npython3 tools/security/check.py install --tool gitleaks"
+          "run": "python3 .github/pipeline/build/check.py install --tool trivy\npython3 .github/pipeline/build/check.py install --tool gitleaks"
         },
         {
           "name": "Scan all fetched Git history for secrets with redacted output",
-          "run": "python3 tools/security/check.py history"
+          "run": "python3 .github/pipeline/build/check.py history"
         },
         {
           "name": "Resolve direct and transitive dependencies including test/build configurations",
-          "run": "python3 tools/security/check.py dependencies --build-system maven"
+          "run": "python3 .github/pipeline/build/check.py dependencies --build-system maven"
         },
         {
           "name": "Scan resolved dependency inventory",
-          "run": "python3 tools/security/check.py sbom"
+          "run": "python3 .github/pipeline/build/check.py sbom"
         },
         {
           "name": "Scan Docker configuration and current source for secrets",
-          "run": "python3 tools/security/check.py config"
+          "run": "python3 .github/pipeline/build/check.py config"
         },
         {
           "name": "Build the standalone application image from pinned bases",
@@ -169,16 +169,16 @@
         },
         {
           "name": "Verify the image declares and owns the Fargate /tmp mount",
-          "run": "DOMAIN_IMAGE_TEST_IMAGE=lookahead-domain-api:ci python3 -m unittest tools.container.test_image_volumes -v"
+          "run": "DOMAIN_IMAGE_TEST_IMAGE=lookahead-domain-api:ci python3 -m unittest discover -s .github/pipeline/build -p 'test_image_volumes.py' -v"
         },
         {
           "name": "Scan exact builder base, runtime base and built application image",
-          "run": "python3 tools/security/check.py images --image lookahead-domain-api:ci"
+          "run": "python3 .github/pipeline/build/check.py images --image lookahead-domain-api:ci"
         },
         {
           "name": "Export the exact scanned release image",
           "if": "inputs.export-image == true",
-          "run": "python3 tools/release/image.py export --image lookahead-domain-api:ci --directory \"$RUNNER_TEMP/release-image\""
+          "run": "python3 .github/pipeline/shared/image.py export --image lookahead-domain-api:ci --directory \"$RUNNER_TEMP/release-image\""
         },
         {
           "name": "Retain immutable image for the same release run",

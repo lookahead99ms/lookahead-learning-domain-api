@@ -1,6 +1,6 @@
 package com.lookahead.domain.persistence.dynamodb.migration;
 
-import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
+import com.lookahead.domain.db.store.dynamodb.DynamoTableNames;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
 /**

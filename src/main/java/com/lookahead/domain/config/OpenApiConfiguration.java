@@ -1,0 +1,18 @@
+package com.lookahead.domain.config;
+
+import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.info.Info;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class OpenApiConfiguration {
+
+    @Bean
+    OpenAPI lookAheadContentOpenApi() {
+        return new OpenAPI().info(new Info()
+                .title("Look Ahead Content API")
+                .description("Learning content services for the Look Ahead Learning")
+                .version("v1"));
+    }
+}

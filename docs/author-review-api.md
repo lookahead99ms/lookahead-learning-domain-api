@@ -21,7 +21,7 @@ Set `LOOKAHEAD_AUTHOR_REVIEW_MANIFEST` to an absolute, read-only mounted JSON fi
 
 This example hash is synthetic. The operator must hash the canonical review **source bytes** with SHA-256, review the ticket/version binding, and provide the real approved manifest privately. The generated HTML can have a different hash. The service does not read arbitrary browser-supplied paths or hash an arbitrary URL. Empty configuration exposes no artifacts; malformed configured manifests stop startup. Manifest changes require a controlled application restart. Coordinate the same manifest on every instance before admitting writes; rolling instances with differing manifests are not an approved publication procedure.
 
-Review events are insert-only items in Administrator Audit Events (`REVIEW#actor#artifact / EVENT#seq#id`); the application role holds `PartiQLInsert` there and nothing that changes or removes an item. Events retain an actor subject reference without profile/email data. Account-deletion/retention policy must handle these audit references explicitly; no automatic deletion policy is introduced. Store configuration and data preparation: [DynamoDB runtime](dynamodb-runtime.md). (Until 2026-11-17 the same events lived in the PostgreSQL table `author_review_events`, append-only by grant and trigger; that store is retired.)
+Review events are insert-only items in Administrator Audit Events (`REVIEW#actor#artifact / EVENT#seq#id`); the application role holds `PartiQLInsert` there and nothing that changes or removes an item. Events retain an actor subject reference without profile/email data. Account-deletion/retention policy must handle these audit references explicitly; no automatic deletion policy is introduced. Store configuration and data preparation: [DynamoDB runtime](dynamodb-runtime.md).
 The review head, idempotency receipt, event and lookup are committed together; existing
 review events are never updated or deleted by this store.
 
@@ -68,12 +68,12 @@ Domain errors are flat `{status,code,message,path,timestamp}`. Gateway/security-
 ## Verification and learning contribution
 
 With `DLV970_DYNAMODB_TEST_ENDPOINT` pointing at a disposable loopback DynamoDB Local
-fixture, `DynamoAuthorReviewDatabaseTest` verifies the same replay/supersession rules.
+fixture, `AuthorReviewStoreDatabaseTest` verifies the same replay/supersession rules.
 Its deterministic interleaving cases commit a competing real transaction between the
 receipt and head reads, for first decisions and successors, with identical and changed
 payloads. The original two-thread duplicate test runs ten repetitions. These tests do not use AWS.
 
 
-`./mvnw -o test` runs the source suite; store tests explicitly skip unless `DLV970_DYNAMODB_TEST_ENDPOINT` names a loopback DynamoDB Local. `DynamoAuthorReviewDatabaseTest` covers actor isolation, version binding, monotonic ordering, supersession, concurrent idempotency and the lost-fence answer. Its HTTP fixture uses the production Domain security/capability checks with synthetic Identity verification and proves readback after Spring application-context shutdown/restart. This is not a process/container restart, actual Identity/Gateway integration or backup/restore proof; Infra owns those cross-service gates. Gateway owns actual browser-session CSRF tests. These checks do not establish production authorization or audit retention readiness.
+`./mvnw -o test` runs the source suite; store tests explicitly skip unless `DLV970_DYNAMODB_TEST_ENDPOINT` names a loopback DynamoDB Local. `AuthorReviewStoreDatabaseTest` covers actor isolation, version binding, monotonic ordering, supersession, concurrent idempotency and the lost-fence answer. Its HTTP fixture uses the production Domain security/capability checks with synthetic Identity verification and proves readback after Spring application-context shutdown/restart. This is not a process/container restart, actual Identity/Gateway integration or backup/restore proof; Infra owns those cross-service gates. Gateway owns actual browser-session CSRF tests. These checks do not establish production authorization or audit retention readiness.
 
 Case-study handoff for the private canonical platform lesson: teach the difference between a decision event and a workflow transition; canonical source hashing versus rendering hashes; transactional idempotency versus retries; append-only supersession versus destructive edits; and separate browser CSRF, token verification and resource authorization. Use synthetic IDs/comments and link to the existing API/security lessons rather than copying private review content. Publication and content gates remain Main-owned follow-up work.

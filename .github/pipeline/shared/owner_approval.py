@@ -1,0 +1,303 @@
+"""Bounded owner approval for one tested image; identical copy in the Domain, Web and Gateway/BFF repositories.
+
+This is workflow-code enforcement, not an independent reviewer. Never calls AWS.
+"""
+import release_version as versions
+import issue_template as issueTemplate
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import os
+import re
+import subprocess
+import time
+
+OWNER = 'lookahead99ms'
+ACCOUNT = '509614632283'
+REGION = 'us-east-2'
+# Two clocks, each a repository variable with its default in code. The owner has APPROVAL_WAIT_MINUTES (default 10, allowed 2..15
+# so the 20-minute approve-job cap always fits) from issue creation to post the comment; once posted, the approval is valid for
+# APPROVAL_VALID_MINUTES (default 15, allowed 5..60) from the comment itself, so an answer at minute 9 still leaves the following
+# job its whole recheck window. Unset or empty means the default; anything else outside the bound fails closed.
+WINDOWS = {'APPROVAL_WAIT_MINUTES': (10, 2, 15), 'APPROVAL_VALID_MINUTES': (15, 5, 60)}
+
+
+def window(name, env=None):
+    """Repository variable `name` as a timedelta: its default when unset or empty, else a whole number of minutes inside its bound."""
+    default, low, high = WINDOWS[name]
+    raw = ((os.environ if env is None else env).get(name) or '').strip()
+    if raw == '':
+        return timedelta(minutes=default)
+    require(re.fullmatch(r'[0-9]+', raw) and low <= int(raw) <= high,
+            name + ' must be a whole number of minutes from ' + str(low) + ' to ' + str(high) + ', got ' + repr(raw) + '; unset it for the default ' + str(default))
+    return timedelta(minutes=int(raw))
+
+
+def approvalWait(env=None):
+    return window('APPROVAL_WAIT_MINUTES', env)
+
+
+def approvalValid(env=None):
+    return window('APPROVAL_VALID_MINUTES', env)
+
+
+def minutesText(delta):
+    return str(int(delta.total_seconds()) // 60)
+# Publisher workflows per application repository: one numbered pipeline (`01 · Full`, release.yml) on merge push or dispatch,
+# and `03 · Publish` (publish.yml) that calls it. `workflow_call` keeps GITHUB_WORKFLOW_REF and the run `path` on the caller.
+# The app is derived, never typed. Only the three applications publish through this code.
+APP_PIPELINE = ('.github/workflows/release.yml', '.github/workflows/publish.yml')
+PUBLISHERS = {
+    'lookahead99ms/lookahead-learning-domain-api': (APP_PIPELINE, 'domain'),
+    'lookahead99ms/lookahead-learning-web': (APP_PIPELINE, 'web'),
+    'lookahead99ms/lookahead-learning-gateway-bff': (APP_PIPELINE, 'gateway-bff'),
+}
+
+
+def require(value, message):
+    if not value:
+        raise ValueError(message)
+
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        require(key not in result, 'Duplicate JSON field')
+        result[key] = value
+    return result
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def api(repository, path, payload=None):
+    args = ['gh', 'api', 'repos/' + repository + ('/' + path if path else '')]
+    if payload is not None:
+        args += ['--method', 'POST', '--input', '-']
+    result = subprocess.run(args, input=json.dumps(payload) if payload is not None else None,
+                            capture_output=True, text=True, timeout=30)
+    require(result.returncode == 0, 'GitHub approval request failed; no publication authorized')
+    require(len(result.stdout) <= 2 * 1024 * 1024, 'GitHub response exceeds bound')
+    return json.loads(result.stdout, object_pairs_hook=unique)
+
+
+def provenance(env, get=api):
+    repository = env.get('GITHUB_REPOSITORY')
+    require(repository in PUBLISHERS, 'Unknown image publisher')
+    workflows, app = PUBLISHERS[repository]
+    event = env.get('GITHUB_EVENT_NAME')
+    expected = {'GITHUB_ACTOR': OWNER, 'GITHUB_TRIGGERING_ACTOR': OWNER, 'GITHUB_REF': 'refs/heads/main', 'GITHUB_RUN_ATTEMPT': '1'}
+    # A merge push (merge-driven pipeline) or a manual dispatch, by the owner, first attempt, from main.
+    require(all(env.get(k) == v for k, v in expected.items()) and event in versions.EVENTS, 'Fresh owner main run required')
+    workflow = next((w for w in workflows if env.get('GITHUB_WORKFLOW_REF') == repository + '/' + w + '@refs/heads/main'), None)
+    require(workflow is not None, 'Fresh owner/manual/main run required')
+    sha, runId = env.get('GITHUB_SHA', ''), env.get('GITHUB_RUN_ID', '')
+    require(re.fullmatch('[a-f0-9]{40}', sha) and re.fullmatch('[1-9][0-9]*', runId), 'Exact source/run required')
+    metadata = get(repository, '')
+    require(metadata.get('full_name') == repository and metadata.get('owner', {}).get('login') == OWNER
+            and str(metadata.get('id')) == env.get('GITHUB_REPOSITORY_ID')
+            and str(metadata.get('owner', {}).get('id')) == env.get('GITHUB_REPOSITORY_OWNER_ID'), 'Repository identity changed')
+    # Dispatch: this run is the exact main head. Merge push: the merge commit must still be on main (later merges queue).
+    versions.mainBinding(event, sha, get(repository, 'commits/main').get('sha', ''), lambda path: get(repository, path))
+    run = get(repository, 'actions/runs/' + runId)
+    fields = {'id': int(runId), 'path': workflow, 'head_sha': sha, 'head_branch': 'main',
+              'event': event, 'run_attempt': 1, 'status': 'in_progress'}
+    require(all(run.get(k) == v for k, v in fields.items())
+            and all(run.get(k, {}).get('full_name') == repository for k in ('repository', 'head_repository'))
+            and all(run.get(k, {}).get('login') == OWNER for k in ('actor', 'triggering_actor')), 'Run provenance changed')
+    environment = get(repository, 'environments/dev')
+    require(environment.get('deployment_branch_policy') == {'protected_branches': False, 'custom_branch_policies': True},
+            'Explicit main-only DEV environment required')
+    branches = get(repository, 'environments/dev/deployment-branch-policies?per_page=100')
+    rows = branches.get('branch_policies', [])
+    require(branches.get('total_count') == len(rows) == 1 and rows[0].get('name') == 'main'
+            and rows[0].get('type') == 'branch', 'DEV must allow exactly the main branch, no tags')
+    # The workflow and its approval code run from main (workflowSha). The image is built from the
+    # commit the release tag resolves to (sourceSha), frozen once per run and re-checked here.
+    record = releaseRecord(env)
+    require(record.get('workflowSha') == sha and record.get('repository') == repository and str(record.get('runId')) == runId,
+            'Release-source record belongs to another workflow run')
+    release = versions.recheck(record, lambda path: get(repository, path), sha, app)
+    require(env.get('RELEASE_VERSION') == release['releaseVersion'], 'Dispatched release tag differs from resolved record')
+    return {**{k: release[k] for k in versions.FIELDS}, 'repository': repository, 'sourceSha': release['sourceSha'],
+            'workflowSha': sha, 'runId': runId, 'account': ACCOUNT, 'region': REGION,
+            'target': versions.REPOSITORY + ':' + release['imageTag']}
+
+
+def releaseRecord(env):
+    """Frozen tag resolution written by `release_version.py resolve` at run start; never an operator SHA."""
+    path = env.get('RELEASE_SOURCE_RECORD', '')
+    require(bool(path) and os.path.isfile(path) and os.path.getsize(path) <= 64 * 1024, 'Frozen release-source record required')
+    with open(path) as stream:
+        record = json.load(stream, object_pairs_hook=unique)
+    require(record.get('schema') == 'release-source/v1' and re.fullmatch('[a-f0-9]{40}', str(record.get('sourceSha', ''))),
+            'Frozen release-source record required')
+    return record
+
+
+def validatePlan(plan, env, get=api):
+    identity = provenance(env, get)
+    require(plan.get('schema') == 'image-owner-approval/v1' and all(plan.get(k) == v for k, v in identity.items()),
+            'Approval plan identity changed')
+    require(re.fullmatch('arn:aws:iam::' + ACCOUNT + r':role/[A-Za-z0-9+=,.@_/-]+', plan.get('role', '')),
+            'Scoped publisher role required')
+    require(re.fullmatch('sha256:[a-f0-9]{64}', plan.get('imageId', '')), 'Tested configuration digest required')
+    files = plan.get('files', {})
+    require(isinstance(files, dict) and 1 <= len(files) <= 12
+            and all(re.fullmatch(r'[a-z0-9][a-z0-9.-]*', name) and re.fullmatch('[a-f0-9]{64}', value)
+                    for name, value in files.items()), 'Exact bounded image/proof hashes required')
+
+
+def sourceChanges(repository, sha, get=api):
+    rows = get(repository, 'commits/' + sha + '/pulls?per_page=100')
+    require(isinstance(rows, list) and len(rows) < 100, 'Incomplete source PR inventory')
+    return {'meaning': 'PRs associated with this exact source; not a diff from the last deployment',
+            'pullRequests': [{'number': row['number'], 'title': row['title'],
+                              'url': 'https://github.com/' + repository + '/pull/' + str(row['number'])}
+                             for row in rows if row.get('merged_at') and row.get('base', {}).get('ref') == 'main']}
+
+
+def headline(plan):
+    """Title and alert: which image goes in and what source change it carries."""
+    rows = (plan.get('sourceChanges') or {}).get('pullRequests') or []
+    newest = max(rows, key=lambda row: int(row.get('number', 0))) if rows else None
+    return {'env': 'DEV', 'action': 'Publish image', 'subject': plan['imageTag'],
+            'change': newest['title'] if newest and newest.get('title') else 'no merged PR associated with this source'}
+
+
+def commitLink(plan, sha):
+    return '[' + sha[:12] + '](https://github.com/' + plan['repository'] + '/commit/' + sha + ')'
+
+
+def pullRequestTable(plan):
+    """Merged PRs associated with the exact source commit; absence is stated, never implied."""
+    changes = plan.get('sourceChanges')
+    if changes is None:
+        return 'Merged PR context was not captured for this run; review the source commit directly.'
+    rows = changes.get('pullRequests') or []
+    if not rows:
+        return 'No merged pull request is associated with this source commit.'
+    return issueTemplate.table(('PR', 'Title', 'Merged'),
+                               [('[#' + str(r['number']) + '](' + r['url'] + ')', issueTemplate.text(r['title']), 'into main') for r in rows])
+
+
+def gist(plan, env=None):
+    """Plain-language description, read before any table: what this run does, in order, and why. Prints the effective windows."""
+    t = issueTemplate.text
+    app = plan.get('app') or PUBLISHERS.get(plan.get('repository'), ('', 'application'))[1]
+    files = ', '.join('`' + t(name) + '`' for name in sorted(plan.get('files') or {}))
+    lines = ['**Business change:** the tested ' + t(app) + ' image `' + t(plan['imageTag']) + '` (release `' + t(plan['releaseVersion'])
+             + '`) becomes available in the DEV registry for a later deployment; nothing is deployed and no running service changes.',
+             '',
+             '1. Recheck that release tag `' + t(plan['releaseVersion']) + '` still resolves to source commit `' + t(plan['sourceSha'][:12])
+             + '` and that this approval is unchanged, before any AWS credentials are issued.',
+             '2. Assume the scoped publisher role `' + t(plan['role']) + '` for one upload session of at most 15 minutes.',
+             '3. Push the already scanned image (configuration digest `' + t(plan['imageId']) + '`) once to `' + t(plan['target'])
+             + '`; the tag is immutable and is never overwritten.',
+             '4. Read the published digest back from ECR and retain the publication receipt and proof files (' + (files or 'none listed') + ') as run artifacts.',
+             '',
+             'No service, task or SQL job is started; no IAM role, repository or stack is created or changed; existing image tags are never '
+             'deleted or rebuilt; approve within ' + minutesText(approvalWait(env)) + ' minutes of this issue being created; the approval comment is then valid for '
+             + minutesText(approvalValid(env)) + ' minutes.']
+    return '\n'.join(lines)
+
+
+def body(plan, receipt, env=None):
+    # The comment names the version as ECR shows it (user decision 2026-10-28); the digest binds the plan in the body and receipt.
+    fields = ('target', 'releaseVersion', 'imageTag', 'sourceSha', 'workflowSha', 'imageId', 'role', 'repository', 'account', 'region')
+    shown = [('**' + key + '**', commitLink(plan, plan[key]) if key in ('sourceSha', 'workflowSha') else '`' + issueTemplate.text(plan[key]) + '`')
+             for key in fields if key in plan]
+    # A plan opened by the merge-driven pipeline says so first (`pipeline` is the caller note); the gate is unchanged.
+    opened = (issueTemplate.text(plan['pipeline']) + '\n\n') if plan.get('pipeline') else ''
+    return issueTemplate.render(
+        headline=headline(plan), gist=gist(plan, env), resources=[],
+        overview=opened + '**Publish the verified DEV image**\n\nAuthorize one upload of the tested image shown below. '
+            'Publishing enables later selection; it does not deploy services, run SQL, install IAM or create repositories. '
+            'Without approval, no upload occurs.',
+        scope='### Image\n\n' + issueTemplate.table(('Field', 'Value'), shown) + '\n### Merged pull requests for this source\n\n' + pullRequestTable(plan),
+        validation=[('Release tag ' + issueTemplate.text(plan['releaseVersion']), 'resolved to source commit ' + commitLink(plan, plan['sourceSha'])),
+                    ('Workflow commit (main)', commitLink(plan, plan['workflowSha'])),
+                    ('Image configuration digest', '`' + issueTemplate.text(plan['imageId']) + '`'),
+                    ('Source selection', 'commit derived from the tag, not typed')],
+        evidence='Review the same-run CI/verification logs and saved image-review artifacts before approving.',
+        risks='An upload timeout may leave an image in ECR. Preserve intent and reconcile the exact tag/configuration; '
+            'do not automatically retry, overwrite, delete or rebuild. This is owner approval enforced by workflow code, not independent review.',
+        repository=plan['repository'], runId=plan['runId'], owner=OWNER, expires=receipt['expiresAt'],
+        created=receipt.get('createdAt'),
+        permissionDeadline='This approval does not extend IAM permissions; the write session is at most 15 minutes.',
+        command='APPROVE IMAGE ' + plan['imageTag'], payload=plan)
+
+
+def timestamp(value):
+    result = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    require(result.tzinfo is not None, 'Timezone-aware approval timestamp required')
+    return result
+
+
+def decision(plan, receipt, env, get=api, now=None, recheck=False):
+    """The owner's live approval on the issue of this receipt as {'commentId', 'approvedAt'}, or None while there is none.
+    While waiting, `now` must lie inside the comment window; a recheck after the wait is bounded by `verify` from the comment instead."""
+    validatePlan(plan, env, get)
+    now = now or datetime.now(timezone.utc)
+    created, expires = timestamp(receipt['createdAt']), timestamp(receipt['expiresAt'])
+    require(receipt.get('schema') == 'image-owner-decision/v1' and receipt.get('planDigest') == digest(plan)
+            and receipt.get('runId') == plan['runId'] and created <= now and (recheck or now < expires)
+            and timedelta(0) < expires - created <= approvalWait(env), 'Approval expired or binding changed')
+    issue = get(plan['repository'], 'issues/' + str(receipt['issue']))
+    require(issue.get('state') == 'open' and not issue.get('pull_request')
+            and issue.get('user', {}).get('login') == 'github-actions[bot]'
+            and issue.get('body') == body(plan, receipt, env), 'Approval issue changed')
+    require(created <= timestamp(issue['created_at']) < expires,
+            'Approval issue creation time outside review window')
+    comments = get(plan['repository'], 'issues/' + str(receipt['issue']) + '/comments?per_page=100')
+    require(isinstance(comments, list) and len(comments) < 100, 'Incomplete approval comment inventory')
+    selected = None
+    for comment in comments:
+        if comment.get('user', {}).get('login') != OWNER:
+            continue
+        command = comment.get('body', '').strip()
+        # Even an edited owner rejection blocks this attempt; approval never overrides REJECT.
+        require(command != 'REJECT', 'Owner rejected publication')
+        if comment.get('created_at') != comment.get('updated_at'):
+            continue
+        when = timestamp(comment['created_at'])
+        if created <= when <= now and when < expires and command == 'APPROVE IMAGE ' + plan['imageTag']:
+            selected = {'commentId': comment['id'], 'approvedAt': comment['created_at']}
+    return selected
+
+
+def approve(plan, env, get=api, now=lambda: datetime.now(timezone.utc), sleep=time.sleep):
+    validatePlan(plan, env, get)
+    # GitHub issue/comment timestamps have whole-second precision. Align the
+    # receipt before rendering so same-second creation is valid without extending expiry.
+    start, wait = now().replace(microsecond=0), approvalWait(env)
+    receipt = {'schema': 'image-owner-decision/v1', 'runId': plan['runId'], 'planDigest': digest(plan),
+               'createdAt': start.isoformat(), 'expiresAt': (start + wait).isoformat()}
+    preview = body(plan, receipt, env)
+    require(len(preview) < 60000, 'Approval preview too large')
+    issue = get(plan['repository'], 'issues', {'title': issueTemplate.title(headline(plan), plan['runId']), 'body': preview})
+    receipt['issue'] = issue['number']
+    # A nonsecret review URL is useful while the job waits; no approval is posted by this tool.
+    print('https://github.com/' + plan['repository'] + '/issues/' + str(receipt['issue']), flush=True)
+    for _ in range(int(wait.total_seconds()) // 20):  # the wait window at 20-second polls (default 10 minutes = 30 polls)
+        selected = decision(plan, receipt, env, get, now())
+        if selected is not None:
+            return {**receipt, **selected}
+        sleep(20)
+    raise TimeoutError('Image approval timed out; start a new reviewed run')
+
+
+def stillValid(receipt, approvedAt, now, env=None):
+    """A recheck is bounded from the approval comment (`approvedAt`, as GitHub stamps it), not from the issue: APPROVAL_VALID_MINUTES.
+    A receipt without `approvedAt` (written before this field) takes it from the live comment; a receipt that disagrees with the comment fails."""
+    recorded, valid = timestamp(receipt.get('approvedAt') or approvedAt), approvalValid(env)
+    require(recorded == timestamp(approvedAt), 'Approval comment time differs from the receipt')
+    require(now < recorded + valid, 'Approval older than ' + minutesText(valid) + ' minutes; start a new reviewed run')
+
+
+def verify(plan, receipt, env, get=api, now=None):
+    now = now or datetime.now(timezone.utc)
+    selected = decision(plan, receipt, env, get, now, recheck=True)
+    require(selected is not None and selected['commentId'] == receipt.get('commentId'), 'Exact live owner approval required')
+    stillValid(receipt, selected['approvedAt'], now, env)

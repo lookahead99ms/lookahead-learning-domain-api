@@ -1,13 +1,18 @@
 package com.lookahead.domain.persistence.dynamodb.migration;
 
-import com.lookahead.domain.LogCapture;
-import com.lookahead.domain.persistence.dynamodb.DynamoDataRequirement;
-import com.lookahead.domain.persistence.dynamodb.DynamoReadiness;
-import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
+import com.lookahead.domain.db.store.dynamodb.DynamoItems;
+import com.lookahead.domain.db.store.dynamodb.DynamoReadiness;
+import com.lookahead.domain.db.store.membership.MembershipItems;
+import com.lookahead.domain.log.LogCapture;
+import com.lookahead.domain.health.DynamoReadinessIndicator;
+import com.lookahead.domain.db.store.dynamodb.DynamoTableNames;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -37,7 +42,7 @@ class DynamoMigrationDatabaseTest {
         MutableClock(Instant now) { this.now = now; }
         void advance(Duration by) { now = now.plus(by); }
         @Override public ZoneOffset getZone() { return ZoneOffset.UTC; }
-        @Override public Clock withZone(java.time.ZoneId zone) { return this; }
+        @Override public Clock withZone(ZoneId zone) { return this; }
         @Override public Instant instant() { return now; }
     }
 
@@ -104,7 +109,7 @@ class DynamoMigrationDatabaseTest {
 
     @Test void theRealCatalogMigratesAnEmptyStoreThenReplaysAndVerifiesAndReadinessFollowsTheWatermark() {
         var ownerBefore = owner();
-        var readiness = new DynamoReadiness(client, TABLES, DomainDynamoCatalog.catalog().requirement(), clock);
+        var readiness = new DynamoReadinessIndicator(new DynamoReadiness(client, TABLES, DomainDynamoCatalog.catalog().requirement()), clock);
         assertThat(readiness.health().getStatus()).isEqualTo(Status.DOWN);
         var runner = runner(DomainDynamoCatalog.catalog());
         try (var logs = LogCapture.start("lookahead.migration")) {
@@ -127,13 +132,13 @@ class DynamoMigrationDatabaseTest {
         assertThat(history.get(1).appliedAt()).isEqualTo(NOW);
         assertThat(item(TABLES.protectedOwnerIdentityTableName(), "CURRENT").get("version")).isEqualTo(n("5"));
         // Steps 3 and 4 seeded the catalog (ten plans and META at revision 1) and the two record counters at 0.
-        var plans = com.lookahead.domain.membership.MembershipItems.query(client, TABLES.userAccountDetailsTableName(), "CATALOG", "PLAN#");
+        var plans = MembershipItems.query(client, TABLES.userAccountDetailsTableName(), "CATALOG", "PLAN#");
         assertThat(plans).hasSize(10);
         assertThat(plans).allSatisfy(plan -> { assertThat(plan.get("schemaVersion").n()).isEqualTo("1"); assertThat(plan.get("revision").n()).isEqualTo("1"); });
-        var learn = com.lookahead.domain.membership.MembershipItems.get(client, TABLES.userAccountDetailsTableName(), "CATALOG", "PLAN#learn");
+        var learn = MembershipItems.get(client, TABLES.userAccountDetailsTableName(), "CATALOG", "PLAN#learn");
         assertThat(learn.get("priceCents").n()).isEqualTo("6999");
         assertThat(learn.get("definition").m().get("scope").m().get("catalogs").l()).extracting(AttributeValue::s).containsExactly("learn");
-        assertThat(com.lookahead.domain.membership.MembershipItems.get(client, TABLES.userAccountDetailsTableName(), "CATALOG", "META").get("revision").n()).isEqualTo("1");
+        assertThat(MembershipItems.get(client, TABLES.userAccountDetailsTableName(), "CATALOG", "META").get("revision").n()).isEqualTo("1");
         for (String partition : List.of("SEQUENCE#review-record", "SEQUENCE#support-request")) {
             var counter = client.getItem(GetItemRequest.builder().tableName(TABLES.userAccountDetailsTableName()).consistentRead(true)
                     .key(Map.of("pk", s(partition), "sk", s("COUNTER"))).build()).item();
@@ -166,16 +171,16 @@ class DynamoMigrationDatabaseTest {
         assertThatThrownBy(() -> counters.verify(client, TABLES)).hasMessage("Counter SEQUENCE#review-record is missing");
         // A price changed by the owner and a counter already in use survive a replay untouched.
         catalog.apply(client, TABLES); counters.apply(client, TABLES);
-        client.putItem(PutItemRequest.builder().tableName(table).item(com.lookahead.domain.persistence.dynamodb.DynamoItems.item("SEQUENCE#review-record", "COUNTER", 1,
+        client.putItem(PutItemRequest.builder().tableName(table).item(DynamoItems.item("SEQUENCE#review-record", "COUNTER", 1,
                 Map.of("lastAssigned", n("41")))).build());
-        var learn = new java.util.HashMap<>(com.lookahead.domain.membership.MembershipItems.get(client, table, "CATALOG", "PLAN#learn"));
+        var learn = new HashMap<>(MembershipItems.get(client, table, "CATALOG", "PLAN#learn"));
         learn.put("priceCents", n("7999")); learn.put("revision", n("2"));
         client.putItem(PutItemRequest.builder().tableName(table).item(learn).build());
         client.deleteItem(DeleteItemRequest.builder().tableName(table).key(Map.of("pk", s("CATALOG"), "sk", s("PLAN#grow"))).build());
         catalog.apply(client, TABLES); counters.apply(client, TABLES);
         catalog.verify(client, TABLES); counters.verify(client, TABLES);
-        assertThat(com.lookahead.domain.membership.MembershipItems.get(client, table, "CATALOG", "PLAN#learn").get("priceCents").n()).isEqualTo("7999");
-        assertThat(com.lookahead.domain.membership.MembershipItems.get(client, table, "CATALOG", "PLAN#grow").get("revision").n()).isEqualTo("1");
+        assertThat(MembershipItems.get(client, table, "CATALOG", "PLAN#learn").get("priceCents").n()).isEqualTo("7999");
+        assertThat(MembershipItems.get(client, table, "CATALOG", "PLAN#grow").get("revision").n()).isEqualTo("1");
         assertThat(client.getItem(GetItemRequest.builder().tableName(table).consistentRead(true).key(Map.of("pk", s("SEQUENCE#review-record"), "sk", s("COUNTER"))).build())
                 .item().get("lastAssigned").n()).isEqualTo("41");
         // A plan outside the seed is a different catalog: apply refuses it and changes nothing.
@@ -249,7 +254,7 @@ class DynamoMigrationDatabaseTest {
         var migrated = runner(older).migrate("run-old");
         assertThat(migrated.applied()).isEmpty();
         assertThat(migrated.ahead()).isTrue();
-        assertThat(new DynamoReadiness(client, TABLES, older.requirement(), clock).health().getStatus()).isEqualTo(Status.UP);
+        assertThat(new DynamoReadinessIndicator(new DynamoReadiness(client, TABLES, older.requirement()), clock).health().getStatus()).isEqualTo(Status.UP);
     }
 
     @Test void damagedHistoryFailsClosedWithoutQuotingTheRecords() {
@@ -325,31 +330,31 @@ class DynamoMigrationDatabaseTest {
     }
 
     @Test void theEntrypointRunsAgainstTheLocalFixtureAndReportsJson() {
-        var out = new java.io.ByteArrayOutputStream();
+        var out = new ByteArrayOutputStream();
         var variables = Map.of("LOOKAHEAD_ENVIRONMENT", "local", "LOOKAHEAD_DYNAMODB_ENDPOINT", System.getenv("DLV970_DYNAMODB_TEST_ENDPOINT"));
-        assertThat(DomainDynamoMigration.run(new String[]{"status"}, variables, new java.io.PrintStream(out), clock)).isZero();
+        assertThat(DomainDynamoMigration.run(new String[]{"status"}, variables, new PrintStream(out), clock)).isZero();
         assertThat(out.toString()).contains("\"command\":\"status\"").contains("\"before\":0").contains("\"required\":5");
         out.reset();
-        assertThat(DomainDynamoMigration.run(new String[]{"migrate"}, variables, new java.io.PrintStream(out), clock)).isZero();
+        assertThat(DomainDynamoMigration.run(new String[]{"migrate"}, variables, new PrintStream(out), clock)).isZero();
         assertThat(out.toString()).contains("\"after\":5").contains("\"applied\":[\"1 base-tables\",\"2 staff-alias-counters\",\"3 membership-catalog\",\"4 review-record-counters\",\"5 account-access-import\"]").contains("\"runId\":\"local-");
         out.reset();
         assertThat(DomainDynamoMigration.run(new String[]{"verify"}, Map.of("LOOKAHEAD_ENVIRONMENT", "local",
-                "LOOKAHEAD_DYNAMODB_ENDPOINT", variables.get("LOOKAHEAD_DYNAMODB_ENDPOINT"), "GITHUB_RUN_ID", "41"), new java.io.PrintStream(out), clock)).isZero();
+                "LOOKAHEAD_DYNAMODB_ENDPOINT", variables.get("LOOKAHEAD_DYNAMODB_ENDPOINT"), "GITHUB_RUN_ID", "41"), new PrintStream(out), clock)).isZero();
         assertThat(out.toString()).contains("\"verified\":[\"1 base-tables\",\"2 staff-alias-counters\",\"3 membership-catalog\",\"4 review-record-counters\",\"5 account-access-import\"]").contains("\"runId\":\"github-41\"");
         out.reset();
-        assertThat(DomainDynamoMigration.run(new String[]{"drop"}, variables, new java.io.PrintStream(out), clock)).isEqualTo(2);
-        assertThat(DomainDynamoMigration.run(new String[]{}, variables, new java.io.PrintStream(out), clock)).isEqualTo(2);
+        assertThat(DomainDynamoMigration.run(new String[]{"drop"}, variables, new PrintStream(out), clock)).isEqualTo(2);
+        assertThat(DomainDynamoMigration.run(new String[]{}, variables, new PrintStream(out), clock)).isEqualTo(2);
         // Held lock: exit 1 with a LOCKED reason and no endpoint in the output.
         new DynamoMigrationLock(client, TABLES).acquire("other", clock.instant(), Duration.ofMinutes(15));
         out.reset();
         try (var logs = LogCapture.start("lookahead.migration")) {
-            assertThat(DomainDynamoMigration.run(new String[]{"migrate"}, variables, new java.io.PrintStream(out), clock)).isEqualTo(1);
+            assertThat(DomainDynamoMigration.run(new String[]{"migrate"}, variables, new PrintStream(out), clock)).isEqualTo(1);
             assertThat(logs.messages()).anyMatch(message -> message.equals("Migration migrate failed: Another migration run holds the lock"));
         }
         assertThat(out.toString()).contains("\"failed\":true").doesNotContain("127.0.0.1");
         // Bad configuration is also exit 1, never a stack trace to stdout.
         out.reset();
-        assertThat(DomainDynamoMigration.run(new String[]{"verify"}, Map.of("LOOKAHEAD_ENVIRONMENT", "local"), new java.io.PrintStream(out), clock)).isEqualTo(1);
+        assertThat(DomainDynamoMigration.run(new String[]{"verify"}, Map.of("LOOKAHEAD_ENVIRONMENT", "local"), new PrintStream(out), clock)).isEqualTo(1);
         assertThat(out.toString()).contains("\"error\":\"IllegalStateException\"");
     }
 }

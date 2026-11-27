@@ -31,7 +31,7 @@ class ContractFilesTest {
     @Test void missingFileFailsWithTheFetchInstruction() {
         Path absent = folder.resolve("release-layout.json");
         assertThatThrownBy(() -> ContractFiles.read(absent)).isInstanceOf(AssertionError.class)
-                .hasMessageContaining(ContractFiles.missing(absent)).hasMessageContaining("scripts/fetch-contracts.sh")
+                .hasMessageContaining(ContractFiles.missing(absent)).hasMessageContaining(".github/pipeline/build/fetch-contracts.sh")
                 .hasMessageContaining("CONTENT_READ_TOKEN").hasMessageContaining("-Dcontracts.dir");
     }
 

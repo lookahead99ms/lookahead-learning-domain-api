@@ -1,8 +1,9 @@
 package com.lookahead.domain.release;
 
-import com.lookahead.domain.security.DomainSecurityConfiguration;
-import com.lookahead.domain.security.IdentityVerificationClient;
-import com.lookahead.learning.content.repository.AccountRepository;
+import com.lookahead.domain.local.identity.IdentityConfiguration;
+import com.lookahead.domain.security.config.ApiSecurityConfiguration;
+import com.lookahead.domain.local.identity.IdentityVerificationClient;
+import com.lookahead.domain.service.access.AccountGrantService;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -40,9 +41,9 @@ class ActuatorInfoReleaseTest {
     @Configuration
     @EnableAutoConfiguration(excludeName = {"org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration",
             "org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration"})
-    @Import(DomainSecurityConfiguration.class)
+    @Import({ApiSecurityConfiguration.class, IdentityConfiguration.class})
     static class App {
-        @Bean AccountRepository accounts() { return mock(AccountRepository.class, withSettings().mockMaker(MockMakers.SUBCLASS)); }
+        @Bean AccountGrantService accounts() { return mock(AccountGrantService.class, withSettings().mockMaker(MockMakers.SUBCLASS)); }
         @Bean @Primary JwtDecoder decoder() { return mock(JwtDecoder.class, withSettings().mockMaker(MockMakers.SUBCLASS)); }
         @Bean @Primary IdentityVerificationClient verifier() { return mock(IdentityVerificationClient.class, withSettings().mockMaker(MockMakers.SUBCLASS)); }
     }

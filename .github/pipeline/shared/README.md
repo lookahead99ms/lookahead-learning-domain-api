@@ -1,0 +1,332 @@
+# Release and deploy pipeline of this application
+
+The tooling under `.github/pipeline/` and the workflows under `.github/workflows/` are identical in the Domain, Web and
+Gateway/BFF repositories apart from the app name (`domain`, `web`, `gateway-bff`), which every
+tool derives from the repository or the build file and nobody types, and apart from the two files
+under `.github/pipeline/deploy/dev/` that describe this application's own DEV service stack.
+
+## Where the files are (DLV-1016)
+
+The workflow files stay in `.github/workflows/` (GitHub reads workflows from no other folder). Everything they run is
+under `.github/pipeline/`, one folder per pipeline step. The Gateway BFF moved first (DLV-1015) and this repository has the same layout; Web keeps the same files
+under its three root folders for tools, scripts and deployment until it is moved the same way, so its copies differ in paths until then.
+
+| Folder | Holds |
+| --- | --- |
+| `build/` | what `ci.yml` alone runs: `fetch-contracts.sh`, the security gate (`check.py`, `tools.json`, the three exception lists, `test_checks.py`), the Maven wrapper regression test (`test_maven_wrapper.py`), the image `/tmp` mount test (`test_image_volumes.py`) and `container/dns.security`, which the `Dockerfile` copies into the image |
+| `publish/` | what `release.yml` alone runs: `pipeline_tag.py`, `owner_release.py`, `registry.py`, `candidate.py` and their tests |
+| `deploy/` | what `deploy-dev.yml`, `restart-dev.yml`, `recover-dev.yml` and `migrate-dev.yml` run: `deploy.py`, `restart.py`, `recover.py`, `migrate.py` (the DEV data migration task, which starts `DomainDynamoMigration`) and their tests, `dev/` (`service.template.json`, `deploy-config.json`), and the four tests of those two files (`test_dev_email_settings.py`, `test_dev_persistence_store.py`, `test_dev_runtime_stores.py`, `test_dev_test_accounts.py`) |
+| `shared/` | what more than one step uses: `release_version.py`, `owner_approval.py`, `issue_template.py`, `issue_close.py`, `image.py` (exported by the build, imported by the publish) and their tests, `test_workflow.py`, `requirements-coverage.txt` and this file |
+
+This service builds, publishes and deploys itself from this folder (owner decision 2026-11-27). Its deployment definition is
+`.github/pipeline/deploy/dev/service.template.json` with `deploy-config.json`, applied by `.github/pipeline/deploy/deploy.py`.
+No tool or workflow here reads a file of the Infra repository or needs its checkout or a token for it; by the same decision
+Infra reads no file of this repository. The former service contract file in the root `deployment/` folder, the input of an
+offline planner Infra used to have, is removed with that folder.
+
+Imports: a tool in `build/`, `publish/` or `deploy/` that needs a shared module puts `../shared` on `sys.path` in its
+first lines (two lines, the same in every such tool); the modules in `shared/` import only each other and are unchanged.
+That works when a workflow runs a tool by path from the repository root and when `unittest` discovers one folder. Each
+folder is discovered on its own (`-s .github/pipeline/<folder>`); no folder is a Python package.
+
+## Numbered entries (platform standard, as in Content and Infra)
+
+| Entry | File | What it runs |
+| --- | --- | --- |
+| `01 · Full` | `release.yml` | on every merge to `main` (unless paused, below), and by hand with no inputs (the same as a merge, from the main head): Security gate → Release tag → Build → Approve ECR publish → Publish to ECR → Deploy to DEV (calls `deploy-dev.yml` with the tag it cut; two approvals in one run) → Record release. Set the repository variable `FULL_DEPLOYS_DEV` to `false` to stop at publication. |
+| `02 · Build` | `build.yml` | `release.yml` with `action: build`: cut the next tag at the main head and build; no approval, no credentials |
+| `03 · Publish` | `publish.yml` | `release.yml` with `action: publish`: cut the next tag at the main head, build, scan, owner approval, publish to ECR |
+| `04 · Deploy DEV` | `deploy-dev.yml` | its own workflow, dispatched by hand for a tag already in ECR (redeploys, rollbacks, `desired_count` 0 to park) or called by `01 · Full` after publication: Security gate → Plan DEV deploy → Approve DEV deploy → Deploy to DEV (one change set, ECS rolling update) → Record deploy (DLV-968) |
+| `05 · Recover DEV` | `recover-dev.yml` | dispatched by hand when a deploy left the service unhealthy or its stack stuck: Security gate → Plan DEV recovery → Approve DEV recovery (one approval) → Recover DEV (park, target, and only if needed park again, fallback, park) → Record recovery (DLV-969) |
+| `07 · Migrate DEV data` | `migrate-dev.yml` | Domain only, dispatched by hand for a tag already in ECR before that release is deployed on the dynamodb store: Security gate → Plan DEV data migration → Approve DEV data migration → Migrate DEV data (one Fargate task runs the migration entrypoint `migrate`, `verify` or `status` under `lookahead-dev-migration-task`) → Record migration (DLV-970) |
+
+`release.yml` is what `02` and `03` call through `workflow_call` (`secrets: inherit`), so the run
+keeps the caller's path; `owner_approval.PUBLISHERS` registers `release.yml` and `publish.yml` as
+this repository's publisher paths, and `deploy.DEPLOY_WORKFLOWS` names `deploy-dev.yml` (and its two callers) and
+`recover-dev.yml` as the only deploy paths. Every run refuses any ref but `main`, runs first-attempt only, and the tooling always
+executes from the main commit (`workflowSha`, M) while the application is built from the commit
+the release tag resolves to (`sourceSha`, S).
+
+**Merge pause.** With the repository variable `RELEASE_ON_MERGE` set to `false`, a merge to `main`
+leaves `01 · Full` skipped at its first job: no tag, no build, no approval wait, no ECR push, no
+Actions minutes. Manual `01`, `02`, `03` and `04` are unaffected. Delete the variable or set it to
+`true` to resume merge-driven publication. Images are published only when a deploy is wanted.
+
+**Approval windows.** Two optional repository variables tune the owner-approval clocks without a code
+change; the defaults live in `owner_approval.WINDOWS`. `APPROVAL_WAIT_MINUTES` (default 10, allowed 2..15
+so the 20-minute approve-job cap always fits) is how long a publish, deploy or recovery approval issue waits
+for the owner's comment from its creation. `APPROVAL_VALID_MINUTES` (default 15, allowed 5..60) is how long
+a posted approval stays valid for the rechecks that follow, counted from the comment itself. Unset or empty means
+the default; a value that is
+not a whole number of minutes inside its bound stops the job before any issue is opened, naming the variable.
+The duplicate-image wait stays fixed at 5 minutes. The issue text prints the effective numbers and the receipt
+records the effective times; set both variables before a run, not between its jobs, or the recheck fails closed.
+
+## Stages of `01 · Full`
+
+1. **Security gate** (`validate`): the release and deploy tooling's own tests with at least 85 percent coverage.
+2. **Release tag** (`release`): `pipeline_tag.py cut` creates the next UTC calendar tag
+   `vYYYY.MM.DD.HH.NN` at the run commit through the GitHub API (`contents: write` in this job
+   only; every run cuts the next name even when an earlier tag names the same commit, a name
+   another run claimed fails, nothing is ever moved). `release_version.py resolve` then freezes `{selector, sourceSha, tagObjectSha,
+   mainSha, workflowSha, repository, runId}` as `release-source.json` (artifact `release-source`).
+3. **Build** (`build`): `ci.yml` through `workflow_call` with `source-sha` = S and image export:
+   every CI gate unchanged, the image built with `SOURCE_REVISION=S`, and the scanned archive
+   retained as `release-image-<S>` with a `lookahead-scanned-image/v3` receipt that records S and M.
+4. **Approve ECR publish** (`approve`): no credentials, no environment. `owner_release.py gate`
+   re-resolves the tag from the frozen record and `owner_release.py approve` opens the owner issue
+   bound to the exact image: `APPROVE IMAGE <version>` (the ECR image tag, for example
+   `web-v2026.10.28.15.01`) within 10 minutes of the issue being created, `REJECT` stops; edited comments,
+   a moved tag or main, or a changed issue fail closed. The receipt records the comment time (`approvedAt`).
+5. **Publish to ECR** (`publish`, environment `dev`, no required reviewers): rechecks the live
+   approval (valid for 15 minutes from the approval comment, so an answer at minute 9 of the wait still
+   leaves this job its whole window) and the tag before OIDC, imports the scanned image without rebuilding, assumes the
+   publisher role for one 15-minute ECR-only session (`image-publish-<run>-1`), pushes once to the
+   immutable `lookahead-dev-ecr` tag `<app>-<release>`, reads the digest back and retains
+   `registry-image-<S>` and `image-publication-outcome`.
+6. **Record release** (`record`): one `release-record-<tag>` artifact per run with the tag, source,
+   image digest and owner approval (absent stages recorded as absent), written by `candidate.py record`,
+   the only mode that tool has. The record keeps the schema `app-release-record/v1`; its fields
+   `receipts.verification`, `receipts.decision`, `receipts.infraTooling` and `devDecision` belonged to
+   stages the pipeline no longer has and are always null.
+
+## Stages of `04 · Deploy DEV`
+
+Since decision V (2026-11-01) each application is one ECS service, `lookahead-dev-<app>`, in one
+CloudFormation stack of the same name that this repository owns, described by
+`.github/pipeline/deploy/dev/service.template.json` (ECS task definition and ECS service; parameters
+`ApplicationImage`, `DesiredCount`, roles, secret version, discovery or target group) and
+`.github/pipeline/deploy/dev/deploy-config.json` (schema `lookahead-app-deploy-config/v2`: cluster, stack, log
+group, Cloud Map service for Web and Domain or target group for the GW-BFF, the observation window).
+A deploy is an ECS rolling update: ECS starts the new task beside the old one and drains the old
+one once the new one is healthy; the deployment circuit breaker (`Rollback: true`) returns the
+service to the previous revision by itself when the new revision never becomes healthy.
+
+Inputs: `release_version` (a tag already in ECR) and `desired_count` (`1` serves, the default;
+`0` parks the service at zero tasks while keeping the stack, service and task definition, for the
+scheduled scale-down from 2026-11-05). `01 · Full` always passes `1`.
+
+1. **Security gate** (`validate`): the same tests and coverage gate.
+2. **Plan DEV deploy** (`plan-dev`, environment `dev`): `release_version.py resolve` freezes the
+   dispatched tag; the plan session `<app>-deploy-plan-<run>-1` (15 minutes) runs `deploy.py
+   plan`, which reads the digest back from the immutable ECR tag, describes the stack (absent,
+   updatable, busy but parkable, or refused), renders the parameters and the resource preview, records the image and
+   count currently serving, and writes `plan.json` with its digest (artifact `deploy-plan`). A plan
+   whose image and count already match the stack is recorded as `unchanged` (a duplicate image) and offers
+   `refresh` and `verify` instead of `deploy` (`verify` only when the duplicate is a parked service).
+3. **Approve DEV deploy** (`approve-deploy`): no credentials; `deploy.py approve` opens the owner
+   issue bound to that plan: `APPROVE DEPLOY <image tag>` (for example `web-v2026.11.01.14.00`)
+   within 10 minutes of the issue being created, `REJECT` stops; the plan digest is in the issue body and the receipt. For a
+   **duplicate image** the issue title and first line carry a warning, the window is **5 minutes**, and
+   the answers are `APPROVE REFRESH <image tag>` (restart on the same image: the change set sets the
+   template parameter `RefreshToken` to `run-<run id>`, CloudFormation registers a new task definition
+   revision and ECS performs the rolling update; the new task re-reads its configuration and, for Domain,
+   the content release in S3), `APPROVE VERIFY <image tag>` (no AWS change, verification only, no
+   observation) or `REJECT`; no answer closes the issue with nothing done (user decision 2026-11-02).
+   The receipt records the chosen mode and the comment time (`approvedAt`); the deploy job executes only that mode.
+4. **Deploy to DEV** (`deploy-dev`, environment `dev`): `deploy.py verify` rechecks the approval
+   (valid for 15 minutes from the approval comment, not from the issue, so an answer late in the wait
+   still leaves this job its whole window), the plan digest, the template and the configuration before OIDC; the deploy session
+   `<app>-deploy-<run>-1` (60 minutes) runs `deploy.py execute`: one change set `app-<run>`
+   (CREATE for the first stack, UPDATE afterwards, with the stack's tags kept exactly as they are: CloudFormation copies
+   them onto the ECS service and changing one needs `ecs:TagResource`/`ecs:UntagResource` on the provisioning role, which
+   an IAM transition has yet to grant, Domain run 42110285052; its preview must show only the task definition
+   and the service), execution, then for `desired_count` 1 the ECS rollout `COMPLETED` with exactly
+   one `HEALTHY` task whose container reports the approved image digest (`describe-tasks`; the deploy
+   session is denied `DescribeTaskDefinition` by the Infra bundle and does not need it), a clean log window, service discovery listing
+   the task (Web, Domain) or healthy target health (GW-BFF), and the observation window: 15 minutes after a
+   deploy, `refreshObservationMinutes`, 5, after a refresh, none after a verify. **Each application deploys on
+   its own** (DLV-968, user 2026-11-05), whether the other two run or are stopped: every minute the service
+   still runs one task, it is the task verification accepted (no crash or replacement), still `HEALTHY`, and
+   its log stream has no failure marker. Only the GW-BFF (`probeRequired: true`) gates on a public probe, its
+   own DEV gate page `https://dev.devlookahead.com/dev/access`, which Gateway serves from its own classpath
+   without a session, so it proves the public entrance (API Gateway, load balancer, Gateway) without Web or
+   Domain. Gateway's `/actuator/health` addresses do not work for this: on the public side the DEV gate answers
+   them with a redirect to that page. Web and Domain (`probeRequired: false`) check
+   `https://dev.devlookahead.com/` once at the end and only record the answer, because that address passes
+   through Gateway; a timeout there is "no answer", never a failure (Web run 41993985015 failed on it while Gateway
+   was stopped). Between 00:00 and 10:00 America/New_York (the window of Infra's `Application · Start or stop
+   DEV` schedule), a service that was stopped before the deploy is stopped again afterwards, directly with
+   `ecs update-service`, also when the deploy failed; the stack keeps `DesiredCount` 1, so the scheduled start (10:00 to 10:08)
+   serves it again. `05 · Recover DEV` never does this. **Overnight blackout** (user decision 2026-11-05): a serving
+   deploy is refused between 23:30 and 00:30 New York time, at planning and again at execution, because the
+   scheduled stops land from 00:00 (Gateway, then Web, then Domain, three minutes apart); the message says to deploy
+   after 00:30 by dispatching `04 · Deploy DEV` with the tag. There is no override: DEV has no emergencies (user
+   decision 2026-11-05), and a merge-driven `01 · Full` that reaches its deploy in the window simply ends there with
+   the image published. If the start/stop switch or the scheduled stop sets the desired count
+   to 0 during the observation, the run records `stopped-during-observation` with the clean minutes and ends
+   successfully: a crash never changes the desired count, so 0 is always an intentional stop. A new rollout of the
+   verified revision during the watch (the content release's "restart Domain" step, or a manual refresh; user
+   2026-11-05, Domain run 42106678466) is waited for (at most 300 s), its new task is verified like the first one and
+   recorded as `restarted-during-observation`, and the watch carries on with that task; a rollout of another revision
+   is another deploy and still fails the run. Each recorded step and each observation round prints one line to
+   the job log, so the long waits are visible. For `desired_count` 0 it waits until the service runs zero
+   tasks. A stack that ends in a rollback state fails the run; the previous revision keeps serving.
+   The result is retained whatever happened (`deploy-result`) and the approval issue is closed with
+   the outcome.
+5. **Record deploy** (`record`): one `deploy-record-<tag>-<run>` artifact bundling plan, approval
+   and result.
+
+Wait budgets inside `execute` sum below the 60-minute session (the six roles allow at most 3600 s):
+change set 120 s, stack execution 1200 s (ECS health grace is 180 s, the circuit breaker needs a few
+failed starts before it rolls back), ECS rollout 300 s, task health 180 s, target health 180 s,
+observation 900 s. A stack in `UPDATE_ROLLBACK_COMPLETE` is updatable and is planned normally;
+`ROLLBACK_COMPLETE` (a failed first CREATE) is refused because CloudFormation only accepts deletion
+there and this tool never deletes: recovery is the owner's
+`aws cloudformation delete-stack --stack-name lookahead-dev-<app>` (DeletionPolicy Retain keeps the
+service and task definition) followed by a new run.
+
+**A stack stuck in an update or rollback** (DLV-969, user decision 2026-11-02: recovery is two pipeline runs, never
+the AWS CLI). When no revision can become healthy (for example both the new and the previous one fail readiness),
+CloudFormation keeps the stack in `UPDATE_IN_PROGRESS` or `UPDATE_ROLLBACK_IN_PROGRESS` for a long time and refuses
+every change set, and the circuit breaker's rollback relaunches the failing revision. Recover with:
+
+1. `04 · Deploy DEV` with any published `release_version` and `desired_count` **0**. On a busy stack the plan is
+   marked `busyStackPark` and the approval issue says so. The deploy session sets the ECS service to DesiredCount 0
+   directly (`ecs update-service`), so the stuck rollout stops and ECS reports the service stable; it waits at most
+   30 minutes for CloudFormation to finish its update or rollback, setting DesiredCount 0 again if the rollback puts
+   1 back; then the usual park change set records DesiredCount 0 in the stack, and the run verifies zero tasks.
+   `UPDATE_ROLLBACK_FAILED` or the 30-minute limit stops the run (break-glass runbook on the Admin page Support
+   runbooks).
+2. `04 · Deploy DEV` with the fixed `release_version` and `desired_count` **1**: an ordinary rolling update.
+
+A deploy with `desired_count` 1 on a busy stack is refused with that instruction; any other busy or failed stack
+state is refused as before. The direct scale-down needs `ecs:UpdateService` on this application's service for the
+`<app>-deploy-*` sessions; until that IAM transition (DLV-969 proposal, owned by the Infra IAM lane) is installed
+the call is denied, the run fails at that step and nothing else changes. Wait budget of a busy-stack park: settle
+1800 s, change set 120 s, stack execution 1200 s, scale-in 300 s, inside the 60-minute session.
+
+Rollback is a new run of `04 · Deploy DEV` with the previous tag. Steady state is one task per
+application; two run only during one application's rolling update. The GW-BFF reaches Web and Domain
+by their stable names `web.lookahead-dev.internal` and `domain.lookahead-dev.internal` (Cloud Map A
+records that ECS registers for the running task), so the applications deploy independently; the
+only hard dependencies are Domain's database and bucket.
+
+## Stages of `05 · Recover DEV`
+
+Use it instead of a sequence of `04 · Deploy DEV` runs when a service does not serve and you want one run that ends either
+serving a release or parked, with no AWS CLI (DLV-969, user decision 2026-11-02). Inputs: `release_version` (the release
+to serve), `fallback_release` (optional) and `healthy_minutes` (10, 15, 20 or 30; default 15). It shares the `deploy-dev`
+concurrency group, so it never runs beside a deploy. Use `04 · Deploy DEV` for ordinary deploys, rollbacks and parks.
+
+1. **Security gate**: the release tooling tests with the 85 percent gate, now including `recover.py`.
+2. **Plan DEV recovery** (`plan-recovery`, environment `dev`): `release_version.py resolve` freezes the target tag;
+   `recover.py fallback` chooses the fallback: the `fallback_release` input, or else the newest release whose deploy
+   verified healthy on `main` (a successful `04 · Deploy DEV` run with `desired 1`, or a successful `01 · Full` / `03 ·
+   Publish` run whose `Deploy to DEV` job succeeded, read from its `deploy-record-<release>-<run>` artifact name; never
+   the target itself). With neither, the plan stops and asks for the input. The fallback tag is frozen the same way;
+   then `recover.py plan` writes one `deploy.py` plan per stage (artifact `recover-plan`).
+3. **Approve DEV recovery**: one issue lists every stage, both releases and the park steps; the owner answers
+   `APPROVE RECOVER <app>-<tag>` within 10 minutes of the issue being created (`REJECT` stops the run).
+4. **Recover DEV** (environment `dev`): the live approval is rechecked before any credentials (valid for 15 minutes from
+   the approval comment); then each stage assumes
+   its own deploy session `<app>-deploy-<run>-<n>` (60 minutes each) and runs `recover.py stage`:
+   - `park` (session 1): DesiredCount 0 for the target release. On a stack in `UPDATE_IN_PROGRESS` /
+     `UPDATE_ROLLBACK_IN_PROGRESS` it uses the busy-stack park above (direct scale-down, wait, park change set).
+   - `target` (2): the target release at DesiredCount 1; its stack may take at most `healthy_minutes`, then the usual
+     verification and a short observation (the refresh window).
+   - `park-again` (3) and `fallback` (4): only when the target did not serve; the fallback release the same way.
+   - `park-final` (5): only when the fallback did not serve either; the run then fails.
+   A serving stage that ran its change set and did not verify counts as not serving and the sequence continues. A park
+   that fails, a stack in any other state (for example `UPDATE_ROLLBACK_FAILED`), or a failure before a change set (wrong
+   session, preview mismatch) stops the run. The summary step writes a table of every stage (release, DesiredCount,
+   outcome, task definition revision, times, stop reasons of the newest stopped tasks) to the run summary and fails the
+   run unless a release serves; the stage results are kept (artifact `recover-result`) and the issue is closed with the
+   outcome.
+5. **Record recovery**: one `recover-record-<release>-<run>` artifact per run.
+
+Each stage keeps every `deploy.py` check: provenance, owner on `main`, the frozen tag, the published digest, the stage
+plan's digest and template, the change-set preview, and the session identity. Stage change sets are named
+`app-<run>-<stage>`. Prerequisite: the busy-stack park's `ecs:UpdateService` for the `<app>-deploy-*` sessions (above);
+without it a busy stack stops the run at its first stage, and an idle stack recovers without it.
+
+## Stages of `07 · Migrate DEV data` (Domain only)
+
+DLV-970: the Domain's data moves to DynamoDB release by release, before the application of the same release serves on it
+("data first, then app"; no pipeline gate: the running release keeps serving). The migration entrypoint ships in the
+application image (`DomainDynamoMigration migrate|verify|status`) and `.github/pipeline/deploy/migrate.py` runs it as one Fargate task
+in the task definition family `lookahead-dev-domain-migrate` with the task role `lookahead-dev-migration-task`, the service's
+execution role, cluster, subnets, security group and log group (`.github/pipeline/deploy/dev/deploy-config.json`) and the four pinned DEV
+table names. Inputs: `release_version` (a tag already in ECR) and `command` (`migrate` default, `verify`, `status`). It shares
+the `deploy-dev` concurrency group, so it never runs beside a deploy, recovery or restart. The service, its stack and its
+task definition family are never touched; `04 · Deploy DEV` with the same release follows a successful run.
+
+1. **Security gate**: the release tooling tests with the 85 percent gate, now including `migrate.py`.
+2. **Plan DEV data migration** (`plan-migration`, environment `dev`, session `domain-deploy-migrate-plan-<run>-1`):
+   `release_version.py resolve` freezes the tag; `migrate.py plan` reads the published digest back from ECR, the stack's
+   current DesiredCount, and writes `plan.json` (artifact `migrate-plan`): roles, network, entry point, environment,
+   tables, ledger items and the resource rows the issue shows.
+3. **Approve DEV data migration**: one v2 issue (task definition family, the one-off task, the untouched service, the four
+   tables, the ledger items `DATA_VERSION#DOMAIN / STEP#…`, `CURRENT`, `LOCK`); the owner answers
+   `APPROVE MIGRATE <app>-<tag>` (`APPROVE VERIFY …`, `APPROVE STATUS …`) within `APPROVAL_WAIT_MINUTES` (default 10) of the
+   issue being created; `REJECT` or silence closes it with nothing run.
+4. **Migrate DEV data** (environment `dev`): the live approval is rechecked before any credentials; then session
+   `domain-deploy-migrate-<run>-1` (60 minutes) runs `migrate.py execute`: `ecs register-task-definition` (the digest, both roles,
+   blocking awslogs, GITHUB_RUN_ID in the environment), `ecs run-task` (Fargate 1.4.0, `--started-by migrate-<run>`),
+   `ecs describe-tasks` until STOPPED (at most 30 minutes), `logs get-log-events` on `migrate/migrate/<task id>` for the one JSON
+   report line. Success needs exit code 0, a report without `failed`, the command and `github-<run>` it names, `after` at
+   `required` for `migrate`, and an empty `applied` list for `verify` / `status`. The result (`migrate-result/result.json`,
+   schema `app-migrate-result/v1`) is kept whatever the outcome and the issue is closed with it.
+5. **Record migration**: one `migrate-record-<release>-<run>` artifact per run.
+
+IAM candidate (Infra): `lookahead-dev-deploy` needs `ecs:RegisterTaskDefinition`, `ecs:RunTask` (family
+`lookahead-dev-domain-migrate`), `ecs:DescribeTasks` for the cluster's tasks, `iam:PassRole` for `lookahead-dev-migration-task`
+and `lookahead-dev-ecs-execution`, and `logs:GetLogEvents` on `/lookahead/dev/domain`; the trust must admit the two
+`domain-deploy-migrate*` sessions. The full table is in the repository README, "DynamoDB store and DEV data migration".
+
+## Persistence store switch (Domain only, DLV-970; retired 2026-11-17)
+
+History. From 2026-11-10 to 2026-11-17 `deploy.py` rendered the Domain template parameter `PersistenceStore`
+(`postgresql` or `dynamodb`) from `.github/pipeline/deploy/dev/deploy-config.json`, overridable for one run by the `04 · Deploy DEV`
+input `persistence_store`; `as-configured` was refused while the configuration and the stack disagreed, `05 · Recover DEV`
+kept the store the stack served, and the rollback rule was the application's first write on DynamoDB. The DEV cutover
+happened on 2026-11-17 (`07 · Migrate DEV data` to data version 5, then a deploy on `dynamodb`), and PostgreSQL was retired
+the same day: the parameter, the input, the `DEPLOY_PERSISTENCE_STORE` variable, the `DatabaseAddress` /
+`DomainAppSecretArn` / `DomainAppVersion` parameters and the task's database secret are gone. A deploy never names a store;
+the Domain's configuration pins the four DynamoDB table names and `deploy.py` only checks that they are the DEV names.
+The way back from a data step is a new step, not a flag.
+
+## Settings the repository needs
+
+Environment `dev` allowing exactly the `main` branch and **without** required reviewers (the owner
+issue is the approval; a reviewer rule would add GitHub's deployment pop-up on top of it).
+Repository variables: `RELEASE_ON_MERGE` (`false` pauses merge-driven publication),
+`DEV_PUBLISH_ROLE_ARN` and `DEV_DEPLOY_ROLE_ARN` (optional overrides of `lookahead-dev-deploy`).
+No cross-repository secret: the deploy workflows read no other repository (the six-role IAM check is
+an Infra concern and runs in Infra workflows only) and the Gateway contract check runs against the
+copy committed in this repository (user decisions 2026-11-01). Actions allow-list:
+GitHub-owned plus the pinned `aws-actions/configure-aws-credentials`. Issues enabled. The IAM deploy
+trust must admit the sessions `<app>-deploy-plan-*` and `<app>-deploy-*` (DLV-968 IAM transition).
+
+## Shared copies and local checks
+
+`migrate.py`, `test_migrate.py`, `migrate-dev.yml` and `test_dev_persistence_store.py` exist in the Domain repository only (DLV-970);
+the Domain's `deploy.py` and `recover.py` lost the store switch code on 2026-11-17 and carry the DynamoDB table-name check
+instead, so the three copies of `deploy.py`, `recover.py` and their tests differ until Web and Gateway take the same change.
+`recover-dev.yml` differs only in the
+application name (as `deploy-dev.yml` does). `issue_template.py`, `issue_close.py` and `release_version.py` began as copies of
+Infra's approval and release modules, and `owner_approval.py` as a copy of its image-publication approval. Each application
+repository now keeps its own copies: nothing here reads or compares Infra's, and `owner_approval.py` registers only the three
+applications as publishers. `test_issue_template.py` pins the reviewed bytes of `issue_template.py` by hash, so an edit in one
+repository fails until the copies are brought in line. Across the three app repositories `release_version.py`,
+`issue_template.py`, `issue_close.py`, `owner_release.py`, `pipeline_tag.py`, `registry.py`, `restart.py`, `candidate.py` and
+their tests are identical; `owner_approval.py`, `image.py`, `deploy.py`, `recover.py`, their tests and `test_workflow.py` differ
+between them (measured on the three working branches, 2026-11-27). Update all copies together.
+
+
+```sh
+for step in shared publish deploy; do python3 -m unittest discover -s ".github/pipeline/$step" -p 'test_*.py' || break; done
+src=.github/pipeline/shared,.github/pipeline/publish,.github/pipeline/deploy
+python3 -P -m coverage erase
+for step in shared publish deploy; do python3 -P -m coverage run --append --source="$src" -m unittest discover -s ".github/pipeline/$step" -p 'test_*.py' || break; done
+python3 -P -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py,*/migrate.py' --fail-under=85
+actionlint .github/workflows/*.yml
+```
+
+Tests simulate the GitHub, AWS and Docker boundaries; they do not certify a hosted run. A hosted
+run counts only with its receipts: the release-tag record, the registry readback, the deploy plan,
+approval and result.
+
+Deploy and recovery CLI tests freeze the clock for the complete plan/approval/execution flow,
+so the suite can run during DEV's 23:30–00:30 New York deployment blackout. Separate CLI tests
+verify that serving plans are still rejected during that window; the production guard is unchanged.

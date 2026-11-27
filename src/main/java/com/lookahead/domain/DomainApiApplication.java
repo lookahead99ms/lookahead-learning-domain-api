@@ -3,7 +3,7 @@ package com.lookahead.domain;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
-@SpringBootApplication(scanBasePackages = {"com.lookahead.domain", "com.lookahead.learning.content"})
+@SpringBootApplication(scanBasePackages = {"com.lookahead.domain"})
 public class DomainApiApplication {
     public static void main(String[] args) {
         var application = new SpringApplication(DomainApiApplication.class);

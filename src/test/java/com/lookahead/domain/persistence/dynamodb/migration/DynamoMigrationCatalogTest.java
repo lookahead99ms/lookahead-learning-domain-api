@@ -1,6 +1,7 @@
 package com.lookahead.domain.persistence.dynamodb.migration;
 
-import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
+import com.lookahead.domain.db.store.dynamodb.DynamoTableNames;
+import com.lookahead.domain.db.store.membership.MembershipCatalogSeed;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -52,7 +53,7 @@ class DynamoMigrationCatalogTest {
         assertThat(catalog.step(3).definition()).contains("free, learn, grow, advance, complete, course-pass, interview-sprint, monthly-promo, annual-promo, interview-pass-promo")
                 .contains(DomainDynamoCatalog.MembershipCatalog.SEEDED_AT.toString()).contains("CATALOG / META");
         assertThat(catalog.step(4).definition()).contains("SEQUENCE#review-record").contains("SEQUENCE#support-request").contains("lastAssigned 0");
-        assertThat(com.lookahead.domain.membership.MembershipCatalogSeed.PLANS).hasSize(10);
+        assertThat(MembershipCatalogSeed.PLANS).hasSize(10);
         // Step 5 keeps the definition the DEV ledger holds (run 44162520740, 2026-11-17) although its PostgreSQL source is retired: a changed text would fail every verify.
         assertThat(catalog.checksum(5)).matches("[0-9a-f]{64}").isNotEqualTo(catalog.checksum(4));
         assertThat(catalog.step(5).definition()).contains("test_account_registry").contains("importedFrom postgresql").contains("IMPORT#account-access / RESULT")

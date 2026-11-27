@@ -71,7 +71,7 @@
           "run": "test \"$GITHUB_REF\" = refs/heads/main"
         },
         {
-          "name": "Set up Python for release and Infra tooling",
+          "name": "Set up Python for the pipeline tools",
           "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
           "with": {
             "python-version": "3.14"
@@ -79,11 +79,11 @@
         },
         {
           "name": "Install hash-locked release coverage tooling",
-          "run": "python -m pip install --only-binary=:all: --require-hashes -r tools/release/requirements-coverage.txt"
+          "run": "python -m pip install --only-binary=:all: --require-hashes -r .github/pipeline/shared/requirements-coverage.txt"
         },
         {
           "name": "Test the deploy tooling this run executes and require 85 percent coverage",
-          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py,*/restart.py' --fail-under=85",
+          "run": "src=.github/pipeline/shared,.github/pipeline/publish,.github/pipeline/deploy\npython -m coverage erase\nfor step in shared publish deploy; do python -m coverage run --append --source=\"$src\" -m unittest discover -s \".github/pipeline/$step\" -p 'test_*.py' || exit 1; done\npython -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py,*/restart.py' --fail-under=85",
           "env": {
             "COVERAGE_FILE": "${{ runner.temp }}/release-tooling.coverage"
           }
@@ -123,7 +123,7 @@
         {
           "name": "Resolve the dispatched release tag once and freeze its main commit",
           "id": "source",
-          "run": "mkdir -p \"$RUNNER_TEMP/deploy-plan\"\npython3 tools/release/release_version.py resolve --app domain --record \"$RUNNER_TEMP/deploy-plan/release-source.json\""
+          "run": "mkdir -p \"$RUNNER_TEMP/deploy-plan\"\npython3 .github/pipeline/shared/release_version.py resolve --app domain --record \"$RUNNER_TEMP/deploy-plan/release-source.json\""
         },
         {
           "name": "Point the release-source record at the runner temp directory",
@@ -146,7 +146,7 @@
         {
           "name": "Plan the deploy: published digest, service stack state, DesiredCount, resource preview",
           "id": "plan",
-          "run": "python3 tools/release/deploy.py plan --output \"$RUNNER_TEMP/deploy-plan/plan.json\""
+          "run": "python3 .github/pipeline/deploy/deploy.py plan --output \"$RUNNER_TEMP/deploy-plan/plan.json\""
         },
         {
           "name": "Retain the deploy plan",
@@ -189,7 +189,7 @@
           }
         },
         {
-          "name": "Set up Python for release and Infra tooling",
+          "name": "Set up Python for the pipeline tools",
           "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
           "with": {
             "python-version": "3.14"
@@ -210,7 +210,7 @@
         {
           "name": "Open the approval issue and wait for the owner comment (10 minutes)",
           "id": "approve",
-          "run": "python3 tools/release/deploy.py approve --plan \"$RUNNER_TEMP/deploy-plan/plan.json\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\""
+          "run": "python3 .github/pipeline/deploy/deploy.py approve --plan \"$RUNNER_TEMP/deploy-plan/plan.json\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\""
         },
         {
           "name": "Retain the approval receipt",
@@ -226,7 +226,7 @@
           "name": "Close the approval issue when approval failed or expired",
           "if": "failure()",
           "continue-on-error": true,
-          "run": "python3 tools/release/issue_close.py --stage \"Approve DEV deploy\" --outcome failure --detail \"Rejected, expired or failed; nothing was deployed.\" --match \"Deploy\""
+          "run": "python3 .github/pipeline/shared/issue_close.py --stage \"Approve DEV deploy\" --outcome failure --detail \"Rejected, expired or failed; nothing was deployed.\" --match \"Deploy\""
         }
       ]
     },
@@ -285,7 +285,7 @@
         },
         {
           "name": "Recheck the deployment approval before AWS credentials",
-          "run": "python3 tools/release/deploy.py verify --plan \"$RUNNER_TEMP/deploy-plan/plan.json\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\""
+          "run": "python3 .github/pipeline/deploy/deploy.py verify --plan \"$RUNNER_TEMP/deploy-plan/plan.json\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\""
         },
         {
           "name": "Use short-lived DEV OIDC credentials (domain-deploy)",
@@ -304,7 +304,7 @@
         {
           "name": "Execute the approved plan: change set, ECS rolling update, verification, observation",
           "id": "execute",
-          "run": "python3 tools/release/deploy.py execute --plan \"$RUNNER_TEMP/deploy-plan/plan.json\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\" --output \"$RUNNER_TEMP/deploy-result/result.json\""
+          "run": "python3 .github/pipeline/deploy/deploy.py execute --plan \"$RUNNER_TEMP/deploy-plan/plan.json\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\" --output \"$RUNNER_TEMP/deploy-result/result.json\""
         },
         {
           "name": "Retain the deploy result whatever the outcome",
@@ -324,7 +324,7 @@
           "env": {
             "OUTCOME": "${{ steps.execute.outcome }}"
           },
-          "run": "detail=\"Deploy of $RELEASE_VERSION ended with outcome $OUTCOME; the result artifact of this run holds every step.\"\npython3 tools/release/issue_close.py --stage \"Deploy to DEV\" --outcome \"$OUTCOME\" --detail \"$detail\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\""
+          "run": "detail=\"Deploy of $RELEASE_VERSION ended with outcome $OUTCOME; the result artifact of this run holds every step.\"\npython3 .github/pipeline/shared/issue_close.py --stage \"Deploy to DEV\" --outcome \"$OUTCOME\" --detail \"$detail\" --receipt \"$RUNNER_TEMP/deploy-approval/approval.json\""
         }
       ]
     },

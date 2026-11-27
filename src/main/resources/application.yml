@@ -20,7 +20,7 @@ spring:
 # two spaces and "[request <first 8 chars of the request id>]" only while a request is being served (MDC requestId); a
 # stack trace follows the line only for ERROR lines of the unexpected-failure handlers. No logger name, thread, PID or
 # service name; the same pattern in every profile. The %replace drops the bracket when the MDC value is empty, so a line
-# outside a request ends after the sentence with no trailing spaces. PlainLoggingTest renders this very pattern.
+# outside a request ends after the sentence with no trailing spaces. EventLogPlainLoggingTest renders this very pattern.
 logging:
   pattern:
     console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSS'Z', UTC} %-5level %msg%replace(  [request %.-8X{requestId}]){'  \\[request \\]$', ''}%n%ex"
@@ -77,7 +77,7 @@ app:
     scope-prefix: ${LOOKAHEAD_COGNITO_SCOPE_PREFIX:}
     gateway-secret: ${LOOKAHEAD_DOMAIN_GATEWAY_SECRET:}
   # DLV-969 S36: the merge link is <public-url>/account/merge?token=…; off (the default) only logs a skipped email.
-  # Unset: https://dev.devlookahead.com in dev; elsewhere startup fails when the email is enabled (CloudMergeConfiguration).
+  # Unset: https://dev.devlookahead.com in dev; elsewhere startup fails when the email is enabled (AccountMergeConfiguration).
   public-url: ${LOOKAHEAD_PUBLIC_URL:}
   email:
     enabled: ${LOOKAHEAD_EMAIL_ENABLED:false}

@@ -1,8 +1,8 @@
 package com.lookahead.domain.persistence.dynamodb.migration;
 
-import com.lookahead.domain.persistence.dynamodb.DynamoDataVersionReader;
-import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
-import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
+import com.lookahead.domain.db.store.dynamodb.DynamoDataVersionStore;
+import com.lookahead.domain.db.store.dynamodb.DynamoTableNames;
+import com.lookahead.domain.db.store.dynamodb.DynamoWrites;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -19,7 +19,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
  * checksum; CURRENT is the highest contiguous verified version. One transaction inserts the step, advances
  * CURRENT from the exact previous version and checks the runner still holds its fenced lock, so a crash never
  * leaves CURRENT ahead of a recorded step and a stale runner records nothing. Only the migration task writes
- * here, as PartiQL through {@link DynamoWrites}; the running app reads through {@link DynamoDataVersionReader}.
+ * here, as PartiQL through {@link DynamoWrites}; the running app reads through {@link DynamoDataVersionStore}.
  */
 public final class DynamoMigrationLedger {
     public static final String PK = "DATA_VERSION#DOMAIN";
@@ -43,12 +43,12 @@ public final class DynamoMigrationLedger {
 
     private final DynamoDbClient client;
     private final String table;
-    private final DynamoDataVersionReader reader;
+    private final DynamoDataVersionStore reader;
 
     public DynamoMigrationLedger(DynamoDbClient client, DynamoTableNames tables) {
         this.client = Objects.requireNonNull(client, "client");
         this.table = Objects.requireNonNull(tables, "tables").protectedOwnerIdentityTableName();
-        this.reader = new DynamoDataVersionReader(client, tables);
+        this.reader = new DynamoDataVersionStore(client, tables);
     }
 
     /** The watermark: zero on an empty store; malformed metadata fails closed. */

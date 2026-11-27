@@ -1,8 +1,8 @@
 package com.lookahead.domain.persistence.dynamodb.migration;
 
-import com.lookahead.domain.LogCapture;
-import com.lookahead.domain.persistence.dynamodb.DynamoItems;
-import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
+import com.lookahead.domain.log.LogCapture;
+import com.lookahead.domain.db.store.dynamodb.DynamoItems;
+import com.lookahead.domain.db.store.dynamodb.DynamoTableNames;
 import java.net.URI;
 import java.util.Map;
 import java.util.Set;
@@ -16,12 +16,12 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
-import static com.lookahead.domain.cloud.CloudAccountItems.account;
-import static com.lookahead.domain.cloud.CloudAccountItems.attrs;
-import static com.lookahead.domain.cloud.CloudAccountItems.get;
-import static com.lookahead.domain.cloud.CloudAccountItems.item;
-import static com.lookahead.domain.cloud.CloudAccountItems.n;
-import static com.lookahead.domain.cloud.CloudAccountItems.s;
+import static com.lookahead.domain.db.store.signin.AccountItems.account;
+import static com.lookahead.domain.db.store.signin.AccountItems.attrs;
+import static com.lookahead.domain.db.store.signin.AccountItems.get;
+import static com.lookahead.domain.db.store.signin.AccountItems.item;
+import static com.lookahead.domain.db.store.signin.AccountItems.n;
+import static com.lookahead.domain.db.store.signin.AccountItems.s;
 import static org.assertj.core.api.Assertions.*;
 
 /**
