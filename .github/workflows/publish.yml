@@ -1,6 +1,5 @@
 {
   "name": "03 · Publish",
-  "run-name": "${{ github.workflow }} | ${{ github.ref_name }} | ${{ github.event_name }} | #${{ github.run_number }}",
   "on": {
     "workflow_dispatch": {}
   },

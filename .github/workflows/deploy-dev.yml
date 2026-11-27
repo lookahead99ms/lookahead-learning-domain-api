@@ -1,6 +1,6 @@
 {
   "name": "04 \u00b7 Deploy DEV",
-  "run-name": "${{ github.workflow }} | ${{ inputs.release_version }} | desired ${{ inputs.desired_count || 1 }} | ${{ github.event_name }} | #${{ github.run_number }}",
+  "run-name": "${{ github.workflow }} \u00b7 ${{ inputs.release_version }}${{ inputs.desired_count == '0' && ' \u00b7 0 tasks' || '' }}",
   "on": {
     "workflow_dispatch": {
       "inputs": {

@@ -1,6 +1,6 @@
 {
   "name": "06 · Restart DEV",
-  "run-name": "06 · Restart DEV | domain | #${{ github.run_number }}",
+  "run-name": "${{ github.workflow }} · domain",
   "on": {
     "workflow_dispatch": {}
   },

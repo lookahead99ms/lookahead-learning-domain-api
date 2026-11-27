@@ -45,7 +45,7 @@ class StandardShapeTests(unittest.TestCase):
     def test_numbered_names_run_name_triggers_inputs_and_thin_entries(self):
         full = load('release.yml')
         self.assertEqual('01 · Full', full['name'])
-        self.assertEqual('${{ github.workflow }} | ${{ github.ref_name }} | ${{ github.event_name }} | #${{ github.run_number }}', full['run-name'])
+        self.assertNotIn('run-name', full)  # DLV-1025: a merge push shows its commit message, a dispatch the workflow name (RunTitleTests)
         self.assertEqual({'push', 'workflow_dispatch', 'workflow_call'}, set(full['on']))
         self.assertEqual({'branches': ['main']}, full['on']['push'])
         # A manual Full takes no inputs: it does what a merge does, from the main head (user decision 2026-10-28). The
@@ -425,6 +425,44 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertEqual('Retain', template['Resources']['Service']['DeletionPolicy'])
         self.assertEqual({'Task', 'Service'}, set(template['Resources']))
         self.assertNotIn('ActivationAuthorized', json.dumps(template.get('Metadata', {})))
+
+
+class RunTitleTests(unittest.TestCase):
+    """Run titles (owner decision 2026-11-27, DLV-1025): the short workflow name, then what this run is about, joined by ` · `.
+
+    Never the branch, the event or the run number (GitHub shows the number itself). A workflow whose runs have no input
+    that identifies them has no `run-name`, so GitHub shows its default: the commit message on a push, the pull request title
+    on a pull request, the workflow name on a dispatch. Identical test in Domain, Web and Gateway/BFF apart from APP."""
+    BANNED = ('github.run_number', 'github.event_name', 'github.ref_name', 'github.head_ref')
+
+    def titles(self):
+        found = {}
+        for path in sorted((ROOT / '.github/workflows').glob('*.yml')):
+            text = path.read_text()
+            if text.lstrip().startswith('{'):
+                found[path.name] = json.loads(text).get('run-name')
+            else:  # a YAML workflow (Web CI): a top-level `run-name:` line
+                lines = [line for line in text.splitlines() if line.startswith('run-name:')]
+                found[path.name] = lines[0].split(':', 1)[1].strip().strip('"') if lines else None
+        return found
+
+    def test_no_run_title_carries_the_branch_the_event_or_the_run_number(self):
+        titles = self.titles()
+        self.assertTrue({'release.yml', 'deploy-dev.yml', 'restart-dev.yml'} <= set(titles))
+        for name, title in titles.items():
+            for banned in self.BANNED:
+                self.assertNotIn(banned, title or '', name)
+            self.assertNotIn(' | ', title or '', name)
+            self.assertNotIn('#', title or '', name)
+
+    def test_each_workflow_has_the_reviewed_title(self):
+        expected = {'release.yml': None, 'build.yml': None, 'publish.yml': None, 'ci.yml': None,
+                    'deploy-dev.yml': "${{ github.workflow }} · ${{ inputs.release_version }}${{ inputs.desired_count == '0' && ' · 0 tasks' || '' }}",
+                    'recover-dev.yml': '${{ github.workflow }} · ${{ inputs.release_version }}',
+                    'restart-dev.yml': '${{ github.workflow }} · ' + APP}
+        if (ROOT / '.github/workflows/migrate-dev.yml').exists():
+            expected['migrate-dev.yml'] = "${{ github.workflow }} · ${{ inputs.release_version }} · ${{ inputs.command || 'migrate' }}"
+        self.assertEqual(expected, self.titles())
 
 
 class IndependenceTests(unittest.TestCase):
