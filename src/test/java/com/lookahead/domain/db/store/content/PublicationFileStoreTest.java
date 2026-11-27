@@ -156,6 +156,18 @@ class PublicationFileStoreTest {
         files.download(escape, "escape.tar", new ByteArrayInputStream(tar(false, "../out.json", "x")), 1 << 20);
         assertThatThrownBy(() -> files.unpackTar(escape, 1 << 20, accepting())).isInstanceOf(IllegalArgumentException.class).hasMessage("outside");
         assertThat(Files.exists(Path.of(files.location(escape, "x")).getParent().getParent().resolve("out.json"))).isFalse();
+        // A caller that forgets to refuse it still cannot write outside the folder: the store refuses next to the write.
+        var careless = files.stage(parent);
+        files.download(careless, "careless.tar", new ByteArrayInputStream(tar(false, "../careless.json", "x")), 1 << 20);
+        var ignoring = new PublicationFileStore.MemberChecks() {
+            @Override public boolean wanted(PublicationFileStore.TarMember member) { return !member.directory(); }
+            @Override public long placed(PublicationFileStore.TarMember member, boolean insideFolder) { return member.bytes(); }
+            @Override public void written(PublicationFileStore.TarMember member, long bytes) {}
+            @Override public void digested(PublicationFileStore.TarMember member, String sha256) {}
+        };
+        assertThatThrownBy(() -> files.unpackTar(careless, 1 << 20, ignoring)).isInstanceOf(IOException.class)
+                .hasMessage("Archive member outside the target folder");
+        assertThat(Files.exists(Path.of(files.location(careless, "x")).getParent().getParent().resolve("careless.json"))).isFalse();
         var large = files.stage(parent);
         files.download(large, "large.tar", new ByteArrayInputStream(tar(false, "a.bin", "x".repeat(4096))), 1 << 20);
         assertThatThrownBy(() -> files.unpackTar(large, 16, accepting())).isInstanceOf(IOException.class).hasMessage("Expanded archive exceeds bound");

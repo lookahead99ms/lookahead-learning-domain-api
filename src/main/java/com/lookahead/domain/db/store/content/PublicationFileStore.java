@@ -180,6 +180,10 @@ public final class PublicationFileStore {
                 if (!checks.wanted(member)) continue;
                 Path destination = folder.resolve(member.name()).normalize();
                 long bytes = checks.placed(member, destination.startsWith(folder));
+                // Both callers refuse a member outside the folder in placed(), with their own sentence. This guard repeats
+                // that rule here, next to the write, so that a caller that forgets cannot write outside the folder and so
+                // that the check is visible where the file is opened (CodeQL java/zipslip, 2026-11-27).
+                if (!destination.startsWith(folder)) throw new IOException("Archive member outside the target folder");
                 Files.createDirectories(destination.getParent());
                 MessageDigest digest = MessageDigest.getInstance("SHA-256");
                 try (OutputStream output = Files.newOutputStream(destination, StandardOpenOption.CREATE_NEW)) {

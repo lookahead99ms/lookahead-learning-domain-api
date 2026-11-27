@@ -30,7 +30,9 @@ public class AuthorReviewService {
     public List<Artifact> artifacts(AccountPrincipal actor) { access.requireAccess(actor);return catalog.list(); }
     public History history(AccountPrincipal actor,String id,int limit,UUID cursor) {
         access.requireAccess(actor);catalog.require(id);
-        shapes.limit(limit);
+        // Exception, decided 2026-11-27: the page-size bound is compared here, not in AuthorReviewRequestValidator, so that
+        // the check guards limit+1 below in the same method (CodeQL java/tainted-arithmetic). Same rule and answer as before.
+        if (limit < 1 || limit > AuthorReviewRequestValidator.MAX_PAGE_SIZE) throw shapes.invalid();
         List<Event> events;
         if(cursor==null) events=store.latest(actor.accountId(),id,limit+1);
         else events=store.before(actor.accountId(),id,cursor,limit+1).orElseThrow(()->new AccountFailure(404,"REVIEW_EVENT_NOT_FOUND","Review event is unavailable"));

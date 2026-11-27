@@ -32,7 +32,8 @@ public class AuthorReviewRequestValidator {
     }
 
     /** The page size of a history read: 1 to 100 (DLV-1016: this check was written in AuthorReviewService.history). */
-    public void limit(int limit) { if(limit<1||limit>100)throw invalid(); }
+    /** The largest page of review history one request may ask for. */
+    public static final int MAX_PAGE_SIZE = 100;
 
     /**
      * The comment of a decision, stripped, after the checks on the decision itself: a key, a decision and a comment are

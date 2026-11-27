@@ -142,6 +142,11 @@ class AuthorReviewServiceTest {
         assertThat(store.calls.getLast()).isEqualTo("before study-plan-review " + older.eventId() + " 3");
         store.cursorKnown = false;
         assertThatThrownBy(() -> service.history(actor, "study-plan-review", 2, UUID.randomUUID())).extracting("code").isEqualTo("REVIEW_EVENT_NOT_FOUND");
-        for (int limit : new int[] {0, 101}) assertThatThrownBy(() -> service.history(actor, "study-plan-review", limit, null)).hasMessageContaining("invalid");
+        int callsBefore = store.calls.size();
+        for (int limit : new int[] {0, -1, 101, Integer.MAX_VALUE})
+            assertThatThrownBy(() -> service.history(actor, "study-plan-review", limit, null)).hasMessageContaining("invalid")
+                    .extracting("code").isEqualTo("INVALID_REVIEW_REQUEST");
+        assertThat(store.calls).as("a page size out of range never reaches the store").hasSize(callsBefore);
+        assertThat(service.history(actor, "study-plan-review", 100, null).entries()).as("100 is the largest page").isNotNull();
     }
 }
