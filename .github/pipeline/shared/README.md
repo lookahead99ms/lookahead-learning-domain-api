@@ -212,7 +212,7 @@ concurrency group, so it never runs beside a deploy. Use `04 · Deploy DEV` for 
 1. **Security gate**: the release tooling tests with the 85 percent gate, now including `recover.py`.
 2. **Plan DEV recovery** (`plan-recovery`, environment `dev`): `release_version.py resolve` freezes the target tag;
    `recover.py fallback` chooses the fallback: the `fallback_release` input, or else the newest release whose deploy
-   verified healthy on `main` (a successful `04 · Deploy DEV` run with `desired 1`, or a successful `01 · Full` / `03 ·
+   verified healthy on `main` (a successful `04 · Deploy DEV` run that served, not a park: its title has no ` · 0 tasks`, or in titles before DLV-1025 reads `desired 1`; or a successful `01 · Full` / `03 ·
    Publish` run whose `Deploy to DEV` job succeeded, read from its `deploy-record-<release>-<run>` artifact name; never
    the target itself). With neither, the plan stops and asks for the input. The fallback tag is frozen the same way;
    then `recover.py plan` writes one `deploy.py` plan per stage (artifact `recover-plan`).

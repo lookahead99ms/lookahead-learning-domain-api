@@ -13,7 +13,7 @@ Stages, in order:
   5. park-final  only if the fallback did not serve either: DesiredCount 0, and the run fails.
 
 The fallback release is the `fallback_release` input, or else the newest release whose deploy verified healthy on main: a
-successful `04 · Deploy DEV` run with DesiredCount 1, or a successful `01 · Full` / `03 · Publish` run whose `Deploy to DEV` job
+successful `04 · Deploy DEV` run with DesiredCount 1 (told apart from a park by its run title, see `serving`), or a successful `01 · Full` / `03 · Publish` run whose `Deploy to DEV` job
 succeeded, read from that run's `deploy-record-<release>-<run>` artifact name. Without either the plan stops.
 """
 import argparse
@@ -57,6 +57,15 @@ def releaseEnv(env, key):
     return {**env, 'RELEASE_VERSION': env.get('FALLBACK_RELEASE_VERSION', ''), 'RELEASE_SOURCE_RECORD': env.get('FALLBACK_SOURCE_RECORD', '')}
 
 
+def serving(title):
+    """A `04 · Deploy DEV` run title that served a release, not a park. Titles since DLV-1025 (2026-11-27) read
+    `04 · Deploy DEV · <tag>` and end in ` · 0 tasks` for a park; older titles read `... | <tag> | desired N | ...`."""
+    title = str(title or '')
+    if ' | ' in title:
+        return '| desired 1 |' in title
+    return not title.endswith(' · 0 tasks')
+
+
 def lastVerified(repository, get, exclude):
     """Newest release whose deploy on main verified healthy, other than `exclude`; None when nothing qualifies."""
     runs = []
@@ -65,7 +74,7 @@ def lastVerified(repository, get, exclude):
         runs += [(run, workflow) for run in rows.get('workflow_runs', [])]
     runs.sort(key=lambda row: str(row[0].get('run_started_at') or row[0].get('created_at') or ''), reverse=True)
     for run, workflow in runs[:30]:
-        if workflow == 'deploy-dev.yml' and '| desired 1 |' not in str(run.get('display_title', '')):
+        if workflow == 'deploy-dev.yml' and not serving(run.get('display_title')):
             continue  # a park run verified zero tasks, not a serving release
         runId = str(run.get('id'))
         jobs = (get(repository, 'actions/runs/' + runId + '/jobs?per_page=100') or {}).get('jobs', [])

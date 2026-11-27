@@ -1,6 +1,6 @@
 {
   "name": "05 \u00b7 Recover DEV",
-  "run-name": "${{ github.workflow }} | ${{ inputs.release_version }} | fallback ${{ inputs.fallback_release || 'last verified' }} | #${{ github.run_number }}",
+  "run-name": "${{ github.workflow }} \u00b7 ${{ inputs.release_version }}",
   "on": {
     "workflow_dispatch": {
       "inputs": {

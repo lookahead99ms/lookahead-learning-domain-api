@@ -1,6 +1,6 @@
 {
   "name": "07 \u00b7 Migrate DEV data",
-  "run-name": "${{ github.workflow }} | ${{ inputs.release_version }} | ${{ inputs.command || 'migrate' }} | #${{ github.run_number }}",
+  "run-name": "${{ github.workflow }} \u00b7 ${{ inputs.release_version }} \u00b7 ${{ inputs.command || 'migrate' }}",
   "on": {
     "workflow_dispatch": {
       "inputs": {

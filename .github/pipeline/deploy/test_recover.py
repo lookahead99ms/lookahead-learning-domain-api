@@ -95,6 +95,22 @@ class FallbackChoiceTests(RecoverFixture):
         self.github.data['actions/runs/30/artifacts?per_page=100'] = {'artifacts': [{'name': 'deploy-record-v2026.11.01.09.00-30'}]}
         self.github.data['actions/runs/40/artifacts?per_page=100'] = {'artifacts': [{'name': 'release-record'}, {'name': 'deploy-record-v2026.11.02.07.00-40'}]}
 
+    def test_deploy_titles_before_and_after_dlv_1025_tell_a_park_from_a_serving_deploy(self):
+        self.assertTrue(m.serving('04 · Deploy DEV · v2026.11.27.19.00'))
+        self.assertFalse(m.serving('04 · Deploy DEV · v2026.11.27.19.00 · 0 tasks'))
+        self.assertTrue(m.serving('04 · Deploy DEV | v2026.11.01.09.00 | desired 1 | workflow_dispatch | #8'))
+        self.assertFalse(m.serving('04 · Deploy DEV | v2026.11.02.09.00 | desired 0 | workflow_dispatch | #9'))
+        self.assertFalse(m.serving('04 · Deploy DEV | main | workflow_dispatch | #3'))  # before the desired count was in the title
+        self.assertTrue(m.serving(None) and m.serving(''))
+
+    def test_new_titles_skip_park_runs_the_same_way(self):
+        self.history()
+        self.runs('deploy-dev.yml', [{'id': 31, 'run_started_at': '2026-11-02T10:00:00Z', 'display_title': '04 · Deploy DEV · v2026.11.02.09.00 · 0 tasks'},
+                                     {'id': 30, 'run_started_at': '2026-11-01T10:00:00Z', 'display_title': '04 · Deploy DEV · v2026.11.01.09.00'}])
+        self.runs('release.yml', [])
+        self.github.data['actions/runs/31/artifacts?per_page=100'] = {'artifacts': [{'name': 'deploy-record-v2026.11.02.09.00-31'}]}
+        self.assertEqual({'releaseVersion': 'v2026.11.01.09.00', 'source': 'last verified deploy, run 30'}, m.chooseFallback(self.env, self.get))
+
     def test_newest_verified_serving_deploy_wins_and_park_runs_are_skipped(self):
         self.history()
         self.assertEqual({'releaseVersion': 'v2026.11.02.07.00', 'source': 'last verified deploy, run 40'}, m.chooseFallback(self.env, self.get))

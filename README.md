@@ -884,9 +884,15 @@ Membership access summaries evaluate purchase and grant validity at one applicat
 
 ### Workflow run identification and approval context
 
-Actions run titles include the workflow name, branch, event and run number so
-parallel workflows are distinguishable in All workflows. Existing run history
-is unchanged. Approval issues, where produced, show exact source commit links
+Actions run titles (owner decision 2026-11-27, DLV-1025) are the short workflow
+name followed by what the run is about, joined by ` · `: `04 · Deploy DEV ·
+v2026.11.27.19.00` (a park adds ` · 0 tasks`), `05 · Recover DEV ·
+v2026.11.27.19.00`, `07 · Migrate DEV data · v2026.11.27.19.00 · migrate`, `06 · Restart DEV · domain`. Titles never carry the branch,
+the event or the run number; GitHub shows the number itself. `01 · Full`,
+`02 · Build`, `03 · Publish` and CI have no `run-name`, so GitHub shows its
+default: the commit message on a merge push, the pull request title on a pull
+request, the workflow name on a dispatch. `.github/pipeline/shared/test_workflow.py`
+(`RunTitleTests`) pins every title. Existing run history is unchanged. Approval issues, where produced, show exact source commit links
 and associated PRs merged into main. Push-triggered approvals include the
 verified push range when available; manual/pinned sources are explicitly scoped
 to their exact revision, not claimed as a delta since the previous deployment.

@@ -1,6 +1,5 @@
 {
   "name": "01 \u00b7 Full",
-  "run-name": "${{ github.workflow }} | ${{ github.ref_name }} | ${{ github.event_name }} | #${{ github.run_number }}",
   "on": {
     "push": {
       "branches": [
