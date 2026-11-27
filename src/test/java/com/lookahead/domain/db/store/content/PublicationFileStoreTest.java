@@ -11,6 +11,7 @@ import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.zip.GZIPOutputStream;
 import java.util.zip.ZipException;
@@ -101,8 +102,9 @@ class PublicationFileStoreTest {
         assertThat(Files.exists(folder.getParent().resolve("download.tar"))).isTrue();
         files.seal(loaded);
         assertThat(Files.exists(folder.getParent().resolve("download.tar"))).as("the archive is deleted when the stage is sealed").isFalse();
-        assertThat(Files.isWritable(written)).isFalse();
-        assertThat(Files.isWritable(folder)).isFalse();
+        // Asserted on the permission bits, not Files.isWritable: the image build runs the tests as root, who may write anyway.
+        assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(written))).isEqualTo("r--------");
+        assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(folder))).isEqualTo("r-x------");
         assertThat(Files.readString(written)).isEqualTo("{\"a\":1}");
         files.discard(loaded);
         assertThat(Files.exists(folder.getParent())).isFalse();
@@ -116,8 +118,8 @@ class PublicationFileStoreTest {
         assertThat(catalog.getParent().getFileName().toString()).startsWith("unloaded-");
         assertThat(catalog.getParent().getParent()).isEqualTo(parent);
         assertThat(Files.readString(catalog)).isEqualTo("{}");
-        assertThat(Files.isWritable(catalog)).isFalse();
-        assertThat(Files.isWritable(catalog.getParent())).isFalse();
+        assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(catalog))).isEqualTo("r--------");
+        assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(catalog.getParent()))).isEqualTo("r-x------");
         assertThatThrownBy(() -> files.placeholder(temp.resolve("missing"), "account-catalog.json", new byte[0])).isInstanceOf(IOException.class);
     }
 
