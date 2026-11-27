@@ -1,16 +1,24 @@
 package com.lookahead.domain.contract;
 
-import com.lookahead.domain.DomainAccountController;
-import com.lookahead.domain.cloud.CloudSignInController;
-import com.lookahead.domain.cloud.CloudSignInRegistry;
-import com.lookahead.domain.cloud.CognitoIdentity;
-import com.lookahead.learning.content.controller.AuthorPreviewAccessController;
-import com.lookahead.learning.content.handler.AccountErrorHandler;
-import com.lookahead.learning.content.repository.AccountRepository;
-import com.lookahead.learning.content.security.AccountPrincipal;
-import com.lookahead.learning.content.security.LocalAuthorAccess;
-import com.lookahead.learning.content.service.AuthorPreviewAccessService;
-import com.lookahead.learning.content.service.ProtectedContentPolicy;
+import com.lookahead.domain.client.SignInCognitoClient;
+import com.lookahead.domain.model.SignInModels;
+import com.lookahead.domain.controller.AccountController;
+import com.lookahead.domain.controller.SignInController;
+import com.lookahead.domain.model.StaffPermissions;
+import com.lookahead.domain.security.token.SignInTokenVerifierTest;
+import com.lookahead.domain.service.access.AccountViewService;
+import com.lookahead.domain.service.access.StaffAccessService;
+import com.lookahead.domain.service.signin.SignInPasswordService;
+import com.lookahead.domain.service.signin.SignInService;
+import com.lookahead.domain.model.SignInIdentity;
+import com.lookahead.domain.controller.AuthorPreviewAccessController;
+import com.lookahead.domain.security.handler.AccountErrorHandler;
+import com.lookahead.domain.service.access.AccountGrantService;
+import com.lookahead.domain.security.token.AccountPrincipal;
+import com.lookahead.domain.service.access.AuthorPreviewLocalService;
+import com.lookahead.domain.service.content.AuthorPreviewAccessService;
+import com.lookahead.domain.service.content.ProtectedContentManifestService;
+import com.lookahead.domain.validator.SignInRequestValidator;
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
@@ -25,6 +33,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockMakers;
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 import org.springframework.core.MethodParameter;
 import org.springframework.core.type.classreading.MetadataReader;
@@ -44,8 +53,10 @@ import org.springframework.web.method.support.ModelAndViewContainer;
 import org.springframework.web.servlet.mvc.method.RequestMappingInfo;
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
 import org.springframework.web.util.ServletRequestPathUtils;
+import software.amazon.awssdk.services.cognitoidentityprovider.CognitoIdentityProviderClient;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.NullNode;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -56,7 +67,7 @@ import static org.mockito.Mockito.when;
 /**
  * DLV-968 T13: provider side of the Gateway-owned Domain API contract. The file is Content's
  * {@code contracts/domain-api-v1.json} (the only home of every cross-repository contract; the Gateway edits it
- * there first), fetched from Content main into {@code .contracts/} by {@code scripts/fetch-contracts.sh}: in CI the
+ * there first), fetched from Content main into {@code .contracts/} by {@code .github/pipeline/build/fetch-contracts.sh}: in CI the
  * step "Fetch contracts from Content" runs it with {@code CONTENT_READ_TOKEN} before the Maven tests, locally a developer
  * runs it with their own {@code gh} login. This repository keeps no copy; a missing file fails with that instruction.
  * Every (method, path) must be a real controller mapping, and the calls whose response the Gateway interprets (sign-in
@@ -165,7 +176,7 @@ class DomainProviderContractTest {
             call.path("statuses").forEach(status -> statuses.add(status.asInt()));
             assertThat(statuses).as(id + " answered " + result.getStatus() + " " + result.getContentAsString()).contains(result.getStatus());
             if (result.getStatus() != 204) assertThat(result.getContentType()).as(id + " content type").startsWith("application/json");
-            JsonNode body = result.getContentAsString().isEmpty() ? tools.jackson.databind.node.NullNode.getInstance() : JsonMapper.builder().build().readTree(result.getContentAsString());
+            JsonNode body = result.getContentAsString().isEmpty() ? NullNode.getInstance() : JsonMapper.builder().build().readTree(result.getContentAsString());
             for (String field : fields(call.path("reads")))
                 assertThat(body.at(field).isMissingNode()).as(id + " must answer " + field + " in " + body).isFalse();
             for (String field : fields(call.path("readsOptional")))
@@ -184,32 +195,34 @@ class DomainProviderContractTest {
 
     /** The controllers whose answers the Gateway interprets, on stubbed services; no database, provider or network. */
     static MockMvc driven() {
-        var identity = new CognitoIdentity("https://cognito-idp.us-east-2.amazonaws.com/us-east-2_Example", "synthetic-subject", "synthetic-family",
-                "learner@example.test", "Learner", Instant.parse("2026-10-31T00:00:00Z"));
+        var identity = new SignInIdentity("https://cognito-idp.us-east-2.amazonaws.com/us-east-2_Example", "synthetic-subject", "synthetic-family",
+                "learner@example.test", "Learner", Instant.parse("2026-10-31T00:00:00Z"), null);
         var principal = new AccountPrincipal(ACCOUNT, "learner@example.test", "Learner", true);
-        var admission = new CloudSignInRegistry.Admission(ACCOUNT, SIGN_IN, null, Instant.parse("2026-10-31T00:10:00Z"));
-        var entry = new CloudSignInRegistry.Entry(SIGN_IN, true, "Work laptop", "Synthetic browser", Instant.parse("2026-10-31T00:00:00Z"), Instant.parse("2026-10-31T00:05:00Z"));
-        var registry = mock(CloudSignInRegistry.class,withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
-        when(registry.admit(any(), any())).thenReturn(admission);
-        when(registry.replace(any(), any(), any(), any())).thenReturn(new CloudSignInRegistry.Admission(ACCOUNT, SIGN_IN, null, null));
-        when(registry.revoke(any(), any(), any())).thenReturn(false);
-        when(registry.rename(any(), any(), anyString())).thenReturn(entry);
-        when(registry.inventory(any(), any())).thenReturn(new CloudSignInRegistry.Inventory(2, List.of(entry)));
-        when(registry.challenge(any(), any(), any())).thenReturn(new CloudSignInRegistry.ChallengeView(2, List.of(entry), Instant.parse("2026-10-31T00:10:00Z")));
-        when(registry.profile(any(), any(), any())).thenReturn(Map.of("displayName", "Learner"));
-        when(registry.preferences(any(), any(), anyString())).thenReturn(Map.of("theme", "dark"));
-        when(registry.links(any(), any(), any())).thenReturn(Map.of("links", Map.of()));
-        var cognito = mock(software.amazon.awssdk.services.cognitoidentityprovider.CognitoIdentityProviderClient.class, withSettings().mockMaker(org.mockito.MockMakers.PROXY));
-        var account = new DomainAccountController(mock(AccountRepository.class), mock(ProtectedContentPolicy.class), mock(LocalAuthorAccess.class));
+        var admission = new SignInModels.Admission(ACCOUNT, SIGN_IN, null, Instant.parse("2026-10-31T00:10:00Z"));
+        var entry = new SignInModels.Entry(SIGN_IN, true, "Work laptop", "Synthetic browser", Instant.parse("2026-10-31T00:00:00Z"), Instant.parse("2026-10-31T00:05:00Z"));
+        var signInService = mock(SignInService.class,withSettings().mockMaker(MockMakers.SUBCLASS));
+        when(signInService.admit(any(), any())).thenReturn(admission);
+        when(signInService.replace(any(), any(), any(), any())).thenReturn(new SignInModels.Admission(ACCOUNT, SIGN_IN, null, null));
+        when(signInService.revoke(any(), any(), any())).thenReturn(false);
+        when(signInService.rename(any(), any(), anyString())).thenReturn(entry);
+        when(signInService.inventory(any(), any())).thenReturn(new SignInModels.Inventory(2, List.of(entry)));
+        when(signInService.challenge(any(), any(), any())).thenReturn(new SignInModels.ChallengeView(2, List.of(entry), Instant.parse("2026-10-31T00:10:00Z")));
+        when(signInService.profile(any(), any(), any())).thenReturn(Map.of("displayName", "Learner"));
+        when(signInService.preferences(any(), any(), anyString())).thenReturn(Map.of("theme", "dark"));
+        when(signInService.links(any(), any(), any())).thenReturn(Map.of("links", Map.of()));
+        var cognito = mock(CognitoIdentityProviderClient.class, withSettings().mockMaker(MockMakers.PROXY));
+        var staffAccess = mock(StaffAccessService.class);
+        when(staffAccess.permissions(any())).thenReturn(StaffPermissions.forRoles(false, Set.of()));
+        var account = new AccountController(new AccountViewService(mock(AccountGrantService.class), mock(ProtectedContentManifestService.class), mock(AuthorPreviewLocalService.class), staffAccess), staffAccess);
         var resolver = new HandlerMethodArgumentResolver() {
             public boolean supportsParameter(MethodParameter parameter) {
-                return parameter.getParameterType() == CognitoIdentity.class || parameter.getParameterType() == AccountPrincipal.class;
+                return parameter.getParameterType() == SignInIdentity.class || parameter.getParameterType() == AccountPrincipal.class;
             }
             public Object resolveArgument(MethodParameter parameter, ModelAndViewContainer container, NativeWebRequest request, WebDataBinderFactory binders) {
-                return parameter.getParameterType() == CognitoIdentity.class ? identity : principal;
+                return parameter.getParameterType() == SignInIdentity.class ? identity : principal;
             }
         };
-        return MockMvcBuilders.standaloneSetup(new CloudSignInController(registry, cognito), account,
+        return MockMvcBuilders.standaloneSetup(new SignInController(signInService,new SignInPasswordService(signInService,new SignInCognitoClient(SignInTokenVerifierTest.TRUST,cognito,cognito)),new SignInRequestValidator()), account,
                         new AuthorPreviewAccessController(mock(AuthorPreviewAccessService.class)))
                 .setControllerAdvice(new AccountErrorHandler()).setCustomArgumentResolvers(resolver).build();
     }

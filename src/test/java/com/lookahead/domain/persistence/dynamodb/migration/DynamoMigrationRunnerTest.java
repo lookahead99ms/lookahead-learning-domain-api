@@ -1,7 +1,7 @@
 package com.lookahead.domain.persistence.dynamodb.migration;
 
-import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
-import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
+import com.lookahead.domain.db.store.dynamodb.DynamoTableNames;
+import com.lookahead.domain.db.store.dynamodb.DynamoWrites;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;

@@ -8,8 +8,7 @@ Local verification does not establish effective AWS permissions or cloud readine
 ## Runtime and transport
 
 Use the Java21 application image, UID/GID 10001, a read-only root filesystem and a
-writable task-local `/tmp`. The image carries the container health probe (the RDS CA bundle
-it carried for PostgreSQL left with that store on 2026-11-17).
+writable task-local `/tmp`. The image carries the container health probe.
 The default local artifact is `target/lookahead-domain-api-0.0.1-SNAPSHOT.jar`;
 release builds use `lookahead-domain-api-<version>.jar` and copy it to
 `/opt/lookahead/app.jar` in the image. A locally built JAR is not an image receipt.
@@ -42,12 +41,12 @@ The ordinary Local listener remains on its configured address/port, defaulting t
 
 ## Injected credentials
 
-The ECS execution role retrieves the three selected secrets below. Domain consumes
+The ECS execution role retrieves the two selected secrets below. Domain consumes
 their injected values before context refresh; it does not fetch Secrets Manager
 values at runtime. Bind each selector to an explicitly reviewed immutable version.
 Never put values in configuration examples, workflow output, logs or evidence.
 
-| Infra parameter prefix | Secret JSON field | Injected environment name | Application requirement |
+| Template parameter prefix | Secret JSON field | Injected environment name | Application requirement |
 | --- | --- | --- | --- |
 | `Tls` | `schema` | `LOOKAHEAD_TLS_SCHEMA` | `lookahead-tls/v1` |
 | `Tls` | `serverCertificate` | `LOOKAHEAD_TLS_SERVER_CERTIFICATE` | Valid server-auth leaf/chain with exact Domain slot SAN and at least one day remaining |
@@ -57,8 +56,9 @@ Never put values in configuration examples, workflow output, logs or evidence.
 
 The existing Infra selector shape is
 `<secret-arn>:<json-key>::<version-id>`; a whole scalar uses an empty JSON key.
-The `Tls`, `DomainApp` and `DomainGateway` parameters each have an ARN and version
-ID. These names describe bindings; they are not authorization to read/populate
+The `Tls` and `DomainGateway` parameters each have an ARN and a version ID
+(`TlsSecretArn` / `TlsVersion` and `DomainGatewaySecretArn` / `DomainGatewayVersion` in
+`.github/pipeline/deploy/dev/service.template.json`). These names describe bindings; they are not authorization to read/populate
 secrets. Domain receives no confidential application OAuth client secret,
 admission client secret, admission pool credentials, master DB password or signing
 private key. Its TLS private key is an explicitly injected transport credential.
@@ -122,13 +122,13 @@ proof that those optional submission paths have been activated.
 ## Verification and unresolved deployment gates
 
 Run the database-backed [85% coverage gate](../README.md#required-release-coverage-gate).
-`DomainActivationConfigurationTest` loads the shipped YAML with synthetic inputs
+`PublicationConfigurationDevActivationTest` loads the shipped YAML with synthetic inputs
 and checks DEV transport/readiness, pinned publication, identity binding, disabled
 runtime migrations/seeding and Local/PROD preservation. Publication tests reject
 malformed/non-progressing pagination while retaining valid empty-page progress.
 
 The private Content command
-`python3 tools/utilities/verify_aws_publication_contract.py` checks Infra's synthetic
+`python3 local-only/utilities/verify_aws_publication_contract.py` checks Infra's synthetic
 archive through Domain extraction/hash/allowlist/catalog consumers without AWS.
 See [cloud publication](cloud-publication.md) for the format and startup limits.
 

@@ -6,8 +6,8 @@ inactive deployment candidate; local controlled-provider tests do not establish
 live Cognito, DynamoDB, ECS, IAM or network readiness.
 
 Store note (DLV-970, 2026-11-17): the Domain's account, sign-in and admission data lives in
-DynamoDB (`DynamoCloudSignInRegistry`, `DynamoCloudAccounts`; see [DynamoDB persistence](dynamodb-persistence.md)).
-Where this page names PostgreSQL rows, migrations (`V4`, `V17`, `V21`, …), grants, triggers or
+DynamoDB (`SignInStore`, called by `SignInService`, `AccountAggregateStore`; see [DynamoDB persistence](dynamodb-persistence.md)).
+Where this page names PostgreSQL rows, migrations (`V10`, …), grants, triggers or
 row locks, it records how the same rule was kept on the PostgreSQL store that served DEV until
 2026-11-17; the rule is unchanged and its DynamoDB form is one conditional transaction on the
 account's `CONTROL` revision with insert-only audit items.
@@ -75,22 +75,20 @@ These systems have no shared atomic transaction or automatic replay.
 Application logout likewise requires confirmed Domain termination; provider
 logout uncertainty is reported separately by Gateway.
 
-## Explicit account administration (retired)
+## Account administration
 
-The `CloudAccountAdministration` command (admit, disable, enable, author flags over a migration-role
-JDBC connection) and the Flyway migrations it depended on retired with PostgreSQL on 2026-11-17.
-Admission is the owner's endpoint (People and access) or the protected owner identity's own first
+There is no command-line account administration (the PostgreSQL-era command retired with that store on
+2026-11-17). Admission is the owner's endpoint (People and access) or the protected owner identity's own first
 contact; Disable, Enable, Delete and the author flag are owner endpoints too. Nothing reaches the
 store outside the application.
 
 ## Admission (DLV-969)
 
-Sign-in admission is a request-and-approve flow (migration V17 on the PostgreSQL store, 2026-11;
-the same flow on DynamoDB items since the cutover). The Gateway contract is unchanged: an
+Sign-in admission is a request-and-approve flow. The Gateway contract is unchanged: an
 account that is not admitted still receives `403 ACCOUNT_ADMISSION_REQUIRED`.
 
 First contact. When `POST /internal/v1/cloud-sign-ins/admit` finds no account for the verified
-issuer and subject, `CloudSignInRegistry.admit` writes the account in one transaction: the `META`
+issuer and subject, `SignInService.admit` writes the account in one transaction: the `META`
 and `CONTROL` items (not admitted, enabled, no author flag, `requestedAt` now, username, display
 name and the provider-verified email when present), its `IDENTITY` binding, the `DIRECTORY` and
 `WAITING` projections and a `request` admission event in Administrator Audit Events, and then
@@ -114,48 +112,42 @@ and refused with `403 OWNER_REQUIRED` for anyone else, before any query:
   outside co-author/admin/reviewer/tester), `404 ACCOUNT_NOT_FOUND`,
   `409 ACCOUNT_ALREADY_ADMITTED`. Owner access (`author_access`) is never granted here.
 
-Cleanup. In cloud mode only, `CloudAdmissionCleanup.expire` runs through `RuntimeSweeps` at start and
+Cleanup. In cloud mode only, `DevAccessCleanupJob.expire` runs through `SweepRunner` at start and
 every four hours (DLV-971). It walks the `WAITING` projection for accounts older than 48 hours and,
 per account, writes an `expire` event and deletes the waiting account's items in one conditional
 transaction (only while not admitted; a concurrent admission or another task's delete makes that
 account's transaction lose and it is skipped), and returns the count.
 Failures are logged as one WARN line and never stop the scheduler. The 48 hours are the
-single constant `CloudAdmissionCleanup.WAITING_EXPIRY`, also used for `expiresAt`. The
+single constant `DevAccessCleanupJob.WAITING_EXPIRY`, also used for `expiresAt`. The
 Cognito user is not touched; the person can sign in again and a new waiting row appears.
 
 On DynamoDB the same rules hold through the item shapes: admission events are insert-only items in
 Administrator Audit Events, a waiting account is deleted only by the 48-hour expiry or a merge (one
 conditional delete per account), and an admitted account is never deleted by the cleanup.
-`DynamoCloudSignInRegistryDatabaseTest` covers first contact, concurrent first contacts, owner
-admission with roles, the lost-fence 409 and the cleanup against DynamoDB Local. (The PostgreSQL
-grants of migration V17 and `CloudSignInRegistryDatabaseTest` retired with the store on 2026-11-17.)
+`SignInStoreDatabaseTest` covers first contact, concurrent first contacts, owner
+admission with roles, the lost-fence 409 and the cleanup against DynamoDB Local.
 
 Test accounts in DEV (phase C, Domain side). `LOOKAHEAD_TEST_ACCOUNT_IDENTITY`
-(`app.test-accounts.identity`, `local` by default) set to `cognito` together with
-`LOOKAHEAD_TEST_ACCOUNT_POOL_ID` (`app.test-accounts.pool-id`, the sign-in pool of
-`LOOKAHEAD_COGNITO_ISSUER`, validated like the issuer) turns on created test learners in
-DEV only: `CloudTestAccountSettings` refuses to start in `prod`, and `TestAccountPolicy.cloud()`
-is true only for `dev`. Local behaviour is unchanged; the fixture roster (`seed`, `reset`,
+(`app.test-accounts.identity`, `local` by default) set to `dev` turns on created test learners in
+DEV only: `TestAccountModeService.cloud()` is true only with that value in the `dev` environment; the
+only other accepted value is `local`. Local behaviour is unchanged; the fixture roster (`seed`, `reset`,
 the legacy preset, the Local real-account deletion) answers `403 TEST_ACCOUNTS_DISABLED` in
 cloud mode and `GET /api/v1/admin/test-accounts` lists only learners with `initialization='created'`.
-`CognitoTestIdentityOperator` writes the pool with the task role (`ContainerCredentialsProvider`,
-a client separate from the anonymous verifier client, same timeouts, no retries); the task role
-needs exactly five actions on the pool ARN: `cognito-idp:AdminCreateUser` (message suppressed,
-no attributes), `AdminSetUserPassword` (permanent), `AdminGetUser` (reads the `sub`),
-`AdminDisableUser` and `AdminDeleteUser` (see `shared/iam-transition-proposal.md` in the
-DLV-969 evidence folder). The completing transaction of `POST /api/v1/admin/test-accounts`
+A DEV test account has no sign-in of its own since DLV-969 S35 (staff use it through a test
+session): `TestAccountNoSignInClient` stands where the Local Identity operator stands and calls
+nothing, so the Domain creates, disables and deletes no Cognito user for a test account. The completing transaction of `POST /api/v1/admin/test-accounts`
 also writes the admitted account (`CONTROL`: admitted, enabled, no author flag, username =
 display name = the generated username, `admittedBy` = the creator) and an `admit` event with roles `[]`, so the Waiting list and the audit stay
-consistent; an existing Cognito user from an interrupted attempt is reused on retry with the
-same mutation key, and the lifetime allowance is unchanged. `DELETE` disables and deletes the
-Cognito user, revokes the account's sign-ins, erases its data and marks the registry
+consistent; a retry with the same request key continues the reservation of the interrupted
+attempt, and the lifetime allowance is unchanged. `DELETE` revokes the account's sign-ins,
+erases its data and marks the registry
 item deleted; the admitted account itself stays (an admitted account is never deleted by the
-cleanup). `DynamoTestAccountsDatabaseTest` covers create, retry, delete and the roster refusal.
+cleanup). `TestAccountServiceDatabaseTest` covers create, retry, delete and the roster refusal.
 
-One access hierarchy for DEV test accounts (DLV-969, owner 2026-11-04). `TestAccountTemplates.allows` is the
-single rule for the test-session picker and start (`DevTestSessions`), the test-account list
+One access hierarchy for DEV test accounts (DLV-969, owner 2026-11-04). `StaffAccessRoleRules.allows` is the
+single rule for the test-session picker and start (`TestSessionService`), the test-account list
 (`GET /api/v1/admin/test-accounts`), Reset, creation scenarios and the People rows of `GET /api/v1/admin/access`.
-The acting person's role is the lower of their roles (`TestAccountTemplates.role`):
+The acting person's role is the lower of their roles (`StaffAccessRoleRules.role`):
 
 | Acting role | May see or act on |
 | --- | --- |
@@ -170,10 +162,8 @@ Reset). A test session acts as the test account, so its course access is the tes
 account" makes learner test accounts only, for every role; the allowance's `scenarios` lists the 27 learner scenarios,
 and any other scenario id answers `422 UNKNOWN_SCENARIO`. DLV-971 (owner, 2026-11-06): the roster has learner test
 accounts only. The co-author and admin test accounts it used to carry (`coauthor01`, `coauthor02`,
-`admin01`–`admin06`, in DEV with the `@lookahead.dev` suffix) are gone from the roster and retired by migration V21
-where a database already holds them: their `staff_access` row is cleared, their registry row is marked deleted by
-`V21` (a creation-ledger row too; on the PostgreSQL store, 2026-11-06; the DynamoDB roster never held them and the import
-of 2026-11-17 excluded test accounts). They are never created or restored again. A test account never carries a staff role; the hierarchy above still decides who
+`admin01`–`admin06`, in DEV with the `@lookahead.dev` suffix) are gone from the roster (the DynamoDB roster never held
+them and the import of 2026-11-17 excluded test accounts). They are never created or restored again. A test account never carries a staff role; the hierarchy above still decides who
 sees or acts on an account, because it also governs the People list.
 
 Restore of deleted roster accounts (owner, DEV only), on the route the Gateway already forwards:
@@ -187,7 +177,7 @@ card's `roster.deleted` (allowance) is the restorable count.
 
 Roster status (owner, DEV only): `GET /api/v1/admin/test-accounts/allowance` carries `roster` for the owner (null for
 everyone else and outside DEV), and `POST /api/v1/admin/test-accounts` with `{"roster": true}` answers the same
-object. It is computed from the store on every read (`DevTestRoster`):
+object. It is computed from the store on every read (`TestAccountDevRosterService`):
 
 | Field | Meaning |
 | --- | --- |
@@ -197,7 +187,7 @@ object. It is computed from the store on every read (`DevTestRoster`):
 | `withoutPlan` | ready learners whose scenario has a study plan they do not have (S37) |
 | `changed` | ready accounts that differ from their scenario start; the card greys out "Reset all" at 0 (owner 2026-11-04) |
 
-(PostgreSQL-era definition of `changed`, kept for the record; `DynamoTestAccountStore` answers the same fields from the account, plan and purchase items.) An account's scenario start is its latest `test_account_resets` row: Reset (`scenario`), Restore (`restore`) or, since
+(PostgreSQL-era definition of `changed`, kept for the record; `TestAccountStore` answers the same fields from the account, plan and purchase items.) An account's scenario start is its latest `test_account_resets` row: Reset (`scenario`), Restore (`restore`) or, since
 2026-11-04, the `create` row roster creation writes; each is the last write of its transaction. An account counts in
 `changed` when, after that row, its registry row was stamped (the V10 triggers set `last_changed_at` on every insert,
 update or delete of its `plans`, `account_grants`, `membership_purchases` and `staff_access`, which also covers plan
@@ -213,7 +203,7 @@ Every action on `POST /api/v1/admin/test-accounts` sends only its own fields (`{
 are optional booleans, so an omitted flag is false rather than `400 MALFORMED_JSON`. A Reset body without
 `expectedRevision` answers `428 REVISION_REQUIRED` (it was a 400), and a price body without `priceCents`
 (`POST /api/v1/admin/membership/plans/{id}/price`) the existing `422 MEMBERSHIP_INVALID`. A body that still cannot
-be read logs one `request.json` line naming the field (never its value). `TestAccountsControllerTest` sends these
+be read logs one `request.json` line naming the field (never its value). `TestAccountControllerTest` sends these
 exact bodies through the controller with Spring Boot's JSON mapper.
 
 ### Owner-approved purchases for DEV test accounts (DLV-969, owner 2026-11-04)
@@ -221,7 +211,7 @@ exact bodies through the controller with Spring Boot's JSON mapper.
 In DEV (`app.deployment-environment=dev`) payments stay simulated, and only a test account staff created can
 purchase: an active `test_account_registry` row with a `creator_id` and a `@lookahead.dev` username (the 27 roster
 accounts and "Create test account" learners), used through a test session. `PaymentConfiguration` wraps the mock
-provider in `OwnerApprovalPaymentGateway`, so a checkout is a request: no payment, no access, no migration. Local
+provider in `PaymentOwnerApprovalClient`, so a checkout is a request: no payment, no access, no migration. Local
 pays the mock at once as before; PROD has no payment provider.
 
 A request is an ordinary `membership_purchases` row: `status='pending'`, `source='checkout'`,
@@ -229,7 +219,7 @@ A request is an ordinary `membership_purchases` row: `status='pending'`, `source
 plan rules (new, renewal, upgrade at the prorated difference, change in the final seven days, promo sale) and
 overlap checks apply when it is created. Retrying with the same `Idempotency-Key` answers the same request and never
 asks the provider; nothing processes pending purchases automatically. Its `purchase-created` audit row also records
-`requestedBy`: the gate holder of the test session (`DevTestSessions.REQUESTER_ATTRIBUTE`, set by the test-session
+`requestedBy`: the gate holder of the test session (`TestSessionFilter.REQUESTER_ATTRIBUTE`, set by the test-session
 filter), because the purchase's own actor is the test account.
 
 Routes (all already forwarded by the Gateway):
@@ -244,7 +234,7 @@ Routes (all already forwarded by the Gateway):
   `{purchaseId, kind: "new"|"renewal"|"upgrade"|"change", fromPlan:{code,name} ("free"/"Free" for a new plan),
   toPlan:{code,name}, priceCents, currency, priceDifferenceCents (upgrade only: full difference before proration),
   startsAt, endsAt, requestedAt, requestedBy}`. `requestedBy` is `{self:true}` for the viewer's own request, otherwise
-  `{self:false, label:"Admin 2"}` (the permanent `StaffAliases` label) and, for the owner only, also `name` (display
+  `{self:false, label:"Admin 2"}` (the permanent `StaffAliasService` label) and, for the owner only, also `name` (display
   name); null when the sender is unknown. Course Pass purchases are refused at checkout, so no request has courses.
   Co-authors and other readers get no `pendingPurchase` field.
 - `POST /api/v1/admin/test-accounts` with `{"purchaseDecision": {"purchaseId": "<uuid>", "decision": "approve"|"decline"}}`
@@ -272,17 +262,17 @@ Upgraded-by marker and reserved Reset (owner, 2026-11-04). Once a request is app
 the latest `purchase-approved` audit row (its `actor_id` is who decided, its `recorded_at` when) of a purchase of the
 account that is `succeeded` or `scheduled` (an approval the mock provider declined does not count), recorded after the
 account's latest `test_account_resets` row; the requester is the `requestedBy` of that purchase's `purchase-created`
-row (`MembershipService.approvedRequest`, `UpgradeMarkers`). Because Reset writes a `test_account_resets` row, Reset
+row (`MembershipService.approvedRequest`, `TestAccountUpgradeMarkerService`). Because Reset writes a `test_account_resets` row, Reset
 clears the marker; a declined request never makes one.
 
 - `GET /api/v1/admin/test-accounts` rows in DEV, for every reader who can see the row (owner, co-author, admin), carry
   `upgradedBy`: `{self, label, name?, approvedBy:{self, label, name?}, plan:{code, name}, kind:"new"|"renewal"|"upgrade"|"change", approvedAt}`
-  or null. `self` is true when the viewer is that person; `label` is the permanent `StaffAliases` label ("Admin 2",
+  or null. `self` is true when the viewer is that person; `label` is the permanent `StaffAliasService` label ("Admin 2",
   "Owner", "Unknown" when the sender was not recorded); `name` (display name) is present for the owner only.
 - Every row also carries `canReset` (boolean) for the viewer: the existing Reset rule (DEV: an owner-created roster
   account, not a created learner; owner or admin; the one hierarchy) and the reservation below. The Web shows Reset only
   when it is true.
-- The test-session picker (`DevTestSessions.usable` → `/internal/v1/test-sessions/accounts`, relayed unchanged by the
+- The test-session picker (`TestSessionService.usable` → `/internal/v1/test-sessions/accounts`, relayed unchanged by the
   Gateway as `/bff/api/v1/auth/test-accounts`) carries a compact `upgradedBy` on each account:
   `{self, label, name?, plan:"<plan name>", approvedAt}` or null, so people see the marker before switching. `self` is
   relative to the gate holder; `name` only when the gate holder is the owner.
@@ -299,8 +289,8 @@ the success lines are unchanged.
 Logs (`lookahead.payment`, ids, plan code and cents only): `purchase.approval-requested` when a request is created,
 `purchase.approved` / `purchase.declined` with `actor.role` (owner or admin) and `repeated`, the usual
 `membership.activated|upgraded|scheduled` on approval, `purchase.request` / `purchase.quote` refusals with reason
-`PURCHASES_TEST_ACCOUNTS_ONLY`, and `purchase.decision` refusals. `CloudTestAccountsDatabaseTest` and
-`MembershipDatabaseTest` cover the flow on the real database, including the marker for the owner (names), the requester
+`PURCHASES_TEST_ACCOUNTS_ONLY`, and `purchase.decision` refusals. `TestAccountServiceDatabaseTest` and
+`MembershipStoreDatabaseTest` cover the flow on the real database, including the marker for the owner (names), the requester
 (self) and another admin (label only), the picker marker, the reserved Reset, `canReset` per viewer and a declined
 request.
 
@@ -323,8 +313,8 @@ wrote. `GET /api/v1/platform-reviews` lists both stores merged, newest first, pa
 | reviewer, co-author, tester | the reviews they wrote | nothing (`403`) | nothing (`403`) | own reviews while New |
 | learner (`user`) | nothing | nothing | nothing | nothing |
 
-Every status change is a row of `review_status_events` (V22, append-only: the runtime role inserts and reads,
-nothing updates or deletes). Support requests with no update for seven days are closed by the sweep
+Every status change is one insert-only item in Administrator Audit Events (`RECORD#<kind>#<recordId> / STATUS#…`,
+`PlatformReviewStatusHistoryStore`; nothing updates or deletes it). Support requests with no update for seven days are closed by the sweep
 (`closedBy` `system`, the note "No update in 7 days; closed automatically. Reply or reopen to continue.");
 reviews are never swept. The owner can run one sweep, or all three, at once (`POST /api/v1/sweeps/run`
 `{"job": ...}`, owner only; README, "Sweeps") instead of waiting for the 4-hour cadence. The receipt row in `support_receipts` is unchanged. Statuses answered to the learner:
@@ -334,7 +324,7 @@ unconfigured or fails logs `support.record` / `REQUEST_NOT_RECORDED` and the ema
 the store nor mail the request key is released and the learner gets `503 SUPPORT_UNAVAILABLE` to try again.
 Today's day files under the legacy prefix are imported once at start (README, "Platform reviews").
 Tests: `PlatformReviewServiceTest`, `PlatformReviewControllerTest`, `SupportFeedbackServiceTest`,
-`SupportControllerTest`, `SupportReceiptRepositoryDatabaseTest`, `ReviewRecordsDatabaseTest`.
+`SupportControllerTest`, `SupportReceiptStoreDatabaseTest`, `PlatformReviewRecordNumberStoreDatabaseTest`.
 
 ## Delivery plan and promote (DLV-971, owner 2026-11-06)
 
@@ -351,7 +341,7 @@ three-way against the archived base at start and every 4 hours (README, "Deliver
 `plan.json` is uploaded by the owner by hand; until then the plan answers `404 DELIVERY_PLAN_MISSING`.
 The Gateway forwards `/api/v1/delivery/plan/**` with the same session and bearer (`SCOPE_account`) as
 platform reviews. Tests: `DeliveryPlanServiceTest`, `DeliveryPlanControllerTest`, `DeliveryPlanMergeTest`,
-`DeliveryPlanStoreTest`, `DomainSecurityIntegrationTest`.
+`DeliveryPlanStoreTest`, `ApiSecurityConfigurationIntegrationTest`.
 
 ## Configuration and validation
 

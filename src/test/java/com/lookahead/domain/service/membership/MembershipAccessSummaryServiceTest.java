@@ -1,0 +1,31 @@
+package com.lookahead.domain.service.membership;
+
+import org.junit.jupiter.api.Test;
+import tools.jackson.databind.ObjectMapper;
+import java.util.*;
+import static org.assertj.core.api.Assertions.*;
+
+class MembershipAccessSummaryServiceTest {
+    final ObjectMapper json=new ObjectMapper();
+    @Test void freePurchasePromoAndManualGrantLabelsAreDerivedAndDeterministic() {
+        assertThat(MembershipAccessSummaryService.summarize(List.of(),Set.of()).label()).isEqualTo("Free");
+        var regular=json.readTree("{\"name\":\"Learn\",\"group\":\"regular\"}");
+        var promo=json.readTree("{\"name\":\"Annual Promo\",\"group\":\"promo\"}");
+        assertThat(MembershipAccessSummaryService.summarize(List.of(regular),Set.of()).label()).isEqualTo("Regular · Learn");
+        assertThat(MembershipAccessSummaryService.summarize(List.of(promo,regular,regular),Set.of()).labels())
+                .containsExactly("Promo · Annual Promo","Regular · Learn");
+        assertThat(MembershipAccessSummaryService.summarize(List.of(),Set.of("grow:api-design","learn:core-java")).label())
+                .isEqualTo("Granted · grow:api-design, learn:core-java");
+        // DLV-968: the staff documents scope is never a granted course.
+        assertThat(MembershipAccessSummaryService.summarize(List.of(),Set.of("staff:documents")).label()).isEqualTo("Free");
+        var mixed=MembershipAccessSummaryService.summarize(List.of(),Set.of("staff:documents","learn:core-java"));
+        assertThat(mixed.label()).isEqualTo("Granted · learn:core-java");assertThat(mixed.grantedCourseIds()).containsExactly("learn:core-java");
+    }
+    @Test void coursePassListsOnlyItsPurchasedCourseIds() {
+        var plan=json.readTree("""
+            {"name":"Course Pass","group":"regular","scope":{"kind":"courses","courseIds":["learn:core-java","grow:api-design"]}}
+            """);
+        assertThat(MembershipAccessSummaryService.summarize(List.of(plan),Set.of()).label())
+                .isEqualTo("Regular · Course Pass · grow:api-design, learn:core-java");
+    }
+}

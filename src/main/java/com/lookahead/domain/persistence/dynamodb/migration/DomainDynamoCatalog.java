@@ -1,12 +1,12 @@
 package com.lookahead.domain.persistence.dynamodb.migration;
 
-import com.lookahead.domain.membership.MembershipCatalogSeed;
-import com.lookahead.domain.membership.MembershipItems;
-import com.lookahead.domain.persistence.dynamodb.DynamoItems;
-import com.lookahead.domain.persistence.dynamodb.DynamoStaffAliasBootstrap;
-import com.lookahead.domain.persistence.dynamodb.DynamoStaffAliasVerifier;
-import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
-import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
+import com.lookahead.domain.db.store.membership.MembershipCatalogSeed;
+import com.lookahead.domain.db.store.membership.MembershipItems;
+import com.lookahead.domain.db.store.dynamodb.DynamoItems;
+import com.lookahead.domain.db.store.access.StaffAliasBootstrapStore;
+import com.lookahead.domain.db.store.access.StaffAliasVerificationStore;
+import com.lookahead.domain.db.store.dynamodb.DynamoTableNames;
+import com.lookahead.domain.db.store.dynamodb.DynamoWrites;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.List;
@@ -78,10 +78,10 @@ public final class DomainDynamoCatalog {
                     + INITIALIZATION + " at " + INITIALIZED_AT + ", only when the alias namespace is empty; a repeat is a replay.";
         }
         @Override public void apply(DynamoDbClient client, DynamoTableNames tables) {
-            new DynamoStaffAliasBootstrap(client, tables).initialize(INITIALIZATION, INITIALIZED_AT, 100);
+            new StaffAliasBootstrapStore(client, tables).initialize(INITIALIZATION, INITIALIZED_AT, 100);
         }
         @Override public void verify(DynamoDbClient client, DynamoTableNames tables) {
-            new DynamoStaffAliasVerifier(client, tables).verify();
+            new StaffAliasVerificationStore(client, tables).verify();
         }
     }
 

@@ -60,11 +60,11 @@
         },
         {
           "name": "Install hash-locked release coverage tooling",
-          "run": "python -m pip install --only-binary=:all: --require-hashes -r tools/release/requirements-coverage.txt"
+          "run": "python -m pip install --only-binary=:all: --require-hashes -r .github/pipeline/shared/requirements-coverage.txt"
         },
         {
           "name": "Test the release tooling this run executes and require 85 percent coverage",
-          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py,*/restart.py' --fail-under=85",
+          "run": "src=.github/pipeline/shared,.github/pipeline/publish,.github/pipeline/deploy\npython -m coverage erase\nfor step in shared publish deploy; do python -m coverage run --append --source=\"$src\" -m unittest discover -s \".github/pipeline/$step\" -p 'test_*.py' || exit 1; done\npython -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py,*/restart.py' --fail-under=85",
           "env": {
             "COVERAGE_FILE": "${{ runner.temp }}/release-tooling.coverage"
           }
@@ -102,7 +102,7 @@
         {
           "name": "Cut the next release tag at the run commit; never reuse one",
           "id": "cut",
-          "run": "python3 tools/release/pipeline_tag.py cut --app domain --record \"$RUNNER_TEMP/release-tag.json\""
+          "run": "python3 .github/pipeline/publish/pipeline_tag.py cut --app domain --record \"$RUNNER_TEMP/release-tag.json\""
         },
         {
           "name": "Resolve the release tag once and freeze its main commit",
@@ -110,7 +110,7 @@
           "env": {
             "RELEASE_VERSION": "${{ steps.cut.outputs.release_version }}"
           },
-          "run": "python3 tools/release/release_version.py resolve --app domain --record \"$RUNNER_TEMP/release-source.json\""
+          "run": "python3 .github/pipeline/shared/release_version.py resolve --app domain --record \"$RUNNER_TEMP/release-source.json\""
         },
         {
           "name": "Retain the frozen release-source record",
@@ -212,11 +212,11 @@
         },
         {
           "name": "Require a fresh owner main run and the frozen release source",
-          "run": "python3 tools/release/owner_release.py gate --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\""
+          "run": "python3 .github/pipeline/publish/owner_release.py gate --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\""
         },
         {
           "name": "Wait for the owner approval of this exact tested image (issue with gist first)",
-          "run": "python3 tools/release/owner_release.py approve --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --source-root release-source"
+          "run": "python3 .github/pipeline/publish/owner_release.py approve --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --source-root release-source"
         },
         {
           "name": "Retain the approval plan and receipt",
@@ -232,7 +232,7 @@
           "name": "Close the approval issue when no approval was given",
           "if": "failure()",
           "continue-on-error": true,
-          "run": "python3 tools/release/issue_close.py --stage \"Approve ECR publish\" --outcome failure --detail \"Rejected, expired or failed; nothing was published.\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --match \"Publish image\""
+          "run": "python3 .github/pipeline/shared/issue_close.py --stage \"Approve ECR publish\" --outcome failure --detail \"Rejected, expired or failed; nothing was published.\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --match \"Publish image\""
         }
       ]
     },
@@ -311,19 +311,19 @@
         },
         {
           "name": "Verify Git release tag and shared repository",
-          "run": "python3 tools/release/release_version.py check --app domain"
+          "run": "python3 .github/pipeline/shared/release_version.py check --app domain"
         },
         {
           "name": "Recheck live owner approval before upload credentials",
-          "run": "python3 tools/release/owner_release.py check --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --source-root release-source"
+          "run": "python3 .github/pipeline/publish/owner_release.py check --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --source-root release-source"
         },
         {
           "name": "Load and verify scanned image without rebuilding",
-          "run": "python3 tools/release/image.py import --directory \"$RUNNER_TEMP/release-image\" --source-root release-source > \"$RUNNER_TEMP/release-image-id\""
+          "run": "python3 .github/pipeline/shared/image.py import --directory \"$RUNNER_TEMP/release-image\" --source-root release-source > \"$RUNNER_TEMP/release-image-id\""
         },
         {
           "name": "Recheck release tag before upload credentials",
-          "run": "python3 tools/release/release_version.py recheck --app domain --record \"$RUNNER_TEMP/release-source.json\""
+          "run": "python3 .github/pipeline/shared/release_version.py recheck --app domain --record \"$RUNNER_TEMP/release-source.json\""
         },
         {
           "name": "Use short-lived DEV OIDC credentials",
@@ -343,7 +343,7 @@
         {
           "name": "Publish exact scanned image into immutable DEV repository",
           "id": "publish",
-          "run": "aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin \"${ECR_REPOSITORY%%/*}\"\npython3 tools/release/owner_release.py publish --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --source-root release-source --loaded \"$(cat \"$RUNNER_TEMP/release-image-id\")\""
+          "run": "aws ecr get-login-password --region us-east-2 | docker login --username AWS --password-stdin \"${ECR_REPOSITORY%%/*}\"\npython3 .github/pipeline/publish/owner_release.py publish --directory \"$RUNNER_TEMP/release-image\" --receipt \"$RUNNER_TEMP/owner-approval.json\" --source-root release-source --loaded \"$(cat \"$RUNNER_TEMP/release-image-id\")\""
         },
         {
           "name": "Retain immutable registry release receipt",
@@ -378,7 +378,7 @@
           "env": {
             "OUTCOME": "${{ steps.publish.outcome }}"
           },
-          "run": "if [ \"$OUTCOME\" = success ]; then detail=\"Image published to ECR and its digest read back.\"; else detail=\"Publish did not complete after approval; nothing is reused. Start a new run (next merge, or 03 \u00b7 Publish by tag), which opens a new issue.\"; fi\npython3 tools/release/issue_close.py --stage \"Publish to ECR\" --outcome \"$OUTCOME\" --detail \"$detail\" --receipt \"$RUNNER_TEMP/owner-approval.json\""
+          "run": "if [ \"$OUTCOME\" = success ]; then detail=\"Image published to ECR and its digest read back.\"; else detail=\"Publish did not complete after approval; nothing is reused. Start a new run (next merge, or 03 \u00b7 Publish by tag), which opens a new issue.\"; fi\npython3 .github/pipeline/shared/issue_close.py --stage \"Publish to ECR\" --outcome \"$OUTCOME\" --detail \"$detail\" --receipt \"$RUNNER_TEMP/owner-approval.json\""
         }
       ]
     },
@@ -455,7 +455,7 @@
         },
         {
           "name": "Write the release record: tag, source, digest and owner approval",
-          "run": "r=\"$RUNNER_TEMP/receipts\"\npython3 tools/release/candidate.py record --registry-image \"$r/registry-image.json\" --approval \"$r/owner-approval.json\" --output \"$RUNNER_TEMP/release-record.json\""
+          "run": "r=\"$RUNNER_TEMP/receipts\"\npython3 .github/pipeline/publish/candidate.py record --registry-image \"$r/registry-image.json\" --approval \"$r/owner-approval.json\" --output \"$RUNNER_TEMP/release-record.json\""
         },
         {
           "name": "Retain the release record",

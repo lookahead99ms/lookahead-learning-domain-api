@@ -89,7 +89,7 @@ No automatic refresh, Redis, extra EBS, public S3 URLs or private content in ima
 Pinned mode rolls out a new release by replacing the task with new pins. Live mode picks
 up a newly promoted release when its tasks restart; a running task keeps the bytes it
 verified at startup. Rollback in live mode is a separate approved restore of the
-previous tag from `archive/<tag>/` into `live/<tag>/` (Infra `aws/s3/content_live.py promote`)
+previous tag from `archive/<tag>/` into `live/<tag>/` (an Infra operation)
 that archives and retires the current `live/` folder, followed by a task restart; because the
 highest tag is served, the previous folder must be removed, not merely joined. In pinned mode rollback selects the previous
 reviewed image/tag/digest combination.
@@ -97,12 +97,12 @@ reviewed image/tag/digest combination.
 ## Validation and operational limits
 
 Run `./mvnw test` and `./mvnw -DskipTests package`. The private Content utility
-`tools/utilities/verify_aws_publication_contract.py` packages synthetic inputs with
+`local-only/utilities/verify_aws_publication_contract.py` packages synthetic inputs with
 Infra's Python tool and exercises the Java loader and policy/catalog consumers.
 It makes no AWS calls and mutates no running service. The fixture tests in
-`PublicationBootstrapTest` take the pin from the manifest's `releaseId`, so a tag-keyed
+`PublicationArchiveLoadServiceTest` take the pin from the manifest's `releaseId`, so a tag-keyed
 manifest (with or without `contentSha256`) passes; a pinned deployment additionally
-validates the tag format through `PublicationSettings`.
+validates the tag format through `PublicationSelectionValidator`.
 
 Real ECS injection, S3/IAM/endpoint denial, Linux image startup, DynamoDB grants,
 rollout rollback and measured heap/disk use require

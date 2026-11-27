@@ -4,7 +4,7 @@
 
 The Domain runs on one store: DynamoDB, four tables (**User Account Details**, **Administrator
 Audit Events**, **User Study Plan Details**, **Protected Owner Identity**) read and written through
-`Dynamo*` stores with PartiQL transactions fenced on the owner's `ACCOUNT#id / META` revision.
+the store classes under `db/store` with PartiQL transactions fenced on the owner's `ACCOUNT#id / META` revision.
 Accounts, identities, sessions, admission, the e-mailed account merge, staff access and labels,
 plans/versions/progress/receipts/lifecycle, memberships, test accounts, author reviews, record
 numbers and the sweeps all live there. Study-plan snapshots stay complete, account-owned copies
@@ -18,17 +18,15 @@ its next sign-in, when its `OWNER / ROOT` binding was written after that contact
 account action is an owner endpoint; there is no command-line account administration.
 
 PostgreSQL (history): the Domain served Local and DEV from a PostgreSQL database (RDS `lookahead-dev-db`
-on DEV, Flyway migrations V1–V22, the `Jdbc*` stores) until 2026-11-17. That day the real accounts were imported
-into DynamoDB (data step 5, run 44162520740), a final manual snapshot of the instance was kept, and PostgreSQL
-was retired under DLV-970 (owner: "delete all Postgres things"): the store switch, the `Jdbc*` stores, Flyway,
-the driver, the SQL migrations, the RDS CA bundle, the database settings and secret, their tests and the CI
-PostgreSQL services are gone from this repository. The RDS instance, its stacks, secrets, subnets and IAM rows
-are retired by Infra and the owner's console steps (Content evidence `DLV-970-dynamodb-migration-20261102`,
-`postgresql-retirement-plan.md`).
+on DEV) until 2026-11-17. That day the real accounts were imported into DynamoDB (data step 5, run 44162520740),
+a final manual snapshot of the instance was kept, and PostgreSQL was retired under DLV-970 (owner: "delete all
+Postgres things"); nothing of it is left in this repository. The RDS instance, its stacks, secrets, subnets and
+IAM rows are retired by Infra and the owner's console steps (Content evidence
+`DLV-970-dynamodb-migration-20261102`, `postgresql-retirement-plan.md`).
 
 Audit items (purchases, author reviews, staff access, account maintenance) are insert-only on
 DynamoDB: the application role holds `PartiQLInsert` on the audit table and nothing that changes
-or removes an item. The Local audit purge of the PostgreSQL era has no equivalent and none is needed.
+or removes an item. Nothing purges the audit and nothing needs to.
 
 This independently packaged Java/Spring Boot application owns learning business
 rules: content access, current course grants, plans, progress, support receipts
@@ -49,7 +47,7 @@ up to three times when available, with timeouts and a two-second retry delay.
 The pinned SHA-256 is still required before extraction; checksum failures and
 Maven build failures are not retried. To diagnose a download failure, run
 `MVNW_VERBOSE=true ./mvnw --version`. Offline bootstrap regression checks run with
-`python3 -m unittest discover -s tools/build -p 'test_*.py'`.
+`python3 -m unittest discover -s .github/pipeline/build -p 'test_maven_wrapper.py'`.
 The Boot parent still owns the dependency baseline; temporary Jackson 2/3 patch
 BOM overrides are documented in [Security CI](docs/security-ci.md).
 The executable service artifact is `target/lookahead-domain-api-<version>.jar`;
@@ -71,9 +69,7 @@ such as `look-ahead.study-plan.v1` are unchanged.
   grants, and plan create, import, activity and version bodies. Prose such as plan names,
   goals, titles and notes is never rewritten. Retry receipts still hash the request exactly
   as sent, so an old tab retrying the same request gets its original response.
-- The stored PostgreSQL rows were rewritten once by the Java migration `V5__blaze_catalog_id`
-  (2026-10); it retired with PostgreSQL on 2026-11-17. DynamoDB items were written after the
-  rename and carry `blaze` ids. `CatalogIdsTest` and `LegacyCatalogPlanTest` cover the request rules.
+- The DynamoDB items were written after the rename and carry `blaze` ids. `CatalogIdsTest` and `StudyPlanServiceLegacyCatalogTest` cover the request rules.
 - The platform review page "Look Ahead Catalog" is now "Blaze Catalog"; an old tab's value
   is accepted and stored items read with the new name.
 
@@ -111,7 +107,7 @@ curriculum. Integrated local orchestration remains infrastructure-owned.
 ## Required release coverage gate
 
 DynamoDB test-account fixtures share one controllable clock across scenario creation,
-membership evaluation and store timestamps. `TestAccountsService` defaults to the UTC
+membership evaluation and store timestamps. `TestAccountService` defaults to the UTC
 system clock in production; database tests inject their fixture clock and verify creation,
 expiry and reset at fixed dates, so memberships do not become future-dated as CI ages.
 
@@ -163,7 +159,7 @@ HTTP and fixed internal names `identity`, `identity-api`, `lookahead-identity`.
 Public issuer HTTP remains loopback-only. `accounts` and `resource` roles are
 always activated; mixed gateway/authorization-server roles fail startup.
 
-The store settings are checked once at startup (`DynamoSettings`): Local needs a loopback
+The store settings are checked once at startup (`DynamoConnection`): Local needs a loopback
 `LOOKAHEAD_DYNAMODB_ENDPOINT`; dev and prod need `AWS_REGION` and the four approved table names
 and refuse an endpoint override. Every DynamoDB call is bounded (2 s per call, 1 s per attempt on
 readiness) and readiness checks the data-version watermark against the build's requirement.
@@ -238,7 +234,7 @@ recovery or the three-application login flow. Those require the isolated infrast
 No repository clones another at build or deploy time, and every cross-repository contract lives in
 one place only: the Content repository, under `contracts/` (`registry.json`,
 `web-content-paths.json`, `release-layout.json`, `domain-api-v1.json`; owner decisions 2026-11-05
-and 2026-11-06). This repository keeps no copy. `scripts/fetch-contracts.sh` fetches the two files
+and 2026-11-06). This repository keeps no copy. `.github/pipeline/build/fetch-contracts.sh` fetches the two files
 this repository tests against from Content main, read-only, into the git-ignored `.contracts/`
 folder, and the tests read them from there (`-Dcontracts.dir=<folder>` points elsewhere). CI runs
 the script in the step "Fetch contracts from Content" on every pull request and push to main, with
@@ -252,10 +248,10 @@ to stay private is not a contract but configuration, and it belongs to Infra.
 | Contract file on Content | Owner | Read by, on this repo's PR | Change order | What a failure means |
 | --- | --- | --- | --- | --- |
 | `contracts/domain-api-v1.json` (`gateway-domain-contract/v1`: every Domain call the Gateway makes, its method, path, success statuses and the response fields the Gateway reads) | Gateway; the Gateway edits the master on Content first | `DomainProviderContractTest`: every call is a real controller mapping, deferred routes stay unmapped, and the calls whose answer the Gateway interprets are driven through the real controllers on stubbed services | Content master first (the Gateway's change), then this repository provides the route, status or field, then the Gateway's own pull request, then Web | A listed route is missing from Domain or answers an unlisted status or field: Domain is behind the master on Content |
-| `contracts/release-layout.json` (`release-layout/v1`: the `live/<tag>/` layout, the keys of `manifest.json` and `publication.json`, and the keys and record fields of `account-catalog.json`) | Content | `ReleaseLayoutContractTest`: builds a minimal release from the contract alone and loads it through `PublicationBootstrap` and `SnapshotValidator`; a release or catalog missing a required key is refused the way the readers refuse, an absent optional key is accepted, and an unknown record field is shown to be ignored | Content first for a new optional key (with a bumped `schemaVersion`), then this repository adopts it. A required key or a removed key needs the Domain change merged before the Content release that carries it | The release Content would publish cannot be loaded by Domain, or the master no longer says what Domain reads |
+| `contracts/release-layout.json` (`release-layout/v1`: the `live/<tag>/` layout, the keys of `manifest.json` and `publication.json`, and the keys and record fields of `account-catalog.json`) | Content | `ReleaseLayoutContractTest`: builds a minimal release from the contract alone and loads it through `PublicationArchiveLoadService`, `AccountCatalogService` and `StudyPlanSnapshotValidator`; a release or catalog missing a required key is refused the way the readers refuse, an absent optional key is accepted, and an unknown record field is shown to be ignored | Content first for a new optional key (with a bumped `schemaVersion`), then this repository adopts it. A required key or a removed key needs the Domain change merged before the Content release that carries it | The release Content would publish cannot be loaded by Domain, or the master no longer says what Domain reads |
 
 A test that fails with "Contract file absent" has nothing to do with the contract: the fetch did
-not run (locally: run `scripts/fetch-contracts.sh`; CI: the fetch step failed or the secret was not
+not run (locally: run `.github/pipeline/build/fetch-contracts.sh`; CI: the fetch step failed or the secret was not
 passed, and the step's own message names the fix). Content's `registry.json` lists both files with
 this repository and these two tests as consumers; Content compares nothing with this repository.
 
@@ -279,27 +275,24 @@ are1–160 characters with no control characters. List/detail return `name` and
 advertises `planNamingPolicies: ["plan-name-v1"]`.
 
 
-## AWS DEV deployment candidate (DLV-810)
+## Service deployment definition
 
-`deployment/service.yaml` is the application-owned service contract for the local AWS candidate. It declares health, capacity, immutable image/release inputs and symbolic approved resource/secret references. Shared DEV/PROD values, IAM, S3, networking, CloudFormation and tooling belong to Infra. YAML uses JSON syntax. Current image/evidence values are unresolved and desired count is zero; this is not an activated cloud profile. Local configuration and authorization are preserved. See the sibling Infra `aws/devprod/README.md` for local planning commands and remaining application/identity/bootstrap gates. No resource creation, upload or GitHub activation has been performed.
-
-Deployment direction: this application owns its service YAML and future thin caller to an immutable-pinned Infra reusable workflow. The current v1 manifest still requires migration to shared + DEV/PROD sections. Infra owns bootstrap/IAM/security groups/templates/orchestration; see workspace Infra `docs/deployment/README.md`. Build-once digest promotion, required scans and separate DEV/PROD approvals remain gates, not enabled deployment behavior.
-
-## Service deployment configuration
-
-`deployment/service.yaml` uses `lookahead-service/v2`: `shared` owns service port, health, settings and approved resource/secret/Infra output references; `environments.dev` and `.prod` select capacity, image digest, content release and activation evidence. Both candidates retain zero tasks. Shared account/region values and all infrastructure remain Infra-owned. Infra's maintained `aws/devprod/parameter-bindings.yaml` validates every template parameter; `scripts/aws_deployment.py plan --environment dev|prod` generates an offline plan. See Infra `docs/deployment/README.md` for commands and activation gates. No application contract or Local Docker behavior changed; AWS deployment remains blocked.
-
-October8 candidate service configuration adds explicit Fargate runtime/private networking, ingress/target-group references, optional alarm references, and per-environment scaling min/max, CPU targets, cooldowns and alarm thresholds. Desired/min tasks stay0 and scaling/alarms disabled. Fargate uses CPU/memory, not an EC2 instance type. Infra owns conditional scaling/IAM/CloudWatch resources; see Infra docs/deployment/README.md.
-
-Deployment `service.yaml` now declares task startup, health probes, temporary disk, logging/rollout settings and approved environment/Secrets Manager bindings. Java DEV/PROD sections declare Xms128 MiB / Xmx512 MiB and approved JVM args for provisional 1 GiB tasks, leaving explicit native/probe budget; load testing remains required. Infra shared values and maintained templates remain authoritative; see Infra `docs/deployment/README.md` → JVM and task configuration. Local Docker/runtime behavior is unchanged and AWS activation remains blocked.
-
-AWS candidate `deployment/service.yaml` now references the shared application task role and separate shared Fargate execution role from its owning environment foundation. All three cloud apps reuse this pair; DEV/PROD have separate role resources/scopes. Infra owns policies, trust and validation; service-specific secret mappings and existing authorization are preserved. See Infra `docs/deployment/README.md` → Two shared IAM roles per environment. No cloud activation.
+This application deploys itself to DEV. Its deployment definition is
+`.github/pipeline/deploy/dev/service.template.json` (the ECS task definition and service of the stack
+`lookahead-dev-domain`) with `.github/pipeline/deploy/dev/deploy-config.json` (cluster, stack, log group, Cloud Map
+service, role and secret-version bindings, the four DynamoDB table names, observation window), applied by
+`.github/pipeline/deploy/deploy.py` through `04 · Deploy DEV`; `.github/pipeline/shared/README.md` describes the
+stages. The DEV data migration (`07 · Migrate DEV data`, `.github/pipeline/deploy/migrate.py`) reads the same two
+files. Infra owns the shared AWS resources the service runs on (network, cluster, IAM roles, secrets, registry). Since
+the owner decision of November 27, 2026 no tool or workflow here reads a file of the Infra repository and Infra reads
+no file of this one; the earlier service contract file in the root `deployment/` folder (`lookahead-service/v2`, the
+input of an offline planner Infra used to have) was removed that day.
 
 ## Cloud publication application candidate
 
 DEV/PROD now select a verified S3 startup publication; Local retains mounted files and creates no AWS client beans. Domain alone uses the pinned S3 SDK with ECS task credentials. A bounded byte/entry cache preserves per-request authorization. Readiness includes publication initialization and the DynamoDB store check; cloud startup requires the ECS task role and the default AWS endpoints. Since 2026-10-27 a content release is identified by its Content calendar release tag `vYYYY.MM.DD.HH.NN` (S3 keys `releases/<tag>/…` and `live/<tag>/…`, pin `LOOKAHEAD_PUBLICATION_RELEASE_ID=<tag>`), not by a content hash; live mode serves the complete `live/` folder with the highest tag. See [cloud publication configuration and validation](docs/cloud-publication.md). Local fixture checks do not certify AWS/IAM/ECS behavior. Cognito consumers and Domain durable sign-ins are implemented and locally tested. The cloud candidate removes Identity; Local Identity is preserved. See [cloud authentication, database admission and remaining activation gates](docs/cloud-authentication.md).
 
-The RDS CA bundle the container carried for the PostgreSQL connection (`/opt/lookahead/trust/rds-global-bundle.pem`, verified at build) was removed with PostgreSQL on 2026-11-17; the image trusts the JVM's CA set for AWS endpoints.
+The image carries no database CA bundle; it trusts the JVM's CA set for AWS endpoints.
 
 The container readiness probe is `com.lookahead.domain.health.ContainerHealthcheck`
 under `src/main/java`, included in the normal production coverage inventory.
@@ -313,10 +306,10 @@ versions and checksum verification are unchanged.
 
 The approved bucket layout serves the publication from one tar: at start, with
 `app.publication.live-prefix` set (DEV `release/live/` once the AWS lane has copied the tar there;
-`deployment/dev/deploy-config.json` keeps `PublicationLivePrefix` empty until that cutover), the Domain
+`.github/pipeline/deploy/dev/deploy-config.json` keeps `PublicationLivePrefix` empty until that cutover), the Domain
 lists the prefix, expects exactly one `v*.tar` (the publication as today, plain or gzip tar, with
 `publication.json` and `account-catalog.json` inside and no manifest beside it), downloads and
-unpacks it into the private publication folder (`LivePublicationLoader`), and reports the version
+unpacks it into the private publication folder (`PublicationLiveLoadService`), and reports the version
 (the file name) in the readiness detail `release` and in one `publication.load` line. Zero or more
 than one tar, a stray object under the prefix, or a tar that fails its checks (unsafe member, an
 asset whose digest differs from `publication.json`, an unlisted file) leaves the content unloaded:
@@ -324,15 +317,15 @@ readiness is DOWN with the reason (`LIVE_RELEASE_MISSING`, `LIVE_RELEASE_AMBIGUO
 `LIVE_RELEASE_UNEXPECTED`, `LIVE_RELEASE_INVALID`, `LIVE_RELEASE_UNAVAILABLE`) and the task stays up
 with an empty trusted catalog until the next start finds one good tar; nothing restarts on its own
 beyond the container health check. With the setting empty, today's `live/<tag>/` discovery
-(`PublicationBootstrap`) is unchanged, so the current DEV keeps running until the cutover.
-Tests: `LivePublicationLoaderTest`.
+(`PublicationArchiveLoadService`) is unchanged, so the current DEV keeps running until the cutover.
+Tests: `PublicationLiveLoadServiceTest`.
 
 ### Reading the log (plain lines, owner decision 2026-11-17)
 
 The application log is for one person troubleshooting in CloudWatch, not for dashboards. Every
 line is one plain sentence with no schema to learn: no JSON, no key=value block, no logger name,
 thread, PID or service name. The same pattern serves every profile (set once as
-`logging.pattern.console` in `application.yml`; `PlainLoggingTest` renders it and asserts the
+`logging.pattern.console` in `application.yml`; `EventLogPlainLoggingTest` renders it and asserts the
 exact lines):
 
 ```
@@ -353,7 +346,7 @@ java.lang.… (the stack trace follows an ERROR line of the unexpected-failure h
   locked content, waiting account, validation) in short wording, never with a stack trace.
   ERROR is something an operator must act on: misconfiguration, permission denied, dependency
   down, a bug. The word `ERROR` appears on a line only as the level of an ERROR line; the deploy
-  and restart tools scan the log group for it (`deployment/dev/deploy-config.json`
+  and restart tools scan the log group for it (`.github/pipeline/deploy/dev/deploy-config.json`
   `logFailurePatterns`, also `startup denied`, `AccessDeniedException`, `Unable to create tempDir`).
 - Every ERROR line answers five questions in one sentence: what was being done (request or
   job), which dependency and operation on which resource failed (table, bucket/key, host), why
@@ -363,13 +356,13 @@ java.lang.… (the stack trace follows an ERROR line of the unexpected-failure h
   data; connection refused / connect timeout → the VPC endpoint and security group; a permission
   refusal → the IAM policy; a missing table → the Infra stack. On ERROR lines the dependency's
   message IS quoted (IAM denials and AWS request ids help); secrets, tokens, passwords, cookies,
-  Authorization headers and request bodies never are (`Events.scrub`). Startup refusals name the
+  Authorization headers and request bodies never are (`EventLog.scrub`). Startup refusals name the
   setting and the problem but do not quote the validation exception, which could echo the value.
 - Owner and admin actions name the actor in the sentence: `Owner 1a2b3c4d downgraded account …`,
   `Admin 2b7d9e44 …`, or `Account 3c8f1a2b …` when the role is not known at the call site.
   Counts and codes a reader needs are in the sentence too (delivery plan import counts, legacy
   review import counts, the readiness component and reason code, lifecycle reason codes).
-- The `Events`/`addKeyValue` calls stay in the code (tests assert on them with `LogCapture`,
+- The `EventLog`/`addKeyValue` calls stay in the code (tests assert on them with `LogCapture`,
   and a log pipeline could render them again); they do not appear on the line.
 
 How to search in CloudWatch Logs Insights (log group `/lookahead/dev/domain`):
@@ -389,18 +382,18 @@ How to search in CloudWatch Logs Insights (log group `/lookahead/dev/domain`):
   file; `Started: version … (release tag …, revision …)` and `Stopping: shutdown requested …
   after N s; readiness before the stop …; last readiness checks: …` explain an exit code 143.
 - The migration task: `filter @message like /Data step|Migration /`; its one JSON report line
-  on stdout is parsed by `tools/release/migrate.py` and is not a log line.
+  on stdout is parsed by `.github/pipeline/deploy/migrate.py` and is not a log line.
 
 ## SAST gate diagnostics
 
-`python3 tools/security/check.py sarif` requires completed CodeQL invocations,
+`python3 .github/pipeline/build/check.py sarif` requires completed CodeQL invocations,
 valid rule/result inventories and exercised, source-bound exceptions. A failure
 prints a reviewed constant reason (for example, missing invocation inventory or
 unexercised exception) while leaving untrusted error text and SARIF messages out
 of public logs. Warning/error notifications still block; this diagnostic change
 does not waive findings or weaken the security gate. Raw SARIF and source
 databases remain unpublished. Run the tooling regressions with
-`python3 -m unittest discover -s tools/security -p 'test_*.py'`.
+`python3 -m unittest discover -s .github/pipeline/build -p 'test_checks.py'`.
 
 SAST exception hashes are also checked in the first tooling-test step; review
 the security boundary before updating a hash after a source change. Expiry and
@@ -410,12 +403,12 @@ A rejected notification logs only its level and a bounded Java diagnostic ID,
 never its message, source snippet, locations or properties.
 
 
-The cloud admission CSRF disposition in `tools/security/sast-exceptions.json`
-is bound to the entire `CloudSecurityConfiguration.java` source SHA and expires
+The cloud admission CSRF disposition in `.github/pipeline/build/sast-exceptions.json`
+is bound to the entire `SignInSecurityConfiguration.java` source SHA and expires
 on 2026-10-19. The internal chain accepts explicit bearer and Gateway-secret
 headers, never browser cookies; missing/wrong Gateway credentials fail closed,
 and every successful authentication still verifies the token against Cognito.
-`CloudAdmissionSecurityTest` exercises both DEV and PROD filter chains with
+`SignInSecurityConfigurationChainTest` exercises both DEV and PROD filter chains with
 controlled JWT decoding/provider responses, including rejected tokens and
 provider revocation. It does not certify real Cognito/IAM/network behavior;
 the separate signed-JWT/database integration test remains required for that
@@ -463,8 +456,8 @@ that its exception is obsolete. New authentication control flow always terminate
 fresh OAuth before reuse, and Domain compares missing credentials unconditionally
 before denying authentication. Hosted full-scan proof remains required.
 
-The dormant `release-image.yml` manual workflow reuses the full CI job, then
-exports its exact scanned image as a one-day archive. Publication loads that
+The `release.yml` workflow (`01 · Full`; `02 · Build` and `03 · Publish` call it)
+reuses the full CI job (`ci.yml`), then exports its exact scanned image as a one-day archive. Publication loads that
 archive without rebuilding, validates source/Dockerfile/workflow/archive/config
 digests, and uses a separately reviewed DEV OIDC role. Its only source selector is
 an existing calendar release tag: a `resolve` job resolves the tag to its commit once,
@@ -479,7 +472,7 @@ and again before pushing (both windows are defaults, tunable by the repository v
 `APPROVAL_WAIT_MINUTES` and `APPROVAL_VALID_MINUTES` described in the release tooling README). This is workflow-enforced owner approval,
 not independent review. Registry receipt verifies remote manifest/config identity.
 Existing tags and uncertain registry state block retries; failed uploads retain intent.
-See [image publication and recovery](tools/release/README.md). No workflow was dispatched or
+See [image publication and recovery](.github/pipeline/shared/README.md). No workflow was dispatched or
 image published locally. Configure approved settings and action allowlists before
 activation; private content and AWS credentials are never bundled in the image.
 
@@ -490,16 +483,17 @@ archive; Docker Desktop index IDs are kept separate from that config identity.
 
 ## Platform reviews (DLV-928)
 
-`/api/v1/platform-reviews` (package `com.lookahead.domain.review.platform`) stores reviewer
+`/api/v1/platform-reviews` (packages `com.lookahead.domain.controller`,
+`com.lookahead.domain.service.review` and `com.lookahead.domain.db.store.review`) stores reviewer
 feedback without a database table. DLV-971 (owner, 2026-11-06): one JSON record per item in two
 runtime stores of the assets bucket, `reviews/records/YYYY/MM/DD/REV-000001.json` and
 `support-requests/records/YYYY/MM/DD/SUP-000001.json` (the day is the record's creation day, UTC),
 with the images beside each record under `<store>/attachments/<ID>/NN-name.ext`. Ids come from two
-DynamoDB counters (`SEQUENCE#review-record` and `SEQUENCE#support-request / COUNTER`, data step 4; `ReviewRecordNumbers.Dynamo`), unique and increasing, not gapless. `PlatformReviewObjects` is the
+DynamoDB counters (`SEQUENCE#review-record` and `SEQUENCE#support-request / COUNTER`, data step 4; `PlatformReviewRecordNumberStore`), unique and increasing, not gapless. `PlatformReviewObjects` is the
 storage boundary, one instance per store root; implementations are the Local filesystem store (the
 roots are sub-folders of `LOOKAHEAD_PLATFORM_REVIEW_DIRECTORY`) and the S3 store (GetObject,
 conditional PutObject, ListObjectsV2 with and without a delimiter, DeleteObject, SSE-KMS with the
-publication key). `RecordStore` reads a record, applies the change and writes it back only if it is
+publication key). `PlatformReviewRecordStore` reads a record, applies the change and writes it back only if it is
 unchanged (If-Match on the ETag), so concurrent saves keep every item; a create uses a fresh id and
 never conflicts. The list merges both stores newest first, paged by day (30 days a page) as before.
 
@@ -526,18 +520,18 @@ EXIF/XMP/IPTC/PNG-text metadata removed without re-encoding; multipart request a
 100 items per reviewer per day. The container image creates
 `/var/lib/lookahead/platform-reviews` owned by the app user so a new named volume mounted
 there is writable. Tests: `PlatformReviewServiceTest`, `PlatformReviewControllerTest`,
-`FileSystemPlatformReviewObjectsTest`, `S3PlatformReviewObjectsTest`, `ReviewRecordsDatabaseTest`.
+`PlatformReviewFileSystemObjectStoreTest`, `PlatformReviewS3ObjectStoreTest`, `PlatformReviewS3ClientTest`, `PlatformReviewRecordNumberStoreDatabaseTest`.
 
 Kinds and support requests (DLV-971, owner 2026-11-06). Every item carries `kind`: `"review"` for an
 item written on Write Review, `"request"` for a learner's support request (Report a problem, Share
 feedback, Ask a question). A request also carries `requestType` and `reference` (the
-`support_receipts` reference, so the owner can match it to the email thread); on a review both are
+support receipt's reference, so the owner can match it to the email thread); on a review both are
 `null`. `SupportFeedbackService.submit` records the request through
 `PlatformReviewService.recordRequest` into the support-requests store before it emails the support
 inbox: category `problem` for a problem and `idea` for feedback or a question, page `Support`, no page
 URL, priority `medium`, status `new`, the learner's feedback role (`user`) as the submitter role, the
 screenshots stored through the review image pipeline; the reply address stays in the email and the
-receipt row only. The receipt reference is the dedupe key: the same request is never recorded twice.
+receipt only. The receipt reference is the dedupe key: the same request is never recorded twice.
 Who sees and does what: the owner and admins list every item; a reviewer lists the reviews they
 wrote, never a request; a learner has no Team Reviews access. The owner sets the status of any
 item, an admin only of a request (`403 PLATFORM_REVIEW_ACCESS_DENIED` on a review); a review is
@@ -547,10 +541,10 @@ edited through the review API and only the owner deletes it.
 Statuses are `new`, `accepted`, `planned`, `done`, `declined` and `closed`. `closed` is set by hand
 (`PUT .../triage`, `closedBy` the actor's role) or by the sweep; `closed` to any status is a reopen
 under the same rights and clears `closedAt`/`closedBy`. Every status change of a record or a ticket
-is one row of the append-only `review_status_events` table (V22: `id, record_id, kind
-(review|request|ticket), actor_id (null for the sweep), from_status, to_status, note_set,
-recorded_at`; the runtime role may INSERT and SELECT only, the trigger refuses UPDATE and DELETE for
-every role). A history failure is logged (`platform-review.history` / `HISTORY_NOT_WRITTEN`) and
+is one insert-only item in Administrator Audit Events (`PlatformReviewStatusHistoryStore`:
+`RECORD#<kind>#<recordId> / STATUS#<time>#<id>` with the kind (review|request|ticket), the actor
+(`system` for the sweep), the two statuses and whether a note was set; the application role can only
+insert there). A history failure is logged (`platform-review.history` / `HISTORY_NOT_WRITTEN`) and
 never undoes the change.
 
 Promote (`POST /api/v1/platform-reviews/{id}/promote`, 201): a work item is added to the delivery
@@ -564,7 +558,8 @@ unavailable (the record stays unlinked).
 
 ## Delivery plan (DLV-971)
 
-`/api/v1/delivery/plan` (package `com.lookahead.domain.delivery`) serves and edits
+`/api/v1/delivery/plan` (packages `com.lookahead.domain.controller`,
+`com.lookahead.domain.service.delivery` and `com.lookahead.domain.db.store.delivery`) serves and edits
 `delivery/plan.json` in the assets bucket (`DeliveryPlanStore`). The file keeps the Content shape
 (`schemaVersion`, `version`, workflow, priorities, stages, `workItems` with `createdIn`, `updatedIn`,
 `updatedAt`, and the new `origin {id, kind} | null` and `pendingLocal` object | null). Every write
@@ -600,10 +595,10 @@ the inbox file deleted, and one `delivery.inbox-sync` line carries the counts. A
 lacks, or a missing plan, keeps the inbox for the owner (one WARN per run). The same code runs for a
 local Domain against a local inbox. Tests: `DeliveryPlanMergeTest` (the rule table).
 
-Published plan at start (DLV-998, owner 2026-11-09; `ReleasePlanImport`): the publication tar carries the
-repository's `runtime/delivery/delivery-plan.json` as `content/staff/delivery-plan.json` (a local Domain serving a
+Published plan at start (DLV-998, owner 2026-11-09; `DeliveryPlanReleaseImportJob`): the publication tar carries the
+Content repository's `src/delivery-plan/delivery-plan.json` as `content/staff/delivery-plan.json` (a local Domain serving a
 content tree reads `delivery/delivery-plan.json` under its content root). After the legacy review import and before
-the sweeps, `RuntimeSweeps.atStart` runs the import: no `plan.json` yet, the released file becomes the first plan as it
+the sweeps, `SweepRunner.atStart` runs the import: no `plan.json` yet, the released file becomes the first plan as it
 is (`DeliveryPlanStore.seed`, If-None-Match, its own version); otherwise it becomes the inbox and the sync above merges it
 at once, its `baseVersion` (else `version`) having to be the DEV plan or an archived version. The SHA-256 of the imported
 bytes is kept in `delivery/inbox/.release-import.json` with the release tag and the plan version, so a restart on the same
@@ -611,11 +606,11 @@ release imports nothing and the version does not climb; a file already in the in
 replaced and the release is imported at the next start. DEV and local only (`DevOnly.allowed`); in prod nothing runs.
 One `delivery.release-import` line: `seeded`, `merged` (with the counts) or the reason it was left (`BASE_VERSION_UNKNOWN`,
 `INBOX_OCCUPIED`, `RELEASE_PLAN_INVALID`, `RELEASE_PLAN_UNREADABLE`); a storage failure is logged by the start guard
-and never stops the task. Tests: `ReleasePlanImportTest`, `RuntimeSweepsTest`, `DeliveryPlanStoreTest`.
+and never stops the task. Tests: `DeliveryPlanReleaseImportJobTest`, `SweepRunnerTest`, `DeliveryPlanStoreTest`.
 
 Upload from the page (owner, 2026-11-07): `PUT /api/v1/delivery/plan/inbox` takes the local
 `delivery-plan.json` as the request body (the Delivery Plan page's Upload plan file), checks it
-(`DeliveryPlanStore.inboxCandidate`: 422 `DELIVERY_INBOX_INVALID` unless it is a plan object with a
+(`DeliveryPlanFileValidator.plan`: 422 `DELIVERY_INBOX_INVALID` unless it is a plan object with a
 numeric `version` and a `workItems` array, 413 over 16 MB), requires its base (`baseVersion`, else
 `version`) to be the DEV plan or an archived version (422 `DELIVERY_INBOX_BASE_UNKNOWN` otherwise,
 nothing written), stores it as `delivery/inbox/plan.json` and merges it at once with the sync above.
@@ -632,22 +627,22 @@ itself runs everywhere. Tests: `DeliveryPlanControllerTest`, `DeliveryPlanServic
 
 ## Sweeps (DLV-971)
 
-`RuntimeSweeps` is the one scheduled component: at `ApplicationReadyEvent` (before the task takes
+`SweepRunner` is the one scheduled component: at `ApplicationReadyEvent` (before the task takes
 traffic) the legacy review import runs once, then the three sweeps, and the sweeps repeat every 4
 hours (`PT4H`, cloud mode, where scheduling is enabled; a local Domain sweeps at each start): support
 requests still `new` or `accepted` with `updatedAt` older than 7 days are closed with the note "No
 update in 7 days; closed automatically. Reply or reopen to continue.", `closedBy` `system` and a
 history row (reviews are never swept; any status change, note or reply resets the clock); the plan
-inbox sync; and the 48-hour admission cleanup (`CloudAdmissionCleanup`, moved from hourly to this
+inbox sync; and the 48-hour admission cleanup (`DevAccessCleanupJob`, moved from hourly to this
 cadence). Each sweep is isolated: a failure is logged (`sweep` / `UNEXPECTED`) and the next still
-runs. Tests: `RuntimeSweepsTest`, the sweep clock in `PlatformReviewServiceTest`.
+runs. Tests: `SweepRunnerTest`, the sweep clock in `PlatformReviewServiceTest`.
 
 Run now (`POST /api/v1/sweeps/run` `{"job": "support-requests" | "delivery-inbox" | "admissions" |
 "all"}`, `SweepController`, owner 2026-11-06): the owner's Jobs buttons on Support tickets and feedback
 (owner, 2026-11-07: Close idle tickets on Support tickets and feedback, Clean up admissions on
 People & Access; the plan inbox has its own routes above) run one sweep, or all three, at
-once through `RuntimeSweeps.runNow`, the method the start and the schedule share
-(`RuntimeSweeps.sweep(Job)`). The owner alone (`PlatformReviewService.requireOwner`: the account
+once through `SweepRunner.runNow`, the method the start and the schedule share
+(`SweepRunner.sweep(Job)`). The owner alone (`PlatformReviewService.requireOwner`: the account
 that manages access, the author capability without staff access); 401 without a sign-in,
 `403 PLATFORM_REVIEW_ACCESS_DENIED` for everyone else, admins included; `400 SWEEP_JOB_INVALID` for
 any other body; `409 SWEEP_NOT_AVAILABLE` for `admissions` where there is no cleanup (a local Domain;
@@ -659,12 +654,13 @@ filled and the others null: `ranAt` the ISO instant, `inboxResult` the plan vers
 (ExceptionType)`). A sweep that did not complete counts 0 and keeps its `sweep` / `UNEXPECTED` line.
 One `sweep` line per manual run carries `manual` true, `account.id` (the owner), `job` and the
 counts. The Gateway forwards the route like the delivery plan (staff sign-ins only; a DEV test
-session is refused with 401). Tests: `SweepControllerTest`, `RuntimeSweepsTest`.
+session is refused with 401). Tests: `SweepControllerTest`, `SweepRunnerTest`.
 
 ## Staff access and cloud profile candidates (DLV-930/933)
 
-Domain V6 owns `staff_access` and immutable `staff_access_events`; V7 owns
-`cloud_account_preferences` and `cloud_account_profile_links`. Owner-only access
+`StaffAccessStore` keeps the staff assignments (`STAFFACCESS / ASSIGNMENT#id`) and their insert-only
+events; account preferences and profile links are items of the account (`ACCOUNT#id / PREFERENCES`,
+`ACCOUNT#id / LINKS`). Owner-only access
 assignment APIs are `/api/v1/admin/access`, `/catalog`, `/lookup`, `/waiting` and `/admit` (DLV-969); current
 permissions are `/api/v1/account/permissions` and additive `auth/me.permissions`.
 Roles are admin/reviewer/tester, independent of selected/full curriculum grants.
@@ -676,23 +672,23 @@ Cognito identity, within 14 days after save. Local signup does not verify email.
 No accounts merge by email. Cognito signup/admission automation is still a cloud
 activation follow-up. Owner-owned plan review artifacts remain owner-only.
 
-`S3PlatformReviewObjects` is a tested cloud candidate, using conditional ETags,
+`PlatformReviewS3ObjectStore` (it decides; `PlatformReviewS3Client` only makes the S3 calls) is a tested cloud candidate, using conditional ETags,
 expected bucket owner and SSE-KMS. Set all three cloud values together:
 `LOOKAHEAD_PLATFORM_REVIEWS_BUCKET`, `LOOKAHEAD_PLATFORM_REVIEWS_PREFIX` (trailing
 slash), `LOOKAHEAD_PLATFORM_REVIEWS_KMS_KEY` (key ARN); the older singular names
 `LOOKAHEAD_PLATFORM_REVIEW_*` are still read as a fallback. The prefix/key are explicit;
 there is no Local emulator or cloud disk fallback. Runtime uses the existing
 container task credentials and regional S3 client. In DEV the task definition
-(`deployment/dev/service.template.json`) binds the three variables to the template
+(`.github/pipeline/deploy/dev/service.template.json`) binds the three variables to the template
 parameters `PlatformReviewsBucket`, `PlatformReviewsPrefix` and `PlatformReviewsKmsKeyArn`;
-`deployment/dev/deploy-config.json` carries `PENDING-S3-REVIEWS` placeholders until Infra
+`.github/pipeline/deploy/dev/deploy-config.json` carries `PENDING-S3-REVIEWS` placeholders until Infra
 supplies the bucket and key, and the deploy tool refuses to plan while a placeholder remains
 (DLV-968). Infra must supply least-privilege S3/KMS permissions before deployment.
 
 Cloud account preference/link routes use the current Cognito sign-in proof and
-Domain account lock, preserving Local request shapes. `DynamoCloudSignInRegistryDatabaseTest`
+Domain account lock, preserving Local request shapes. `SignInStoreDatabaseTest`
 checks persistence, account isolation and revocation against the disposable DynamoDB Local
-fixture; `S3PlatformReviewObjectsTest` checks concurrent
+fixture; `PlatformReviewS3ClientTest` checks concurrent
 conditional writes with a stubbed SDK client. Neither is live AWS certification.
 
 ### Lower-cost DEV candidate
@@ -703,7 +699,7 @@ also requires the Gateway client identity `gateway.lookahead-dev.internal` and
 clientAuth usage. OAuth and Domain account/ownership checks remain required.
 Application credentials now use immutable-version ECS injection. Private keys must be one complete
 unencrypted PKCS8 PEM block with line-separated boundaries; incomplete envelopes,
-extra blocks and surrounding material are rejected before startup. `InjectedCredentials`
+extra blocks and surrounding material are rejected before startup. `InjectedCredentialInitializer`
 validates certificate validity, remaining lifetime, SAN, EKU, chain and matching
 PKCS8 keys before context refresh, then installs inline Spring PEM and scalar
 properties. Inputs are `LOOKAHEAD_TLS_{SCHEMA,SERVER_CERTIFICATE,SERVER_KEY,TRUST}` and
@@ -720,7 +716,7 @@ with fixed outcome names and random event IDs. The filter preserves HTTP respons
 and emits no request paths, tokens or bodies. Infra owns the separately scoped
 audit relay and90-day archive; local tests do not verify AWS delivery.
 
-The Docker context explicitly includes only `deployment/container/dns.security`
+The Docker context explicitly includes only `.github/pipeline/build/container/dns.security`
 from that configuration directory. Keep this exact allowance when changing the
 runtime COPY; credential/private-file exclusions remain in effect.
 
@@ -738,20 +734,20 @@ cannot prove mailbox ownership. Deploy Domain and Gateway before the updated Web
 client; do not use the old mutating GET as fallback if POST fails.
 
 DLV-971 prepared access (owner, 2026-11-07): an invitation saved on People & Access →
-Manage access → DEV gate access by email is a pass through the DEV gate. `CloudSignInRegistry`
+Manage access → DEV gate access by email is a pass through the DEV gate. `SignInService`
 claims it inside the first-contact transaction (`StaffAccessService.claimPrepared`) and admits
-the new account at once (`admitted`, `admitted_at`, an `admit` event carrying the invitation's
+the new account at once (`admitted`, `admittedAt`, an `admit` event carrying the invitation's
 roles and no actor), so the person never appears under Review requests and
 `/auth/invitations/activate` then finds nothing to claim. An address with nothing prepared, or
 an invitation with nothing ticked (a cancelled one), leaves the first contact waiting as before.
 
 ## Local membership purchases (DLV-209)
 
-Domain owns `/api/v1/membership/plans`, `/api/v1/sales/active`, account purchase/quote/access-record endpoints and staff upgrades/sales/price endpoints. Saved study plans retain `/api/v1/plans`. Migration V8 adds only membership tables. Purchases require `Idempotency-Key`; `expectedPriceCents` optionally rejects a stale quote. Effective catalog access is computed dynamically with server-time expiry. Nothing renews automatically.
+Domain owns `/api/v1/membership/plans`, `/api/v1/sales/active`, account purchase/quote/access-record endpoints and staff upgrades/sales/price endpoints. Saved study plans retain `/api/v1/plans`. Purchases require `Idempotency-Key`; `expectedPriceCents` optionally rejects a stale quote. Effective catalog access is computed dynamically with server-time expiry. Nothing renews automatically.
 
 Local and DEV accept only mock payments (`APP_PAYMENTS_PROVIDER=mock`, default). Select `APP_PAYMENTS_MOCK_SCENARIO`: `success` (default), `decline`, `requires-action`, `network`, `rate-limit`, `server-error`, or `timeout-after-success`. Only change this on an isolated test deployment; pending outcomes never grant access. At most three attempts per purchase, jittered exponential delay and a three-second retry-loop budget. Unknown outcomes need investigation; real settlement/refunds/webhooks are not enabled. The Stripe SDK adapter is unregistered and never used in Local/DEV; do not supply keys. Student/regional discount rules and Course Pass duration remain pending.
 
-`./mvnw test` runs unit/contract checks. `MembershipDatabaseTest` requires the existing isolated `CLOUD_AUTH_TEST_DATABASE_URL` and password-file environment variables from Infra’s cloud-auth test database helper; it creates and removes only its synthetic test schema. Never point it at application databases.
+`./mvnw test` runs unit/contract checks. `MembershipStoreDatabaseTest` runs against DynamoDB Local when `DLV970_DYNAMODB_TEST_ENDPOINT` is set; it writes and removes only its own synthetic items. Never point it at application tables.
 
 ## DLV-961 co-author policy (source work, not activated)
 
@@ -771,8 +767,8 @@ capability. Existing author and learner records have not been reset by this work
 
 Saved-plan mutation transactions are fenced on the owner's `ACCOUNT#id / META` revision,
 including retries. This serializes distinct mutation keys for the same account across
-instances, while other owners remain independent. `DynamoPlanServiceDatabaseTest` and
-`DynamoPlanLifecycleStoreDatabaseTest` check the fence and the lost-fence 409 against the
+instances, while other owners remain independent. `StudyPlanStoreDatabaseTest` and
+`StudyPlanLifecycleStoreDatabaseTest` check the fence and the lost-fence 409 against the
 disposable DynamoDB Local fixture. This source change is not yet activated and does not
 advertise ready-made adoption or enforce the unfinished DLV-705 reservation policy.
 
@@ -802,8 +798,8 @@ Ready-made saves compare the complete client snapshot against a hash-verified se
 Explicit `compatibleTemplateCatalogVersions` permits verified historical pins while every
 reference continues to be checked against the current catalog.
 
-The integrated DLV-938 Domain candidate adds migration V11 and enforces
-free-account allowances inside the existing owner-locked plan transactions.
+The DLV-938 rules enforce free-account allowances inside the owner-fenced
+plan transactions.
 Current server-owned topic grants decide whether an account is free; published
 free content IDs decide whether a plan has free scope. Free accounts can keep
 two active free-content plans, create 15 free plans across their lifetime
@@ -837,11 +833,6 @@ allows the owner to delete any other managed test account, co-authors to delete
 admins and learners, and admins to delete learners. Domain returns `canDelete`
 per row; Identity disables the target before Domain clears its roles and data.
 The Local author account remains protected.
-Migration V14 grants the runtime database role the three remaining synthetic
-purchase-table deletes needed after sign-in is disabled. The preceding grant
-gap caused deletion to return `ACCOUNT_STORAGE_UNAVAILABLE` on stable Local
-even though privileged database tests passed; the database suite now checks
-those runtime privileges directly.
 Owner/admin may explicitly reset a registered fixture; co-author reads only. Disable the
 legacy startup seeder when using managed maintenance to preserve existing author grants.
 Do not include fixture publications or secret files in this repository or its image.
@@ -858,7 +849,7 @@ confirmation `DELETE`: Identity first disables sign-in and scrubs profile and
 credentials, then Domain erases plans and progress while retaining purchase
 and minimal maintenance audit. The owner and managed test accounts are
 excluded. DEV provider-owned deletion remains operator-only and is not exposed
-by this browser route. Domain migration V13 owns the maintenance audit.
+by this browser route. `AccountMaintenanceStore` writes the maintenance audit.
 
 Local internal test-account seeding requires a non-browser JSON POST with the
 dedicated operator credential. Requests carrying Origin or Sec-Fetch-Site,
@@ -905,7 +896,7 @@ workflow triggers, AWS grants and existing approval commands are unchanged.
 
 ### Calendar image releases
 
-DEV image releases use one shared `lookahead-dev-ecr` repository and `domain-vyyyy.mm.dd.hh.<00-nn>` tags. The source Git tag omits `domain-`. UTC counters start at `00` each hour independently per app. Run `python3 tools/release/release_version.py next --app domain` to suggest the next version from remote Git tags; this does not create or reserve a tag. Publish the exact source tag through the user-owned Git cycle, then supply it as `release-version` to the manual release workflow on main. CI verifies the tag/source before building and retains app/version/source/config/archive/manifest provenance. Deployment still selects an immutable digest. Prefixes organize images; IAM upload scope covers the shared repository.
+DEV image releases use one shared `lookahead-dev-ecr` repository and `domain-vyyyy.mm.dd.hh.<00-nn>` tags. The source Git tag omits `domain-`. UTC counters start at `00` each hour independently per app. Run `python3 .github/pipeline/shared/release_version.py next --app domain` to suggest the next version from remote Git tags; this does not create or reserve a tag. Publish the exact source tag through the user-owned Git cycle, then supply it as `release-version` to the manual release workflow on main. CI verifies the tag/source before building and retains app/version/source/config/archive/manifest provenance. Deployment still selects an immutable digest. Prefixes organize images; IAM upload scope covers the shared repository.
 Maven builds accept `-Drevision=yyyy.mm.dd.hh.NN`; local builds retain the snapshot default.
 
 
@@ -918,19 +909,18 @@ workflow changes do not install IAM policies or publish an image.
 
 ## DynamoDB store and DEV data migration
 
-DLV-970 (lane F, 2026-11-10; PostgreSQL retired 2026-11-17). `07 · Migrate DEV data` runs the migration
+DLV-970. `07 · Migrate DEV data` runs the migration
 entrypoint of a release's own image as a one-off Fargate task, then `04 · Deploy DEV` serves that release
-("data first, then app"). DEV has served DynamoDB since the cutover of 2026-11-17; the store switch that
-carried the cutover (`PersistenceStore`, `LOOKAHEAD_PERSISTENCE_STORE`, the `persistence_store` input)
-was removed with PostgreSQL the same day, so a deploy never names a store any more.
+("data first, then app"). DEV has served DynamoDB since the cutover of 2026-11-17; there is no store
+switch, so a deploy never names a store.
 
 ### The task definition
 
-`deployment/dev/service.template.json` has four table parameters pinned by `AllowedPattern` to the DEV names
+`.github/pipeline/deploy/dev/service.template.json` has four table parameters pinned by `AllowedPattern` to the DEV names
 (`UserAccountDetailsTable` = `lookahead-dev-user-account-details`, `AdministratorAuditEventsTable`,
 `UserStudyPlanDetailsTable`, `ProtectedOwnerIdentityTable`). The container reads them as the four
 `LOOKAHEAD_DYNAMODB_*_TABLE` variables beside `AWS_REGION` and `LOOKAHEAD_ENVIRONMENT=dev`; it carries no
-database URL, user or secret. `deployment/dev/deploy-config.json` carries the four names;
+database URL, user or secret. `.github/pipeline/deploy/dev/deploy-config.json` carries the four names;
 `test_dev_persistence_store.py` pins both files.
 
 ### Order: migrate, then deploy
@@ -998,9 +988,7 @@ stream of the task is `migrate/migrate/<task id>` in `/lookahead/dev/domain`.
 ### Rollback rule
 
 A recorded data step is never undone and there is no other store to fall back to: the way back from a
-data step is a new step, reviewed and recorded like any other, not a deploy input. (Until 2026-11-17 the
-way back was the PostgreSQL store, which stayed complete until the application's first write on DynamoDB;
-that store and the `persistence_store` input that selected it are retired.) A release that must not serve
+data step is a new step, reviewed and recorded like any other, not a deploy input. A release that must not serve
 is rolled back by deploying the previous tag; its data steps stay recorded and are backward compatible.
 
 ### AWS actions of the workflow and the role each needs (IAM candidate for Infra)
@@ -1025,5 +1013,5 @@ admit them as it admits `domain-deploy-*`. Calls, in order:
 The task definition is registered without tags (no `ecs:TagResource`), with a read-only root file
 system, `/tmp` as a volume and blocking `awslogs` (the report line is never dropped). The service's
 task role `lookahead-dev-app-task` reads the ledger only; the migrate task is the single writer.
-Local check: `python3 -m unittest discover -s tools/release -p 'test_*.py'` (the `07` gate also
+Local check: `for step in shared publish deploy; do python3 -m unittest discover -s ".github/pipeline/$step" -p 'test_*.py' || break; done` (the `07` gate also
 requires 85 percent coverage over `migrate.py`).

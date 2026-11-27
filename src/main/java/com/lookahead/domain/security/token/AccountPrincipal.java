@@ -1,0 +1,27 @@
+package com.lookahead.domain.security.token;
+
+import com.lookahead.domain.exception.AccountFailure;
+import java.security.Principal;
+import java.util.Collection;
+import java.util.List;
+import java.util.UUID;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+
+/** Password-free identity admitted by this request's authoritative token validation. */
+public record AccountPrincipal(UUID accountId, String username, String displayName, boolean enabled, boolean cloudAuthor, String verifiedEmail)
+        implements Principal {
+    public AccountPrincipal(UUID accountId,String username,String displayName,boolean enabled){this(accountId,username,displayName,enabled,false,null);}
+    public AccountPrincipal(UUID accountId,String username,String displayName,boolean enabled,boolean cloudAuthor){this(accountId,username,displayName,enabled,cloudAuthor,null);}
+    @Override public String getName() { return accountId.toString(); }
+    public String getUsername() { return username; }
+    public boolean isEnabled() { return enabled; }
+    public Collection<? extends GrantedAuthority> getAuthorities() {
+        return List.of(new SimpleGrantedAuthority("ROLE_LEARNER"));
+    }
+    @Override public String toString() { return "AccountPrincipal[redacted]"; }
+    /** DLV-1016: the one "is anybody signed in" check of the services: 401 AUTHENTICATION_REQUIRED with the caller's own sentence. */
+    public static void requireSignedIn(AccountPrincipal actor, String message) {
+        if (actor == null || !actor.isEnabled()) throw new AccountFailure(401, "AUTHENTICATION_REQUIRED", message);
+    }
+}

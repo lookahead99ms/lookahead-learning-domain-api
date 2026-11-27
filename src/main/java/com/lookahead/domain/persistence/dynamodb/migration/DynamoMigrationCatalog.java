@@ -1,6 +1,6 @@
 package com.lookahead.domain.persistence.dynamodb.migration;
 
-import com.lookahead.domain.persistence.dynamodb.DynamoDataRequirement;
+import com.lookahead.domain.db.store.dynamodb.DynamoDataRequirement;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;

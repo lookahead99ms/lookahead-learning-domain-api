@@ -1,10 +1,10 @@
 package com.lookahead.domain.persistence.dynamodb.migration;
 
-import com.lookahead.domain.Events;
-import com.lookahead.domain.persistence.dynamodb.DynamoItems;
-import com.lookahead.domain.persistence.dynamodb.DynamoStaffAliasVerifier;
-import com.lookahead.domain.persistence.dynamodb.DynamoTableNames;
-import com.lookahead.domain.persistence.dynamodb.DynamoWrites;
+import com.lookahead.domain.log.EventLog;
+import com.lookahead.domain.db.store.dynamodb.DynamoItems;
+import com.lookahead.domain.db.store.access.StaffAliasVerificationStore;
+import com.lookahead.domain.db.store.dynamodb.DynamoTableNames;
+import com.lookahead.domain.db.store.dynamodb.DynamoWrites;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
 import java.time.Instant;
@@ -14,13 +14,13 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
 
-import static com.lookahead.domain.cloud.CloudAccountItems.account;
-import static com.lookahead.domain.cloud.CloudAccountItems.attrs;
-import static com.lookahead.domain.cloud.CloudAccountItems.get;
-import static com.lookahead.domain.cloud.CloudAccountItems.item;
-import static com.lookahead.domain.cloud.CloudAccountItems.n;
-import static com.lookahead.domain.cloud.CloudAccountItems.s;
-import static com.lookahead.domain.cloud.CloudAccountItems.time;
+import static com.lookahead.domain.db.store.signin.AccountItems.account;
+import static com.lookahead.domain.db.store.signin.AccountItems.attrs;
+import static com.lookahead.domain.db.store.signin.AccountItems.get;
+import static com.lookahead.domain.db.store.signin.AccountItems.item;
+import static com.lookahead.domain.db.store.signin.AccountItems.n;
+import static com.lookahead.domain.db.store.signin.AccountItems.s;
+import static com.lookahead.domain.db.store.signin.AccountItems.time;
 
 /**
  * DLV-970 step 5 (owner decision 2026-11-17: import accounts and access only). On DEV this step read the PostgreSQL
@@ -66,14 +66,14 @@ final class AccountAccessImport implements DynamoMigrationStep {
     @Override public void apply(DynamoDbClient client, DynamoTableNames tables) {
         String table = tables.userAccountDetailsTableName();
         if (!get(client, table, MARKER_PK, MARKER_SK).isEmpty()) {
-            Events.success(DynamoMigrationRunner.LOG, "migration.import").addKeyValue("count", 0)
+            EventLog.success(DynamoMigrationRunner.LOG, "migration.import").addKeyValue("count", 0)
                     .log("Account import: the store already carries IMPORT#account-access / RESULT (DEV import, run {}); nothing to do", DEV_IMPORT_RUN);
             return;
         }
         var set = attrs("accountIds", DynamoItems.strings(Set.of()), "importedAccounts", n(0), "removedWaiting", n(0), "source", s(SOURCE), "importedAt", time(Instant.now()));
         try { DynamoWrites.transaction(client).insertOnly(table, item(MARKER_PK, MARKER_SK, set)).commit(); }
         catch (DynamoWrites.Conflict raced) { /* another run wrote the marker meanwhile; verify reads whichever is there */ }
-        Events.success(DynamoMigrationRunner.LOG, "migration.import").addKeyValue("count", 0)
+        EventLog.success(DynamoMigrationRunner.LOG, "migration.import").addKeyValue("count", 0)
                 .log("Account import: no PostgreSQL source (retired 2026-11-17 after the DEV import, run {}); the empty result marker is written", DEV_IMPORT_RUN);
     }
 
@@ -87,7 +87,7 @@ final class AccountAccessImport implements DynamoMigrationStep {
             var control = get(client, table, account(UUID.fromString(id)), "CONTROL");
             if (control.isEmpty() || !SOURCE.equals(DynamoItems.stringOrNull(control, "importedFrom"))) throw new IllegalStateException("An imported account is missing from the store");
         }
-        new DynamoStaffAliasVerifier(client, tables).verify();
+        new StaffAliasVerificationStore(client, tables).verify();
         for (String partition : SEQUENCES.values()) {
             var counter = get(client, table, partition, "COUNTER");
             if (counter.isEmpty() || DynamoItems.number(counter, "lastAssigned") < 0) throw new IllegalStateException("Counter " + partition + " is missing or negative");

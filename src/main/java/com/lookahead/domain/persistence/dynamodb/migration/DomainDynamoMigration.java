@@ -1,7 +1,7 @@
 package com.lookahead.domain.persistence.dynamodb.migration;
 
-import com.lookahead.domain.Events;
-import com.lookahead.domain.persistence.dynamodb.DynamoSettings;
+import com.lookahead.domain.log.EventLog;
+import com.lookahead.domain.config.DynamoConnection;
 import java.io.PrintStream;
 import java.time.Clock;
 import java.util.Map;
@@ -33,16 +33,16 @@ public final class DomainDynamoMigration {
         }
         String command = args[0];
         try {
-            var settings = DynamoSettings.fromVariables(variables);
+            var connection = DynamoConnection.fromVariables(variables);
             String runId = variables.getOrDefault("GITHUB_RUN_ID", "").isBlank() ? "local-" + UUID.randomUUID() : "github-" + variables.get("GITHUB_RUN_ID").trim();
-            try (var client = settings.client()) {
-                var runner = new DynamoMigrationRunner(client, settings.tables(), DomainDynamoCatalog.catalog(), clock);
+            try (var client = com.lookahead.domain.config.DynamoClientFactory.create(connection)) {
+                var runner = new DynamoMigrationRunner(client, connection.tables(), DomainDynamoCatalog.catalog(), clock);
                 DynamoMigrationRunner.Outcome outcome = switch (command) {
                     case "migrate" -> runner.migrate(runId);
                     case "verify" -> runner.verify();
                     default -> runner.status();
                 };
-                out.println("{\"command\":\"" + command + "\",\"environment\":\"" + settings.environment() + "\",\"runId\":\"" + runId
+                out.println("{\"command\":\"" + command + "\",\"environment\":\"" + connection.environment() + "\",\"runId\":\"" + runId
                         + "\",\"before\":" + outcome.before() + ",\"after\":" + outcome.after() + ",\"required\":" + DomainDynamoCatalog.REQUIRED
                         + ",\"applied\":" + json(outcome.applied()) + ",\"verified\":" + json(outcome.verified()) + ",\"ahead\":" + outcome.ahead() + "}");
                 return 0;
@@ -50,19 +50,19 @@ public final class DomainDynamoMigration {
         } catch (RuntimeException failure) {
             // Another run holding the lock is an expected refusal (WARN, our own words). Everything else is an ERROR an
             // operator acts on (plain logs, owner 2026-11-17): the dependency's own message, the hint, and what happens next.
-            // The JSON report line below is parsed by tools/release/migrate.py and stays exactly as it is.
+            // The JSON report line below is parsed by .github/pipeline/deploy/migrate.py and stays exactly as it is.
             if (failure instanceof DynamoMigrationLock.Locked) {
-                Events.failed(DynamoMigrationRunner.LOG, "migration." + command, "LOCKED").addKeyValue("error.type", Events.types(failure))
+                EventLog.failed(DynamoMigrationRunner.LOG, "migration." + command, "LOCKED").addKeyValue("error.type", EventLog.types(failure))
                         .log("Migration {} failed: {}", command, failure.getMessage());
             } else {
                 String reason = failure instanceof DynamoMigrationLedger.Conflict ? "LEDGER_CONFLICT" : "FAILED";
                 DynamoMigrationRunner.LOG.atError().addKeyValue("event.action", "migration." + command).addKeyValue("event.outcome", "failure")
-                        .addKeyValue("reason", reason).addKeyValue("error.type", Events.types(failure))
+                        .addKeyValue("reason", reason).addKeyValue("error.type", EventLog.types(failure))
                         .log("Migration {} failed: {}{}; the task exits 1 and the ledger is unchanged past the last recorded step", command,
                                 failure instanceof DynamoMigrationLedger.Conflict || failure instanceof IllegalArgumentException || failure instanceof IllegalStateException
-                                        ? Events.scrub(failure.getMessage()) + " (" + reason + ")" : Events.quoted(failure), DynamoMigrationRunner.hint(failure));
+                                        ? EventLog.scrub(failure.getMessage()) + " (" + reason + ")" : EventLog.quoted(failure), DynamoMigrationRunner.hint(failure));
             }
-            out.println("{\"command\":\"" + command + "\",\"failed\":true,\"error\":\"" + Events.types(failure).replace("\"", "") + "\"}");
+            out.println("{\"command\":\"" + command + "\",\"failed\":true,\"error\":\"" + EventLog.types(failure).replace("\"", "") + "\"}");
             return 1;
         }
     }

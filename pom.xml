@@ -45,7 +45,7 @@
                 <exclusion><groupId>software.amazon.awssdk</groupId><artifactId>apache5-client</artifactId></exclusion>
             </exclusions>
         </dependency>
-        <!-- DLV-969 S36: the merge-link email (SesEmailSender), only when app.email.enabled=true. -->
+        <!-- DLV-969 S36: the merge-link email (EmailSesClient), only when app.email.enabled=true. -->
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>sesv2</artifactId>

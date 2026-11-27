@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.MockMakers;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -41,9 +42,9 @@ class ContainerHealthcheckTest {
 
     @Test
     void rejectsMalformedOrExpandedStatusAndUsesBoundedGet() throws Exception {
-        HttpClient client = mock(HttpClient.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
+        HttpClient client = mock(HttpClient.class, withSettings().mockMaker(MockMakers.SUBCLASS));
         @SuppressWarnings("unchecked")
-        HttpResponse<String> response = mock(HttpResponse.class, withSettings().mockMaker(org.mockito.MockMakers.PROXY));
+        HttpResponse<String> response = mock(HttpResponse.class, withSettings().mockMaker(MockMakers.PROXY));
         when(client.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);
         when(response.statusCode()).thenReturn(200);
         for (String body : new String[]{"UP", "{}", "{\"status\":\"UP\",\"extra\":true}", "{\"status\":\"UP\"}junk"}) {
@@ -68,7 +69,7 @@ class ContainerHealthcheckTest {
 
     @Test
     void interruptionIsUnhealthyAndPreservesCancellation() throws Exception {
-        HttpClient client = mock(HttpClient.class, withSettings().mockMaker(org.mockito.MockMakers.SUBCLASS));
+        HttpClient client = mock(HttpClient.class, withSettings().mockMaker(MockMakers.SUBCLASS));
         when(client.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
                 .thenThrow(new InterruptedException("synthetic cancellation"));
         try {

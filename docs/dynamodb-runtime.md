@@ -1,16 +1,16 @@
-# DynamoDB runtime: store selection, local run, migration entrypoint
+# DynamoDB runtime: the store, local run, migration entrypoint
 
 DLV-970 (lane D, 2026-11-10). This page is the short operator view; the design and the
 library classes are in [DynamoDB persistence](dynamodb-persistence.md).
 
 ## The one store
 
-DynamoDB is the one store (DLV-970; PostgreSQL served DEV until 2026-11-17 and was retired with the
-store switch `LOOKAHEAD_PERSISTENCE_STORE`, the `Jdbc…` stores, Flyway and the database settings).
-What is wired: `DynamoDbClient`, `DynamoTableNames`, `DynamoSettings`, the `dynamodb` readiness
-check, every `Dynamo…` store and the DynamoDB maintenance jobs. What never exists: any
+DynamoDB is the one store (DLV-970; PostgreSQL served DEV until 2026-11-17 and was retired with its
+store switch, Flyway and the database settings).
+What is wired: `DynamoDbClient`, `DynamoTableNames`, `DynamoConnection`, the `dynamodb` readiness
+check, every store class under `db/store` and the maintenance jobs under `job`. What never exists: any
 `DataSource`, JDBC template, JDBC transaction manager or Flyway bean, and the classes themselves
-are off the class path (`DynamoModeApplicationContextTest` asserts both). The readiness group
+are off the class path (`DomainApiApplicationContextTest` asserts both). The readiness group
 names `readinessState`, `dynamodb` and `contentPublication`.
 
 The store's failures: a transaction whose outcome is unknown (`DynamoWrites.Unavailable`) or an
@@ -96,14 +96,14 @@ the running app's role only reads it.
 
 ## Sweeps
 
-`RuntimeSweeps` gains a fourth job, `maintenance` (`POST /api/v1/sweeps/run {"job":
+`SweepRunner` has a fourth job, `maintenance` (`POST /api/v1/sweeps/run {"job":
 "maintenance"}` or part of `all`, and the 4-hour cadence). It runs every job registered with
-`MaintenanceJobs`, each in bounded pages (at most 40 per sweep). In `dynamodb` mode the
-registered jobs are `study-plan-documents` (`StudyPlanDocumentMaintenance.cleanDue`: abandoned
-uploads), `retired-study-plan-documents` (`StudyPlanDocumentRetirement.cleanPage`: chunks of
-retired snapshots), `plan-purge` (`DynamoPlanPurge`: deleted plans' versions, activity and
-receipts), `account-erasure` (`DynamoAccountErasure.resumePage`: deletions interrupted after
-their state transition) and `sign-in-records` (`DynamoSignInRecordRetirement`: sessions not
+`MaintenanceJobRegistry`, each in bounded pages (at most 40 per sweep). The
+registered jobs are `study-plan-documents` (`StudyPlanDocumentCleanupStore.cleanDue`: abandoned
+uploads), `retired-study-plan-documents` (`StudyPlanDocumentRetirementStore.cleanPage`: chunks of
+retired snapshots), `plan-purge` (`StudyPlanPurgeJob` over `StudyPlanPurgeStore`: deleted plans' versions, activity and
+receipts), `account-erasure` (`AccountErasureJob` over `AccountErasureStore`: deletions interrupted after
+their state transition) and `sign-in-records` (`SignInRecordRetirementJob`: sessions not
 active for 7 days and challenges past the 15-minute window, per account through the directory;
 `FAMILY#` bindings stay so a revoked token family is never admitted again). The 48-hour
 admission cleanup runs as before through its own store.
@@ -111,7 +111,7 @@ admission cleanup runs as before through its own store.
 ## Accounts: what differs from the retired PostgreSQL store (history)
 
 - The protected owner identity is admitted at its own first contact (`admission.admitted-owner`);
-  on PostgreSQL (until 2026-11-17) the operator's `CloudAccountAdministration admit` did this. If `OWNER / ROOT` is
+  no operator command does this. If `OWNER / ROOT` is
   written only after that first contact (the DEV cutover order of 2026-11-17), the owner's waiting
   account is admitted at its next sign-in instead, by the same writes as the owner endpoint, with
   the author flag set. Everyone else waits for the owner as before.
@@ -119,7 +119,7 @@ admission cleanup runs as before through its own store.
   so a page's parallel calls do not contend; idle expiry counts from the last write.
 - Sign-in challenges carry the generation they were issued under and die with it (Disable,
   Delete, a merge, "end other sign-ins"), as the retired SQL cancelled them.
-- The e-mailed account merge (`DynamoCloudMergeService`) is one fenced transaction on the
+- The e-mailed account merge (`AccountMergeStore`, called by `AccountMergeService`) is one fenced transaction on the
   email's sentinel and every account's control revision; the deleted accounts' erasure runs
   after it, resumable by `account-erasure`. A race answers `409 MERGE_CONFLICT`, never a half
   merge. Links live as `MERGE#digest / TOKEN` with an `EMAIL#email / MERGE#…` index.

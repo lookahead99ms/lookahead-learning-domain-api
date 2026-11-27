@@ -1,10 +1,12 @@
 package com.lookahead.domain.contract;
 
-import com.lookahead.domain.publication.PublicationBootstrap;
-import com.lookahead.domain.publication.PublicationLocation;
-import com.lookahead.domain.publication.PublicationObjectSource;
-import com.lookahead.domain.publication.PublicationSettings;
-import com.lookahead.learning.content.validator.SnapshotValidator;
+import com.lookahead.domain.db.store.content.PublicationFileStore;
+import com.lookahead.domain.service.content.AccountCatalogService;
+import com.lookahead.domain.service.content.PublicationArchiveLoadService;
+import com.lookahead.domain.model.PublicationLocation;
+import com.lookahead.domain.client.PublicationObjectClient;
+import com.lookahead.domain.model.PublicationSelection;
+import com.lookahead.domain.validator.StudyPlanSnapshotValidator;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
@@ -35,12 +37,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * DLV-968 (owner decisions 2026-11-05 and 2026-11-06): the Content-owned release-layout contract,
- * {@code contracts/release-layout.json} on Content main, the only home of the file. {@code scripts/fetch-contracts.sh}
+ * {@code contracts/release-layout.json} on Content main, the only home of the file. {@code .github/pipeline/build/fetch-contracts.sh}
  * fetches it into {@code .contracts/} (CI step "Fetch contracts from Content" with {@code CONTENT_READ_TOKEN}; a
  * developer's own {@code gh} login locally); this repository keeps no copy and a missing file fails with that
  * instruction. A minimal release is built from the contract alone
  * (every required key, the optional keys with one value each) and loaded through Domain's real readers:
- * {@link PublicationBootstrap} for the layout, manifest and publication, {@link SnapshotValidator} for the account
+ * {@link PublicationArchiveLoadService} for the layout, manifest and publication, {@link StudyPlanSnapshotValidator} for the account
  * catalog. The refusals are the readers' own: a missing required key is refused, and what Domain ignores today (an
  * unknown record field, the packager's approvalStatus) is shown to be ignored, so the contract never claims a
  * check Domain does not make. The file is Content's master itself; its producer-only entries (archivePrefix,
@@ -133,10 +135,11 @@ class ReleaseLayoutContractTest {
         assertThat(Files.isRegularFile(Path.of(location.accountCatalog()))).isTrue();
         assertThat(Files.isRegularFile(Path.of(location.manifest()))).isTrue();
         // The extracted catalog file goes through the same reader the accounts profile uses at startup.
-        var validator = new SnapshotValidator(mapper, location.accountCatalog());
-        assertThat(validator.catalogVersion()).isEqualTo(catalog().path("catalogVersion").asString());
-        assertThat(validator.allTopicIds()).containsExactly("dsa");
-        assertThat(validator.metadata().path("schemaVersion").asString()).isEqualTo("account-catalog/v1");
+        var accountCatalog = new AccountCatalogService(mapper, location.accountCatalog(), new PublicationFileStore());
+        var validator = new StudyPlanSnapshotValidator(accountCatalog.catalog());
+        assertThat(accountCatalog.catalogVersion()).isEqualTo(catalog().path("catalogVersion").asString());
+        assertThat(accountCatalog.allTopicIds()).containsExactly("dsa");
+        assertThat(accountCatalog.metadata().path("schemaVersion").asString()).isEqualTo("account-catalog/v1");
         // The optional keys are read: a template pinned to the listed compatible catalog and ranking versions is accepted,
         // and one pinned to an unlisted version is refused.
         assertThatCode(() -> validator.validateTemplateReferences(template("sha256:" + "b".repeat(64), "rank:v0"))).doesNotThrowAnyException();
@@ -147,11 +150,11 @@ class ReleaseLayoutContractTest {
     @Test void catalogMissingAnyRequiredKeyIsRefusedAndMissingOptionalKeysAreNot() throws Exception {
         for (String key : strings(contract.path("accountCatalog").path("required"))) {
             ObjectNode catalog = catalog(); catalog.remove(key);
-            assertThatThrownBy(() -> new SnapshotValidator(mapper, catalog)).as("catalog without " + key).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> new StudyPlanSnapshotValidator(new AccountCatalogService(mapper, catalog).catalog())).as("catalog without " + key).isInstanceOf(IllegalArgumentException.class);
         }
         ObjectNode bare = catalog();
         for (String key : strings(contract.path("accountCatalog").path("optional"))) bare.remove(key);
-        assertThatCode(() -> new SnapshotValidator(mapper, bare)).doesNotThrowAnyException();
+        assertThatCode(() -> new StudyPlanSnapshotValidator(new AccountCatalogService(mapper, bare).catalog())).doesNotThrowAnyException();
         // The bootstrap refuses a catalog that is not account-catalog/v1 before any file is served.
         ObjectNode wrong = catalog(); wrong.put("schemaVersion", "account-catalog/v2");
         assertThatThrownBy(() -> load(release(wrong, null))).hasMessage(REFUSED);
@@ -165,11 +168,11 @@ class ReleaseLayoutContractTest {
             ObjectNode tooMany = catalog();
             ArrayNode list = tooMany.putArray(key);
             for (int i = 0; i <= contract.path("accountCatalog").path("versionList").path("maxEntries").asInt(); i++) list.add("version-" + i);
-            assertThatThrownBy(() -> new SnapshotValidator(mapper, tooMany).validateTemplateReferences(pinned)).as(key + " over the bound").hasMessage("Invalid array: " + key);
+            assertThatThrownBy(() -> new StudyPlanSnapshotValidator(new AccountCatalogService(mapper, tooMany).catalog()).validateTemplateReferences(pinned)).as(key + " over the bound").hasMessage("Invalid array: " + key);
             ObjectNode notAList = catalog(); notAList.put(key, "sha256:" + "b".repeat(64));
-            assertThatThrownBy(() -> new SnapshotValidator(mapper, notAList).validateTemplateReferences(pinned)).as(key + " as a string").hasMessage("Invalid array: " + key);
+            assertThatThrownBy(() -> new StudyPlanSnapshotValidator(new AccountCatalogService(mapper, notAList).catalog()).validateTemplateReferences(pinned)).as(key + " as a string").hasMessage("Invalid array: " + key);
             ObjectNode duplicate = catalog(); duplicate.putArray(key).add("same").add("same");
-            assertThatThrownBy(() -> new SnapshotValidator(mapper, duplicate).validateTemplateReferences(pinned)).as(key + " with a duplicate").hasMessage("Duplicate identifier");
+            assertThatThrownBy(() -> new StudyPlanSnapshotValidator(new AccountCatalogService(mapper, duplicate).catalog()).validateTemplateReferences(pinned)).as(key + " with a duplicate").hasMessage("Duplicate identifier");
         }
     }
 
@@ -177,18 +180,19 @@ class ReleaseLayoutContractTest {
         for (String field : strings(contract.path("accountCatalog").path("record").path("required"))) {
             ObjectNode catalog = catalog();
             ((ObjectNode) catalog.path("records").get(0)).remove(field);
-            assertThatThrownBy(() -> new SnapshotValidator(mapper, catalog)).as("record without " + field).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> new StudyPlanSnapshotValidator(new AccountCatalogService(mapper, catalog).catalog())).as("record without " + field).isInstanceOf(IllegalArgumentException.class);
         }
         ObjectNode withoutAliases = catalog();
         ((ObjectNode) withoutAliases.path("records").get(0)).remove("aliases");
-        assertThatCode(() -> new SnapshotValidator(mapper, withoutAliases)).doesNotThrowAnyException();
+        assertThatCode(() -> new StudyPlanSnapshotValidator(new AccountCatalogService(mapper, withoutAliases).catalog())).doesNotThrowAnyException();
         // Domain reads the named fields only; an extra record field is ignored, not refused. The Infra packager is the
         // place that refuses it before publication (the contract's notes say so).
         ObjectNode extra = catalog();
         ((ObjectNode) extra.path("records").get(0)).put("unknownField", "ignored");
-        var validator = new SnapshotValidator(mapper, extra);
-        assertThat(validator.isAccessible("canonical-1", Set.of("dsa"))).isTrue();
-        assertThat(validator.canonicalContentId("alias-1")).isEqualTo("canonical-1");
+        var accountCatalog = new AccountCatalogService(mapper, extra);
+        var validator = new StudyPlanSnapshotValidator(accountCatalog.catalog());
+        assertThat(accountCatalog.isAccessible("canonical-1", Set.of("dsa"))).isTrue();
+        assertThat(accountCatalog.canonicalContentId("alias-1")).isEqualTo("canonical-1");
         assertThatCode(() -> load(release(extra, null))).doesNotThrowAnyException();
     }
 
@@ -204,7 +208,7 @@ class ReleaseLayoutContractTest {
         // The contract's required files: a manifest that lists neither is refused before the archive is read.
         var requested = new ArrayList<String>();
         var noCatalog = release(catalog(), null, Set.of("account-catalog.json"));
-        assertThatThrownBy(() -> new PublicationBootstrap(mapper).load(settings(noCatalog), key -> { requested.add(key); return source(noCatalog).open(key); })).hasMessage(REFUSED);
+        assertThatThrownBy(() -> new PublicationArchiveLoadService(mapper, new PublicationFileStore()).load(settings(noCatalog), key -> { requested.add(key); return source(noCatalog).open(key); })).hasMessage(REFUSED);
         assertThat(requested).containsExactly("live/" + noCatalog.release() + "/manifest.json");
     }
 
@@ -324,15 +328,15 @@ class ReleaseLayoutContractTest {
         return new Release(archive, mapper.writeValueAsBytes(manifest), tag);
     }
 
-    PublicationSettings settings(Release release) throws Exception {
-        return new PublicationSettings(true, "us-east-2", "123456789012", "synthetic-publication", release.release(), sha(release.manifest()), sha(release.archive()), directory.toRealPath(), 1024, 4);
+    PublicationSelection settings(Release release) throws Exception {
+        return new PublicationSelection(true, "us-east-2", "123456789012", "synthetic-publication", release.release(), sha(release.manifest()), sha(release.archive()), directory.toRealPath(), 1024, 4);
     }
 
-    static PublicationObjectSource source(Release release) {
+    static PublicationObjectClient source(Release release) {
         return key -> new ByteArrayInputStream(key.endsWith("manifest.json") ? release.manifest() : release.archive());
     }
 
     PublicationLocation load(Release release) throws Exception {
-        return new PublicationBootstrap(mapper).load(settings(release), source(release));
+        return new PublicationArchiveLoadService(mapper, new PublicationFileStore()).load(settings(release), source(release));
     }
 }

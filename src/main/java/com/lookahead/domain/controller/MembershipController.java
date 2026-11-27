@@ -1,0 +1,39 @@
+package com.lookahead.domain.controller;
+
+import com.lookahead.domain.dto.MembershipBuy;
+import com.lookahead.domain.model.MembershipModels;
+import com.lookahead.domain.security.filter.TestSessionFilter;
+import com.lookahead.domain.service.membership.MembershipAccessSummaryService;
+import com.lookahead.domain.service.membership.MembershipService;
+import com.lookahead.domain.dto.ApiResponse;
+import com.lookahead.domain.dto.MembershipPrice;
+import com.lookahead.domain.security.token.AccountPrincipal;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.*;
+import jakarta.servlet.http.HttpServletResponse;
+import java.util.*;
+
+@RestController
+public class MembershipController {
+    private final MembershipService service;
+    private final MembershipAccessSummaryService summaries;
+    public MembershipController(MembershipService service,MembershipAccessSummaryService summaries){this.service=service;this.summaries=summaries;}
+    @ModelAttribute void noCache(HttpServletResponse response){response.setHeader("Cache-Control","no-store");}
+    @GetMapping("/api/v1/membership/plans") public ApiResponse<?> catalog(){return ApiResponse.success(service.catalog());}
+    @GetMapping("/api/v1/sales/active") public ApiResponse<?> sale(){return ApiResponse.success(service.activeSale());}
+    @GetMapping("/api/v1/account/access-records") public ApiResponse<?> access(@AuthenticationPrincipal AccountPrincipal actor){return ApiResponse.success(service.access(actor,actor.accountId()));}
+    @GetMapping("/api/v1/account/access-summary") public ApiResponse<?> summary(@AuthenticationPrincipal AccountPrincipal actor){return ApiResponse.success(summaries.get(actor,actor.accountId()));}
+    @GetMapping("/api/v1/admin/accounts/{id}/access-summary") public ApiResponse<?> summaryFor(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable UUID id){return ApiResponse.success(summaries.get(actor,id));}
+    @PostMapping("/api/v1/account/purchases/quote") public ApiResponse<?> quote(@AuthenticationPrincipal AccountPrincipal actor,@RequestBody MembershipBuy request){return ApiResponse.success(service.quote(actor,request));}
+    /** DLV-969 (owner, 2026-11-04): in a DEV test session the gate holder is recorded as who sent the request. */
+    @PostMapping("/api/v1/account/purchases") public ApiResponse<?> buy(@AuthenticationPrincipal AccountPrincipal actor,@RequestBody MembershipBuy request,@RequestHeader(value="Idempotency-Key",required=false) String key,HttpServletRequest http){
+        Object holder=http.getAttribute(TestSessionFilter.REQUESTER_ATTRIBUTE);
+        return ApiResponse.success(service.buy(actor,actor.accountId(),request,key,false,holder instanceof UUID id?id:null));}
+    @GetMapping("/api/v1/account/purchases/{id}") public ApiResponse<?> get(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable UUID id){return ApiResponse.success(service.get(actor,id));}
+    @GetMapping("/api/v1/admin/accounts/{id}/access-records") public ApiResponse<?> accessFor(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable UUID id){return ApiResponse.success(service.access(actor,id));}
+    @PostMapping("/api/v1/admin/accounts/{id}/plan-upgrades") public ApiResponse<?> upgrade(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable UUID id,@RequestBody MembershipBuy request,@RequestHeader(value="Idempotency-Key",required=false) String key){return ApiResponse.success(service.buy(actor,id,request,key,true));}
+    @PostMapping("/api/v1/admin/sales") public ApiResponse<?> start(@AuthenticationPrincipal AccountPrincipal actor,@RequestBody MembershipModels.Sale sale){return ApiResponse.success(service.startSale(actor,sale));}
+    @PostMapping("/api/v1/admin/sales/{id}/stop") public ApiResponse<?> stop(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable UUID id){service.stopSale(actor,id);return ApiResponse.success(Map.of("stopped",true));}
+    @PostMapping("/api/v1/admin/membership/plans/{id}/price") public ApiResponse<?> price(@AuthenticationPrincipal AccountPrincipal actor,@PathVariable String id,@RequestBody MembershipPrice price){return ApiResponse.success(service.price(actor,id,price.cents()));}
+}

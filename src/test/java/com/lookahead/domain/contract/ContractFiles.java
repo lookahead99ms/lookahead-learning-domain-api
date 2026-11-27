@@ -9,7 +9,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * DLV-968 (owner decision 2026-11-06): every cross-repository contract lives only in Content, under
- * {@code contracts/}; this repository keeps no copy. {@code scripts/fetch-contracts.sh} reads the files this
+ * {@code contracts/}; this repository keeps no copy. {@code .github/pipeline/build/fetch-contracts.sh} reads the files this
  * repository tests against from Content main into {@code .contracts/} (git-ignored; CI step "Fetch contracts from
  * Content" with {@code CONTENT_READ_TOKEN}, a developer's own {@code gh} login locally). {@code -Dcontracts.dir=<folder>}
  * points the tests at another folder. A missing file fails with the one message that names the fix.
@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 final class ContractFiles {
     static final String PROPERTY = "contracts.dir";
     static final String DEFAULT_DIRECTORY = ".contracts";
-    static final String SCRIPT = "scripts/fetch-contracts.sh";
+    static final String SCRIPT = ".github/pipeline/build/fetch-contracts.sh";
     /** JUnit tag of the tests that read a fetched file; the image build excludes it ({@code -DexcludedGroups}). */
     static final String TAG = "fetched-contract";
 

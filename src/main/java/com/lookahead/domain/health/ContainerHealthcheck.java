@@ -8,6 +8,10 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 
 /** Container readiness probe, measured with the application's production code. */
+// Exception, decided 2026-11-25 (DLV-1016): this is the stand-alone probe program of the container health check. The
+// Dockerfile compiles this one file on its own and the health check starts it in its own JVM (`java -cp
+// /opt/lookahead/health`), without Spring and without the application's classes, so there is no client bean it could
+// use: it makes its own HTTP call to the application's loopback readiness address.
 public final class ContainerHealthcheck {
     static final URI READINESS_URI = URI.create("http://127.0.0.1:8080/actuator/health/readiness");
 

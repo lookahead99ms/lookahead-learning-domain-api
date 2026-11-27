@@ -71,9 +71,7 @@ private/
 *.private.*
 docs/account-persistence-contract.proposed.md
 
-# Public AWS RDS trust anchors; exact exception, never private keys.
-!tools/container/trust/rds-global-bundle.pem
-tools/release/__pycache__/
+.github/pipeline/**/__pycache__/
 
-# Contract files fetched from Content by scripts/fetch-contracts.sh; the master lives only there.
+# Contract files fetched from Content by .github/pipeline/build/fetch-contracts.sh; the master lives only there.
 .contracts/

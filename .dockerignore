@@ -13,20 +13,13 @@
 !src/main/java/**
 !src/main/resources/
 !src/main/resources/*.yml
-!src/main/resources/db/
-!src/main/resources/db/domain/
-!src/main/resources/db/domain/*.sql
 !src/test/
 !src/test/java/
 !src/test/java/**
 !src/test/resources/
 !src/test/resources/**
-!tools/
-!tools/container/
 # Exact public JVM DNS cache configuration required by the runtime COPY.
-!deployment/
-!deployment/container/
-!deployment/container/dns.security
+!.github/pipeline/build/container/dns.security
 
 # Exclusions remain last so newly added private inputs cannot override them.
 **/.env*
@@ -55,8 +48,3 @@
 **/*.jar
 **/.DS_Store
 
-# Exact reviewed public trust bundle/build verifier; all private-key exclusions remain.
-!tools/container/VerifyRdsTrust.java
-!tools/container/trust/
-!tools/container/trust/rds-global-bundle.pem
-!tools/container/trust/rds-global-bundle.sha256

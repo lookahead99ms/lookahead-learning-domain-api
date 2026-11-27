@@ -15,7 +15,7 @@ RUN ./mvnw --batch-mode --no-transfer-progress --version
 COPY pom.xml ./
 COPY src src
 # DLV-914: the jar is lookahead-domain-api-<version>.jar and /actuator/info reports version, release tag and commit.
-# DLV-968: the fetched-contract tests read files that scripts/fetch-contracts.sh takes from Content on the pull
+# DLV-968: the fetched-contract tests read files that .github/pipeline/build/fetch-contracts.sh takes from Content on the pull
 # request; the build context carries no fetched file and the CI Maven step has already run them, so they are excluded here.
 RUN ./mvnw --batch-mode --no-transfer-progress "-Drevision=$BUILD_VERSION" "-Drelease.tag=$RELEASE_VERSION" "-Dsource.revision=$SOURCE_REVISION" -DexcludedGroups=fetched-contract verify \
     && test -f "/workspace/target/lookahead-domain-api-$BUILD_VERSION.jar" \
@@ -37,7 +37,7 @@ RUN groupadd --gid 10001 lookahead && useradd --uid 10001 --gid 10001 --no-creat
     && chown 10001:10001 /tmp && chmod 1777 /tmp
 COPY --from=build --chown=10001:10001 /workspace/target/lookahead-domain-api-${BUILD_VERSION}.jar /opt/lookahead/app.jar
 COPY --from=build --chown=10001:10001 /workspace/health /opt/lookahead/health
-COPY deployment/container/dns.security /opt/lookahead/dns.security
+COPY .github/pipeline/build/container/dns.security /opt/lookahead/dns.security
 # ECS copies a VOLUME path's ownership into the task's empty bind mount; without it the Fargate
 # mount at /tmp is root-owned 0755 and Tomcat (UID 10001) cannot create its tempDir (DLV-968). /tmp keeps the
 # conventional sticky 1777 mode: Docker gives an unparameterised tmpfs the directory's mode, so local stacks that

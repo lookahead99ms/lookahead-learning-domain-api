@@ -7,15 +7,15 @@ The existing `verify` job builds and tests this application, runs CodeQL securit
 From this repository with Java 21, Python 3 and Docker available:
 
 ```sh
-python3 -m unittest discover -s tools/security -p 'test_*.py'
-python3 tools/security/check.py install --tool trivy
-python3 tools/security/check.py install --tool gitleaks
-python3 tools/security/check.py history
-python3 tools/security/check.py dependencies --build-system maven
-python3 tools/security/check.py sbom
-python3 tools/security/check.py config
+python3 -m unittest discover -s .github/pipeline/build -p 'test_checks.py'
+python3 .github/pipeline/build/check.py install --tool trivy
+python3 .github/pipeline/build/check.py install --tool gitleaks
+python3 .github/pipeline/build/check.py history
+python3 .github/pipeline/build/check.py dependencies --build-system maven
+python3 .github/pipeline/build/check.py sbom
+python3 .github/pipeline/build/check.py config
 docker build --pull --tag lookahead-domain-api:security-ci-local .
-python3 tools/security/check.py images --image lookahead-domain-api:security-ci-local
+python3 .github/pipeline/build/check.py images --image lookahead-domain-api:security-ci-local
 ```
 
 The installer verifies pinned archive checksums. Supported tool hosts are Linux AMD64 and macOS ARM64. Network access is required for dependency resolution, scanner databases and rule updates. History checks reject shallow repositories; fetch the complete intended history first. They inspect fetched refs, not inaccessible remote history.
@@ -58,7 +58,7 @@ Sources: [Boot Maven metadata](https://repo.maven.apache.org/maven2/org/springfr
 
 On 2026-09-29 the resolved SBOM gate reported high-severity CVE-2026-68497.
 Boot 4.1.1 is still the latest stable 4.1 patch and manages affected Jackson
-versions. The Maven parent manages Jackson 2.21.5 and 3.1.5. The `jackson-2-bom.version` and `jackson-bom.version` properties now select the corresponding 2.21.7 and 3.1.7 patch BOMs after the October 8 scan. Both Jackson lines are present because Springdoc/Swagger uses Jackson 2 while Boot/Flyway uses Jackson 3.
+versions. The Maven parent manages Jackson 2.21.5 and 3.1.5. The `jackson-2-bom.version` and `jackson-bom.version` properties now select the corresponding 2.21.7 and 3.1.7 patch BOMs after the October 8 scan. Both Jackson lines are present because Springdoc/Swagger uses Jackson 2 while Boot uses Jackson 3.
 Remove these overrides when a stable Boot patch manages fixed Jackson versions;
 then repeat complete dependency, native test, protocol, package and image checks.
 Do not narrow the SBOM to runtime dependencies: build tooling is in scope.
@@ -124,7 +124,7 @@ required; passing local helpers alone does not certify the hosted security gate.
 
 ## Local test-account maintenance CSRF review (October 16)
 
-The completed hosted scan reported disabled CSRF in `TestAccountSecurity`. Basic
+The completed hosted scan reported disabled CSRF in `TestAccountSecurityConfiguration`. Basic
 authentication is not inherently immune to CSRF. The Local-only internal seed
 chain now rejects Origin and Sec-Fetch-Site headers and non-JSON POSTs before
 authentication or mutation. Preflight is denied; the endpoint is not proxied by
@@ -137,15 +137,10 @@ other maintenance code or permission to enable DEV/PROD.
 
 ### Review-record SQL construction — 2026-11-06
 
-PR159's four `java/concatenated-sql-query` findings are addressed with prepared
-query parameters. Review record numbering uses `SELECT nextval(?::regclass)`
-with the existing fixed review/support sequence selection. Database privilege
-tests bind the sequence name and privilege argument too. No SAST exception,
-severity change or scanner suppression is added.
-
-`ReviewRecordNumbersTest` checked both sequences, hostile-looking/unrecognized
-kinds and the null-result fallback; `ReviewRecordsDatabaseTest` ran the queries against the
-disposable PostgreSQL fixture. Since 2026-11-17 (PostgreSQL retired, DLV-970) the SQL and both
-sequences are gone: record numbers come from two DynamoDB counters (`ReviewRecordNumbers.Dynamo`,
-`DynamoReviewRecordsDatabaseTest`) and the kind selection is still unit-tested. No query is built
-from request text anywhere in the repository.
+PR159's four `java/concatenated-sql-query` findings were fixed with prepared query
+parameters; no SAST exception, severity change or scanner suppression was added.
+Since 2026-11-17 (PostgreSQL retired, DLV-970) the SQL and both sequences are gone: record
+numbers come from two DynamoDB counters (`PlatformReviewRecordNumberStore`,
+`PlatformReviewRecordNumberStoreDatabaseTest`), the kind selection is unit-tested with
+hostile-looking and unrecognized kinds (`PlatformReviewRecordNumberStoreTest`), and no query is
+built from request text anywhere in the repository.

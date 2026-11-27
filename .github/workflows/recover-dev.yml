@@ -73,11 +73,11 @@
         },
         {
           "name": "Install hash-locked release coverage tooling",
-          "run": "python -m pip install --only-binary=:all: --require-hashes -r tools/release/requirements-coverage.txt"
+          "run": "python -m pip install --only-binary=:all: --require-hashes -r .github/pipeline/shared/requirements-coverage.txt"
         },
         {
           "name": "Test the deploy and recovery tooling this run executes and require 85 percent coverage",
-          "run": "python -m coverage run --source=tools/release -m unittest discover -s tools/release -p 'test_*.py'\npython -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py,*/recover.py' --fail-under=85",
+          "run": "src=.github/pipeline/shared,.github/pipeline/publish,.github/pipeline/deploy\npython -m coverage erase\nfor step in shared publish deploy; do python -m coverage run --append --source=\"$src\" -m unittest discover -s \".github/pipeline/$step\" -p 'test_*.py' || exit 1; done\npython -m coverage report --include='*/release_version.py,*/pipeline_tag.py,*/image.py,*/registry.py,*/issue_template.py,*/owner_approval.py,*/owner_release.py,*/candidate.py,*/issue_close.py,*/deploy.py,*/recover.py' --fail-under=85",
           "env": {
             "COVERAGE_FILE": "${{ runner.temp }}/release-tooling.coverage"
           }
@@ -116,19 +116,19 @@
         },
         {
           "name": "Resolve the target release tag once and freeze its main commit",
-          "run": "mkdir -p \"$RUNNER_TEMP/recover-plan\"\npython3 tools/release/release_version.py resolve --app domain --record \"$RUNNER_TEMP/recover-plan/release-source.json\""
+          "run": "mkdir -p \"$RUNNER_TEMP/recover-plan\"\npython3 .github/pipeline/shared/release_version.py resolve --app domain --record \"$RUNNER_TEMP/recover-plan/release-source.json\""
         },
         {
           "name": "Choose the fallback release: the input, or the newest release whose deploy verified healthy on main",
           "id": "fallback",
-          "run": "python3 tools/release/recover.py fallback"
+          "run": "python3 .github/pipeline/deploy/recover.py fallback"
         },
         {
           "name": "Resolve the fallback release tag once and freeze its main commit",
           "env": {
             "RELEASE_VERSION": "${{ steps.fallback.outputs.fallback_release }}"
           },
-          "run": "python3 tools/release/release_version.py resolve --app domain --record \"$RUNNER_TEMP/recover-plan/fallback-source.json\""
+          "run": "python3 .github/pipeline/shared/release_version.py resolve --app domain --record \"$RUNNER_TEMP/recover-plan/fallback-source.json\""
         },
         {
           "name": "Point the release-source records at the runner temp directory",
@@ -155,7 +155,7 @@
             "FALLBACK_RELEASE_VERSION": "${{ steps.fallback.outputs.fallback_release }}",
             "FALLBACK_SOURCE": "${{ steps.fallback.outputs.fallback_source }}"
           },
-          "run": "python3 tools/release/recover.py plan --output \"$RUNNER_TEMP/recover-plan/plan.json\""
+          "run": "python3 .github/pipeline/deploy/recover.py plan --output \"$RUNNER_TEMP/recover-plan/plan.json\""
         },
         {
           "name": "Retain the recovery plan",
@@ -220,7 +220,7 @@
         {
           "name": "Open one approval issue for the whole sequence and wait for the owner comment (10 minutes)",
           "id": "approve",
-          "run": "python3 tools/release/recover.py approve --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\""
+          "run": "python3 .github/pipeline/deploy/recover.py approve --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\""
         },
         {
           "name": "Retain the approval receipt",
@@ -236,7 +236,7 @@
           "name": "Close the approval issue when approval failed or expired",
           "if": "failure()",
           "continue-on-error": true,
-          "run": "python3 tools/release/issue_close.py --stage \"Approve DEV recovery\" --outcome failure --detail \"Rejected, expired or failed; nothing was changed.\" --match \"Recover\""
+          "run": "python3 .github/pipeline/shared/issue_close.py --stage \"Approve DEV recovery\" --outcome failure --detail \"Rejected, expired or failed; nothing was changed.\" --match \"Recover\""
         }
       ]
     },
@@ -303,7 +303,7 @@
         },
         {
           "name": "Recheck the live owner approval before AWS credentials",
-          "run": "python3 tools/release/recover.py verify --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\""
+          "run": "python3 .github/pipeline/deploy/recover.py verify --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\""
         },
         {
           "name": "Use short-lived DEV OIDC credentials for stage park (domain-deploy-1)",
@@ -322,7 +322,7 @@
         {
           "name": "Stage 1 \u00b7 park: DesiredCount 0, directly first when the stack is stuck",
           "id": "park",
-          "run": "python3 tools/release/recover.py stage --stage park --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\""
+          "run": "python3 .github/pipeline/deploy/recover.py stage --stage park --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\""
         },
         {
           "name": "Use short-lived DEV OIDC credentials for stage target (domain-deploy-2)",
@@ -342,7 +342,7 @@
         {
           "name": "Stage 2 \u00b7 target: deploy the chosen release and wait for one healthy task",
           "id": "target",
-          "run": "python3 tools/release/recover.py stage --stage target --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\"",
+          "run": "python3 .github/pipeline/deploy/recover.py stage --stage target --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\"",
           "if": "steps.park.outcome == 'success'"
         },
         {
@@ -363,7 +363,7 @@
         {
           "name": "Stage 3 \u00b7 park again: only when the target did not serve",
           "id": "park-again",
-          "run": "python3 tools/release/recover.py stage --stage park-again --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\"",
+          "run": "python3 .github/pipeline/deploy/recover.py stage --stage park-again --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\"",
           "if": "steps.target.outputs.healthy == 'false'"
         },
         {
@@ -384,7 +384,7 @@
         {
           "name": "Stage 4 \u00b7 fallback: deploy the fallback release and wait for one healthy task",
           "id": "fallback",
-          "run": "python3 tools/release/recover.py stage --stage fallback --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\"",
+          "run": "python3 .github/pipeline/deploy/recover.py stage --stage fallback --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\"",
           "if": "steps.park-again.outcome == 'success'"
         },
         {
@@ -405,14 +405,14 @@
         {
           "name": "Stage 5 \u00b7 park at zero tasks: only when the fallback did not serve either",
           "id": "park-final",
-          "run": "python3 tools/release/recover.py stage --stage park-final --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\"",
+          "run": "python3 .github/pipeline/deploy/recover.py stage --stage park-final --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\" --dir \"$RUNNER_TEMP/recover-result\"",
           "if": "steps.fallback.outputs.healthy == 'false'"
         },
         {
           "name": "Summarize every stage; fail unless a release serves",
           "id": "summary",
           "if": "always()",
-          "run": "python3 tools/release/recover.py summary --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --dir \"$RUNNER_TEMP/recover-result\""
+          "run": "python3 .github/pipeline/deploy/recover.py summary --plan \"$RUNNER_TEMP/recover-plan/plan.json\" --dir \"$RUNNER_TEMP/recover-result\""
         },
         {
           "name": "Retain the stage results whatever the outcome",
@@ -432,7 +432,7 @@
           "env": {
             "OUTCOME": "${{ steps.summary.outcome }}"
           },
-          "run": "detail=\"Recovery to $RELEASE_VERSION ended with outcome $OUTCOME; the run summary and the recover-result artifact list every stage.\"\npython3 tools/release/issue_close.py --stage \"Recover DEV\" --outcome \"$OUTCOME\" --detail \"$detail\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\""
+          "run": "detail=\"Recovery to $RELEASE_VERSION ended with outcome $OUTCOME; the run summary and the recover-result artifact list every stage.\"\npython3 .github/pipeline/shared/issue_close.py --stage \"Recover DEV\" --outcome \"$OUTCOME\" --detail \"$detail\" --receipt \"$RUNNER_TEMP/recover-approval/approval.json\""
         }
       ]
     },
