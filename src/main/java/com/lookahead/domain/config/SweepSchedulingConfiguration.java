@@ -4,8 +4,12 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
-/** Scheduling exists only in cloud mode: {@link com.lookahead.domain.job.SweepRunner} is the sole scheduled task (DLV-969, DLV-971). */
+/**
+ * Scheduling exists only in cloud mode: {@link com.lookahead.domain.job.SweepRunner} is the sole
+ * scheduled task (DLV-969, DLV-971).
+ */
 @Configuration
 @EnableScheduling
-@ConditionalOnExpression("'${app.deployment-environment:}' == 'dev' || '${app.deployment-environment:}' == 'prod'")
+@ConditionalOnExpression(
+    "'${app.deployment-environment:}' == 'dev' || '${app.deployment-environment:}' == 'prod'")
 public class SweepSchedulingConfiguration {}

@@ -1,267 +1,461 @@
 package com.lookahead.domain.service.content;
-import ch.qos.logback.classic.Level;
-import com.lookahead.domain.db.store.content.PublicationFileStore;
-import com.lookahead.domain.log.LogCapture;
-import com.lookahead.domain.model.ProtectedContentModels;
-import com.lookahead.domain.db.store.content.ProtectedContentFileStore;
-import com.lookahead.domain.exception.AccountFailure;
-import com.lookahead.domain.model.PublicationLocation;
-import com.lookahead.domain.service.access.AccountGrantService;
-import com.lookahead.domain.security.token.AccountPrincipal;
-import java.nio.charset.StandardCharsets;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import tools.jackson.databind.json.JsonMapper;
-import java.nio.file.*;
-import java.security.MessageDigest;
-import java.util.*;
+
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-class ProtectedContentServiceTest {
-    @TempDir Path directory;
-    private final JsonMapper mapper=new JsonMapper();
-    private final AccountGrantService accounts=mock(AccountGrantService.class);
-    private final AccountPrincipal learner=new AccountPrincipal(UUID.randomUUID(),"learner","Learner", true);
-    private static final List<String> BUNDLE_SCOPES=List.of("learn:sample-course","grow:another-course");
-    private ProtectedContentManifestService policy() throws Exception {
-        var entries=new ArrayList<Map<String,Object>>();
-        for(String tier:List.of("public","free","pro")) {
-            byte[] bytes=("{\"title\":\""+tier+"\"}").getBytes(StandardCharsets.UTF_8);
-            Files.write(directory.resolve(tier+".json"),bytes);
-            entries.add(Map.of("path","/content/"+tier+".json","sha256",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)),"mediaType","application/json","tier",tier,"scopes",List.of("learn:sample-course"),"contentIds",List.of(tier+"-lesson")));
-        }
-        return policy(entries);
-    }
-    private ProtectedContentManifestService policy(List<Map<String,Object>> entries) throws Exception {
-        Files.writeString(directory.resolve("manifest.json"),mapper.writeValueAsString(Map.of("schemaVersion","content-publication/v1","version","test-v1","assets",entries)));
-        return new ProtectedContentManifestService(mapper,directory.resolve("manifest.json").toString(),directory.toString(), new PublicationFileStore());
-    }
-    private Map<String,Object> asset(String path,String tier,List<String> contentIds) throws Exception {
-        byte[] bytes="{\"fixture\":true}".getBytes(StandardCharsets.UTF_8);
-        Path file=directory.resolve(path.substring("/content/".length()));
-        Files.createDirectories(file.getParent());Files.write(file,bytes);
-        return new HashMap<>(Map.of("path",path,"sha256",HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)),
-                "mediaType","application/json","tier",tier,"scopes",BUNDLE_SCOPES,"contentIds",contentIds));
-    }
-    private void denied(Runnable call,int status,String code) {
-        assertThatThrownBy(call::run).isInstanceOfSatisfying(AccountFailure.class,error->{assertThat(error.status()).isEqualTo(status);assertThat(error.code()).isEqualTo(code);});
-    }
-    @Test void publicIsAnonymousButFreeRequiresAnEnabledCurrentAccount() throws Exception {
-        var service=service(policy(),accounts);
-        assertThat(service.read("/content/public.json",null).mediaType()).isEqualTo("application/json");
-        denied(()->service.read("/content/free.json",null),401,"AUTHENTICATION_REQUIRED");
-        when(accounts.isEnabled(learner.accountId())).thenReturn(true);
-        assertThat(service.read("/content/free.json",learner).bytes()).isNotEmpty();
-        when(accounts.isEnabled(learner.accountId())).thenReturn(false);
-        denied(()->service.read("/content/free.json",learner),401,"AUTHENTICATION_REQUIRED");
-    }
-    @Test void courseGrantIsRecheckedOnEveryReadAndCannotUnlockOtherCourses() throws Exception {
-        var service=service(policy(),accounts);
-        when(accounts.isEnabled(learner.accountId())).thenReturn(true);
-        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("grow:another-course"));
-        denied(()->service.read("/content/pro.json",learner),403,"CONTENT_SCOPE_REQUIRED");
-        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("learn:sample-course"));
-        assertThat(service.read("/content/pro.json",learner).bytes()).isNotEmpty();
-        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of());
-        denied(()->service.read("/content/pro.json",learner),403,"CONTENT_SCOPE_REQUIRED");
-    }
-    @Test void cachedCloudBytesDoNotCacheGrantsOrEnabledState() throws Exception {
-        policy();
-        var location = new PublicationLocation(directory.resolve("manifest.json").toString(),directory.toString(),"",true,1024,4);
-        var cloudPolicy = new ProtectedContentManifestService(mapper,location, new PublicationFileStore());
-        var service = new ProtectedContentService(cloudPolicy,new ProtectedContentFileStore(cloudPolicy.root(), cloudPolicy.version(), location),accounts);
-        when(accounts.isEnabled(learner.accountId())).thenReturn(true);
-        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("learn:sample-course"));
-        assertThat(service.read("/content/pro.json",learner).bytes()).isNotEmpty();
-        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of());
-        denied(()->service.read("/content/pro.json",learner),403,"CONTENT_SCOPE_REQUIRED");
-        when(accounts.isEnabled(learner.accountId())).thenReturn(false);
-        denied(()->service.read("/content/pro.json",learner),401,"AUTHENTICATION_REQUIRED");
-    }
-    /** DLV-969 (owner, 2026-11-04): a content 503 says why in the log, once per reason a minute, never a disk path. */
-    @Test void unavailableContentIsExplainedOncePerReason() throws Exception {
-        var policy=policy();var service=service(policy,accounts);
-        try(var log=LogCapture.start()){
-            Files.writeString(directory.resolve("public.json"),"changed");
-            denied(()->service.read("/content/public.json",null),503,"CONTENT_UNAVAILABLE");
-            denied(()->service.read("/content/public.json",null),503,"CONTENT_UNAVAILABLE");
-            Files.delete(directory.resolve("public.json"));
-            denied(()->service.read("/content/public.json",null),503,"CONTENT_UNAVAILABLE");
-            Files.createSymbolicLink(directory.resolve("public.json"),directory.resolve("free.json"));
-            denied(()->service.read("/content/public.json",null),503,"CONTENT_UNAVAILABLE");
-            var stale=new ProtectedContentModels.Asset("/content/public.json","0".repeat(64),"application/json","public",Set.of(),Set.of(),"any");
-            assertThatThrownBy(()->policy.requirePublished(stale)).isInstanceOf(AccountFailure.class);
-            assertThatThrownBy(()->policy.requirePublished(stale)).as("the second refusal within the minute writes no second line").isInstanceOf(AccountFailure.class);
-            assertThat(log.lines("content.read")).extracting(line->LogCapture.keys(line).get("reason"))
-                    .containsExactly("ASSET_CHANGED","ASSET_UNREADABLE","ASSET_SYMLINK","ASSET_NOT_PUBLISHED");
-            assertThat(log.lines("content.read").getFirst().getFormattedMessage())
-                    .isEqualTo("Content /content/public.json of release test-v1 answered 503: its bytes differ from the SHA-256 the manifest published");
-            assertThat(log.lines("content.read").get(1).getFormattedMessage()).startsWith("Content /content/public.json of release test-v1 answered 503:"
-                    + " its file could not be read from the content release on disk (NoSuchFileException");
-            assertThat(log.lines("content.read").getLast().getFormattedMessage())
-                    .isEqualTo("Content /content/public.json of release test-v1 answered 503: it is not the asset this release published");
-            assertThat(LogCapture.keys(log.lines("content.read").getLast())).containsEntry("content.path","/content/public.json").containsEntry("release.version","test-v1");
-            assertThat(log.lines("content.read")).allSatisfy(line->assertThat(line.getLevel()).isEqualTo(Level.WARN));
-            log.containsNone(directory.toString());
-        }
-    }
-    @Test void excludesUnlistedFilesAndRejectsTraversalAndChangedBytes() throws Exception {
-        var policy=policy();var service=service(policy,accounts);
-        for(String path:List.of("/content/manifest.json","/content/../public.json","/content/%2e%2e/public.json","/content/public.json/","/content/public.json%00"))denied(()->service.read(path,null),404,"CONTENT_NOT_FOUND");
-        assertThat(policy.freeContentIds()).containsExactlyInAnyOrder("free-lesson","public-lesson");
-        Files.writeString(directory.resolve("public.json"),"changed");
-        denied(()->service.read("/content/public.json",null),503,"CONTENT_UNAVAILABLE");
-    }
-    @Test void symlinkReplacementCannotCrossThePublicationBoundary() throws Exception {
-        var service=service(policy(),accounts);
-        Files.delete(directory.resolve("public.json"));
-        Files.createSymbolicLink(directory.resolve("public.json"),directory.resolve("free.json"));
-        denied(()->service.read("/content/public.json",null),503,"CONTENT_UNAVAILABLE");
-    }
-    @Test void disabledPublicationServesNothingAndPartialConfigurationFailsClosed() {
-        var disabled=new ProtectedContentManifestService(mapper,"","", new PublicationFileStore());
-        assertThat(disabled.find("/content/public.json")).isEmpty();
-        assertThat(disabled.contentGrants(Set.copyOf(BUNDLE_SCOPES))).isEmpty();
-        denied(()->service(disabled,accounts).read("/content/study-plans/index.json",learner),404,"CONTENT_NOT_FOUND");
-        verifyNoInteractions(accounts);
-        assertThatThrownBy(()->new ProtectedContentManifestService(mapper,"",directory.toString(), new PublicationFileStore())).isInstanceOf(IllegalStateException.class);
-    }
-    @Test void allScopesRequireAnEnabledAccountAndCurrentFullGrantsOnEveryRead() throws Exception {
-        String path="/content/study-plans/templates/sample-template.json";
-        var entry=asset(path,"pro",List.of());entry.put("scopeMatch","all");
-        var service=service(policy(List.of(entry)),accounts);
-        denied(()->service.read(path,null),401,"AUTHENTICATION_REQUIRED");
-        when(accounts.isEnabled(learner.accountId())).thenReturn(true);
-        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of(BUNDLE_SCOPES.getFirst()));
-        denied(()->service.read(path,learner),403,"CONTENT_SCOPE_REQUIRED");
-        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.copyOf(BUNDLE_SCOPES));
-        assertThat(service.read(path,learner).bytes()).isNotEmpty();
-        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of(BUNDLE_SCOPES.getLast()));
-        denied(()->service.read(path,learner),403,"CONTENT_SCOPE_REQUIRED");
-        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of());
-        denied(()->service.read(path,learner),403,"CONTENT_SCOPE_REQUIRED");
-        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.copyOf(BUNDLE_SCOPES));
-        when(accounts.isEnabled(learner.accountId())).thenReturn(false);
-        denied(()->service.read(path,learner),401,"AUTHENTICATION_REQUIRED");
-    }
-    @Test void omittedAndExplicitAnyScopesRetainPartialGrantAccess() throws Exception {
-        for(boolean explicit:List.of(false,true)) {
-            var entry=asset("/content/legacy.json","pro",List.of("legacy-lesson"));
-            if(explicit)entry.put("scopeMatch","any");
-            var policy=policy(List.of(entry));
-            assertThat(policy.find("/content/legacy.json").orElseThrow().scopeMatch()).isEqualTo("any");
-            var service=service(policy,accounts);
-            when(accounts.isEnabled(learner.accountId())).thenReturn(true);
-            for(String scope:BUNDLE_SCOPES) {
-                when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of(scope));
-                assertThat(service.read("/content/legacy.json",learner).bytes()).isNotEmpty();
-                assertThat(policy.contentGrants(Set.of(scope))).containsExactly("legacy-lesson");
-            }
-            when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("look-ahead:unrelated-course"));
-            denied(()->service.read("/content/legacy.json",learner),403,"CONTENT_SCOPE_REQUIRED");
-        }
-    }
-    @Test void legacyLookAheadScopesAndGrantsAreReadAsBlaze() throws Exception {
-        // DLV-931: a manifest or a stored grant from before the rename keeps working, under blaze IDs only.
-        var legacy=asset("/content/blaze/system-design/lesson.json","pro",List.of("look-ahead:system-design:caching"));
-        legacy.put("scopes",List.of("look-ahead:system-design"));
-        var policy=policy(List.of(legacy));
-        var asset=policy.find("/content/blaze/system-design/lesson.json").orElseThrow();
-        assertThat(asset.scopes()).containsExactly("blaze:system-design");
-        assertThat(asset.contentIds()).containsExactly("blaze:system-design:caching");
-        assertThat(policy.contentGrants(Set.of("blaze:system-design"))).containsExactly("blaze:system-design:caching");
-        assertThat(policy.contentGrants(Set.of("look-ahead:system-design"))).containsExactly("blaze:system-design:caching");
-        var service=service(policy,accounts);
-        when(accounts.isEnabled(learner.accountId())).thenReturn(true);
-        for(String grant:List.of("blaze:system-design","look-ahead:system-design")) {
-            when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of(grant));
-            assertThat(service.read("/content/blaze/system-design/lesson.json",learner).bytes()).isNotEmpty();
-        }
-        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("blaze:other-course"));
-        denied(()->service.read("/content/blaze/system-design/lesson.json",learner),403,"CONTENT_SCOPE_REQUIRED");
-        var invalid=asset("/content/blaze/x.json","pro",List.of());invalid.put("scopes",List.of("look-ahead"));
-        assertThatThrownBy(()->policy(List.of(invalid))).isInstanceOf(IllegalStateException.class);
-    }
-    @Test void contentGrantsNeverUnlockAllScopeBundleFromOneCourseAndReevaluateRevocation() throws Exception {
-        var all=asset("/content/bundle.json","pro",List.of("bundle-first","bundle-second"));all.put("scopeMatch","all");
-        var any=asset("/content/legacy.json","pro",List.of("legacy-lesson"));
-        var free=asset("/content/free.json","free",List.of("free-lesson"));free.put("scopeMatch","all");
-        var policy=policy(List.of(all,any,free));
-        assertThat(policy.contentGrants(Set.of())).containsExactly("free-lesson");
-        assertThat(policy.contentGrants(Set.of(BUNDLE_SCOPES.getFirst()))).containsExactlyInAnyOrder("free-lesson","legacy-lesson");
-        assertThat(policy.contentGrants(Set.copyOf(BUNDLE_SCOPES))).containsExactlyInAnyOrder("free-lesson","legacy-lesson","bundle-first","bundle-second");
-        assertThat(policy.contentGrants(Set.of(BUNDLE_SCOPES.getLast()))).containsExactlyInAnyOrder("free-lesson","legacy-lesson");
-    }
-    @Test void allScopeMatchingDoesNotChangePublicOrFreeAuthentication() throws Exception {
-        var publicEntry=asset("/content/public.json","public",List.of("public-lesson"));publicEntry.put("scopeMatch","all");
-        var freeEntry=asset("/content/free.json","free",List.of("free-lesson"));freeEntry.put("scopeMatch","all");
-        var service=service(policy(List.of(publicEntry,freeEntry)),accounts);
-        assertThat(service.read("/content/public.json",null).bytes()).isNotEmpty();
-        denied(()->service.read("/content/free.json",null),401,"AUTHENTICATION_REQUIRED");
-        when(accounts.isEnabled(learner.accountId())).thenReturn(true);
-        assertThat(service.read("/content/free.json",learner).bytes()).isNotEmpty();
-        verify(accounts,never()).findTopicGrants(any());
-    }
-    @Test void invalidScopeMatchingValuesAndTypesFailClosed() throws Exception {
-        for(Object value:Arrays.asList("ALL","", "some",true,1,List.of("all"),Map.of("rule","all"),null)) {
-            var entry=asset("/content/bundle.json","pro",List.of("bundle-lesson"));entry.put("scopeMatch",value);
-            assertThatThrownBy(()->policy(List.of(entry))).isInstanceOf(IllegalStateException.class)
-                    .hasRootCauseMessage("Invalid scope matching rule");
-        }
-    }
-    @Test void everyStudyPlanNamespaceAssetRejectsCurriculumGrantsRegardlessOfTier() throws Exception {
-        for(String path:List.of("/content/study-plans/index.json","/content/study-plans/templates/sample-template.json","/content/study-plans/other.json")) {
-            for(String tier:List.of("public","free","pro")) {
-                var entry=asset(path,tier,List.of("would-unlock-curriculum"));entry.put("scopeMatch","all");
-                assertThatThrownBy(()->policy(List.of(entry))).isInstanceOf(IllegalStateException.class)
-                        .hasRootCauseMessage("Study plan assets cannot grant curriculum access");
-            }
-        }
-    }
-    @Test void validStudyPlanIndexAndTemplateAssetsCannotAddContentGrants() throws Exception {
-        var index=asset("/content/study-plans/index.json","free",List.of());
-        var template=asset("/content/study-plans/templates/sample-template.json","pro",List.of());template.put("scopeMatch","all");
-        var policy=policy(List.of(index,template));
-        assertThat(policy.freeContentIds()).isEmpty();
-        assertThat(policy.contentGrants(Set.of())).isEmpty();
-        assertThat(policy.contentGrants(Set.copyOf(BUNDLE_SCOPES))).isEmpty();
-    }
-    /** DLV-968: Content publishes owner/staff documents as pro assets scoped staff:documents with no content IDs. */
-    @Test void staffDocumentsOpenForTheStaffScopeOnlyAndNeverUnlockLessons() throws Exception {
-        var entry=asset("/content/staff/handbook.json","pro",List.of());
-        entry.put("scopes",List.of("staff:documents"));entry.put("scopeMatch","any");
-        var policy=policy(List.of(entry));var service=service(policy,accounts);
-        assertThat(policy.find("/content/staff/handbook.json").orElseThrow().scopes()).containsExactly("staff:documents");
-        denied(()->service.read("/content/staff/handbook.json",null),401,"AUTHENTICATION_REQUIRED");
-        when(accounts.isEnabled(learner.accountId())).thenReturn(true);
-        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.copyOf(BUNDLE_SCOPES));
-        denied(()->service.read("/content/staff/handbook.json",learner),403,"CONTENT_SCOPE_REQUIRED");
-        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("staff:documents"));
-        assertThat(service.read("/content/staff/handbook.json",learner).bytes()).isNotEmpty();
-        // The staff scope grants no lesson: no content IDs come from it, and it is no course grant for other assets.
-        assertThat(policy.contentGrants(Set.of("staff:documents"))).isEmpty();
-        assertThat(policy().contentGrants(Set.of("staff:documents"))).containsExactlyInAnyOrder("free-lesson","public-lesson");
-        var courses=service(policy(),accounts);
-        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("staff:documents"));
-        denied(()->courses.read("/content/pro.json",learner),403,"CONTENT_SCOPE_REQUIRED");
-    }
-    @Test void staffAssetsCannotCarryContentIdsAndUnknownScopePrefixesStayInvalid() throws Exception {
-        var withIds=asset("/content/staff/notes.json","pro",List.of("staff-lesson"));withIds.put("scopes",List.of("staff:documents"));
-        assertThatThrownBy(()->policy(List.of(withIds))).isInstanceOf(IllegalStateException.class).hasRootCauseMessage("Staff assets cannot grant curriculum access");
-        var mixed=asset("/content/staff/mixed.json","pro",List.of("mixed-lesson"));mixed.put("scopes",List.of("learn:sample-course","staff:documents"));
-        assertThatThrownBy(()->policy(List.of(mixed))).isInstanceOf(IllegalStateException.class).hasRootCauseMessage("Staff assets cannot grant curriculum access");
-        var unknown=asset("/content/staff/other.json","pro",List.of());unknown.put("scopes",List.of("owner:documents"));
-        assertThatThrownBy(()->policy(List.of(unknown))).isInstanceOf(IllegalStateException.class).hasRootCauseMessage("Invalid course scope");
-    }
-    @Test void allScopeProAssetsStillRequireNonemptyScopes() throws Exception {
-        var entry=asset("/content/bundle.json","pro",List.of("bundle-lesson"));
-        entry.put("scopeMatch","all");entry.put("scopes",List.of());
-        assertThatThrownBy(()->policy(List.of(entry))).isInstanceOf(IllegalStateException.class)
-                .hasRootCauseMessage("Invalid course scope");
-    }
+import ch.qos.logback.classic.Level;
+import com.lookahead.domain.db.store.content.ProtectedContentFileStore;
+import com.lookahead.domain.db.store.content.PublicationFileStore;
+import com.lookahead.domain.exception.AccountFailure;
+import com.lookahead.domain.log.LogCapture;
+import com.lookahead.domain.model.ProtectedContentModels;
+import com.lookahead.domain.model.PublicationLocation;
+import com.lookahead.domain.security.token.AccountPrincipal;
+import com.lookahead.domain.service.access.AccountGrantService;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.security.MessageDigest;
+import java.util.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import tools.jackson.databind.json.JsonMapper;
 
-    private static ProtectedContentService service(ProtectedContentManifestService policy,AccountGrantService accounts){
-        return new ProtectedContentService(policy,new ProtectedContentFileStore(policy.root(), policy.version()),accounts);
+class ProtectedContentServiceTest {
+  @TempDir Path directory;
+  private final JsonMapper mapper = new JsonMapper();
+  private final AccountGrantService accounts = mock(AccountGrantService.class);
+  private final AccountPrincipal learner =
+      new AccountPrincipal(UUID.randomUUID(), "learner", "Learner", true);
+  private static final List<String> BUNDLE_SCOPES =
+      List.of("learn:sample-course", "grow:another-course");
+
+  private ProtectedContentManifestService policy() throws Exception {
+    var entries = new ArrayList<Map<String, Object>>();
+    for (String tier : List.of("public", "free", "pro")) {
+      byte[] bytes = ("{\"title\":\"" + tier + "\"}").getBytes(StandardCharsets.UTF_8);
+      Files.write(directory.resolve(tier + ".json"), bytes);
+      entries.add(
+          Map.of(
+              "path",
+              "/content/" + tier + ".json",
+              "sha256",
+              HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)),
+              "mediaType",
+              "application/json",
+              "tier",
+              tier,
+              "scopes",
+              List.of("learn:sample-course"),
+              "contentIds",
+              List.of(tier + "-lesson")));
     }
+    return policy(entries);
+  }
+
+  private ProtectedContentManifestService policy(List<Map<String, Object>> entries)
+      throws Exception {
+    Files.writeString(
+        directory.resolve("manifest.json"),
+        mapper.writeValueAsString(
+            Map.of(
+                "schemaVersion",
+                "content-publication/v1",
+                "version",
+                "test-v1",
+                "assets",
+                entries)));
+    return new ProtectedContentManifestService(
+        mapper,
+        directory.resolve("manifest.json").toString(),
+        directory.toString(),
+        new PublicationFileStore());
+  }
+
+  private Map<String, Object> asset(String path, String tier, List<String> contentIds)
+      throws Exception {
+    byte[] bytes = "{\"fixture\":true}".getBytes(StandardCharsets.UTF_8);
+    Path file = directory.resolve(path.substring("/content/".length()));
+    Files.createDirectories(file.getParent());
+    Files.write(file, bytes);
+    return new HashMap<>(
+        Map.of(
+            "path",
+            path,
+            "sha256",
+            HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)),
+            "mediaType",
+            "application/json",
+            "tier",
+            tier,
+            "scopes",
+            BUNDLE_SCOPES,
+            "contentIds",
+            contentIds));
+  }
+
+  private void denied(Runnable call, int status, String code) {
+    assertThatThrownBy(call::run)
+        .isInstanceOfSatisfying(
+            AccountFailure.class,
+            error -> {
+              assertThat(error.status()).isEqualTo(status);
+              assertThat(error.code()).isEqualTo(code);
+            });
+  }
+
+  @Test
+  void publicIsAnonymousButFreeRequiresAnEnabledCurrentAccount() throws Exception {
+    var service = service(policy(), accounts);
+    assertThat(service.read("/content/public.json", null).mediaType())
+        .isEqualTo("application/json");
+    denied(() -> service.read("/content/free.json", null), 401, "AUTHENTICATION_REQUIRED");
+    when(accounts.isEnabled(learner.accountId())).thenReturn(true);
+    assertThat(service.read("/content/free.json", learner).bytes()).isNotEmpty();
+    when(accounts.isEnabled(learner.accountId())).thenReturn(false);
+    denied(() -> service.read("/content/free.json", learner), 401, "AUTHENTICATION_REQUIRED");
+  }
+
+  @Test
+  void courseGrantIsRecheckedOnEveryReadAndCannotUnlockOtherCourses() throws Exception {
+    var service = service(policy(), accounts);
+    when(accounts.isEnabled(learner.accountId())).thenReturn(true);
+    when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("grow:another-course"));
+    denied(() -> service.read("/content/pro.json", learner), 403, "CONTENT_SCOPE_REQUIRED");
+    when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("learn:sample-course"));
+    assertThat(service.read("/content/pro.json", learner).bytes()).isNotEmpty();
+    when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of());
+    denied(() -> service.read("/content/pro.json", learner), 403, "CONTENT_SCOPE_REQUIRED");
+  }
+
+  @Test
+  void cachedCloudBytesDoNotCacheGrantsOrEnabledState() throws Exception {
+    policy();
+    var location =
+        new PublicationLocation(
+            directory.resolve("manifest.json").toString(), directory.toString(), "", true, 1024, 4);
+    var cloudPolicy =
+        new ProtectedContentManifestService(mapper, location, new PublicationFileStore());
+    var service =
+        new ProtectedContentService(
+            cloudPolicy,
+            new ProtectedContentFileStore(cloudPolicy.root(), cloudPolicy.version(), location),
+            accounts);
+    when(accounts.isEnabled(learner.accountId())).thenReturn(true);
+    when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("learn:sample-course"));
+    assertThat(service.read("/content/pro.json", learner).bytes()).isNotEmpty();
+    when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of());
+    denied(() -> service.read("/content/pro.json", learner), 403, "CONTENT_SCOPE_REQUIRED");
+    when(accounts.isEnabled(learner.accountId())).thenReturn(false);
+    denied(() -> service.read("/content/pro.json", learner), 401, "AUTHENTICATION_REQUIRED");
+  }
+
+  /**
+   * DLV-969 (owner, 2026-11-04): a content 503 says why in the log, once per reason a minute, never
+   * a disk path.
+   */
+  @Test
+  void unavailableContentIsExplainedOncePerReason() throws Exception {
+    var policy = policy();
+    var service = service(policy, accounts);
+    try (var log = LogCapture.start()) {
+      Files.writeString(directory.resolve("public.json"), "changed");
+      denied(() -> service.read("/content/public.json", null), 503, "CONTENT_UNAVAILABLE");
+      denied(() -> service.read("/content/public.json", null), 503, "CONTENT_UNAVAILABLE");
+      Files.delete(directory.resolve("public.json"));
+      denied(() -> service.read("/content/public.json", null), 503, "CONTENT_UNAVAILABLE");
+      Files.createSymbolicLink(directory.resolve("public.json"), directory.resolve("free.json"));
+      denied(() -> service.read("/content/public.json", null), 503, "CONTENT_UNAVAILABLE");
+      var stale =
+          new ProtectedContentModels.Asset(
+              "/content/public.json",
+              "0".repeat(64),
+              "application/json",
+              "public",
+              Set.of(),
+              Set.of(),
+              "any");
+      assertThatThrownBy(() -> policy.requirePublished(stale)).isInstanceOf(AccountFailure.class);
+      assertThatThrownBy(() -> policy.requirePublished(stale))
+          .as("the second refusal within the minute writes no second line")
+          .isInstanceOf(AccountFailure.class);
+      assertThat(log.lines("content.read"))
+          .extracting(line -> LogCapture.keys(line).get("reason"))
+          .containsExactly(
+              "ASSET_CHANGED", "ASSET_UNREADABLE", "ASSET_SYMLINK", "ASSET_NOT_PUBLISHED");
+      assertThat(log.lines("content.read").getFirst().getFormattedMessage())
+          .isEqualTo(
+              "Content /content/public.json of release test-v1 answered 503: its bytes differ from"
+                  + " the SHA-256 the manifest published");
+      assertThat(log.lines("content.read").get(1).getFormattedMessage())
+          .startsWith(
+              "Content /content/public.json of release test-v1 answered 503: its file could not be"
+                  + " read from the content release on disk (NoSuchFileException");
+      assertThat(log.lines("content.read").getLast().getFormattedMessage())
+          .isEqualTo(
+              "Content /content/public.json of release test-v1 answered 503: it is not the asset"
+                  + " this release published");
+      assertThat(LogCapture.keys(log.lines("content.read").getLast()))
+          .containsEntry("content.path", "/content/public.json")
+          .containsEntry("release.version", "test-v1");
+      assertThat(log.lines("content.read"))
+          .allSatisfy(line -> assertThat(line.getLevel()).isEqualTo(Level.WARN));
+      log.containsNone(directory.toString());
+    }
+  }
+
+  @Test
+  void excludesUnlistedFilesAndRejectsTraversalAndChangedBytes() throws Exception {
+    var policy = policy();
+    var service = service(policy, accounts);
+    for (String path :
+        List.of(
+            "/content/manifest.json",
+            "/content/../public.json",
+            "/content/%2e%2e/public.json",
+            "/content/public.json/",
+            "/content/public.json%00"))
+      denied(() -> service.read(path, null), 404, "CONTENT_NOT_FOUND");
+    assertThat(policy.freeContentIds()).containsExactlyInAnyOrder("free-lesson", "public-lesson");
+    Files.writeString(directory.resolve("public.json"), "changed");
+    denied(() -> service.read("/content/public.json", null), 503, "CONTENT_UNAVAILABLE");
+  }
+
+  @Test
+  void symlinkReplacementCannotCrossThePublicationBoundary() throws Exception {
+    var service = service(policy(), accounts);
+    Files.delete(directory.resolve("public.json"));
+    Files.createSymbolicLink(directory.resolve("public.json"), directory.resolve("free.json"));
+    denied(() -> service.read("/content/public.json", null), 503, "CONTENT_UNAVAILABLE");
+  }
+
+  @Test
+  void disabledPublicationServesNothingAndPartialConfigurationFailsClosed() {
+    var disabled = new ProtectedContentManifestService(mapper, "", "", new PublicationFileStore());
+    assertThat(disabled.find("/content/public.json")).isEmpty();
+    assertThat(disabled.contentGrants(Set.copyOf(BUNDLE_SCOPES))).isEmpty();
+    denied(
+        () -> service(disabled, accounts).read("/content/study-plans/index.json", learner),
+        404,
+        "CONTENT_NOT_FOUND");
+    verifyNoInteractions(accounts);
+    assertThatThrownBy(() ->
+            new ProtectedContentManifestService(
+                mapper, "", directory.toString(), new PublicationFileStore()))
+        .isInstanceOf(IllegalStateException.class);
+  }
+
+  @Test
+  void allScopesRequireAnEnabledAccountAndCurrentFullGrantsOnEveryRead() throws Exception {
+    String path = "/content/study-plans/templates/sample-template.json";
+    var entry = asset(path, "pro", List.of());
+    entry.put("scopeMatch", "all");
+    var service = service(policy(List.of(entry)), accounts);
+    denied(() -> service.read(path, null), 401, "AUTHENTICATION_REQUIRED");
+    when(accounts.isEnabled(learner.accountId())).thenReturn(true);
+    when(accounts.findTopicGrants(learner.accountId()))
+        .thenReturn(Set.of(BUNDLE_SCOPES.getFirst()));
+    denied(() -> service.read(path, learner), 403, "CONTENT_SCOPE_REQUIRED");
+    when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.copyOf(BUNDLE_SCOPES));
+    assertThat(service.read(path, learner).bytes()).isNotEmpty();
+    when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of(BUNDLE_SCOPES.getLast()));
+    denied(() -> service.read(path, learner), 403, "CONTENT_SCOPE_REQUIRED");
+    when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of());
+    denied(() -> service.read(path, learner), 403, "CONTENT_SCOPE_REQUIRED");
+    when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.copyOf(BUNDLE_SCOPES));
+    when(accounts.isEnabled(learner.accountId())).thenReturn(false);
+    denied(() -> service.read(path, learner), 401, "AUTHENTICATION_REQUIRED");
+  }
+
+  @Test
+  void omittedAndExplicitAnyScopesRetainPartialGrantAccess() throws Exception {
+    for (boolean explicit : List.of(false, true)) {
+      var entry = asset("/content/legacy.json", "pro", List.of("legacy-lesson"));
+      if (explicit) entry.put("scopeMatch", "any");
+      var policy = policy(List.of(entry));
+      assertThat(policy.find("/content/legacy.json").orElseThrow().scopeMatch()).isEqualTo("any");
+      var service = service(policy, accounts);
+      when(accounts.isEnabled(learner.accountId())).thenReturn(true);
+      for (String scope : BUNDLE_SCOPES) {
+        when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of(scope));
+        assertThat(service.read("/content/legacy.json", learner).bytes()).isNotEmpty();
+        assertThat(policy.contentGrants(Set.of(scope))).containsExactly("legacy-lesson");
+      }
+      when(accounts.findTopicGrants(learner.accountId()))
+          .thenReturn(Set.of("look-ahead:unrelated-course"));
+      denied(() -> service.read("/content/legacy.json", learner), 403, "CONTENT_SCOPE_REQUIRED");
+    }
+  }
+
+  @Test
+  void legacyLookAheadScopesAndGrantsAreReadAsBlaze() throws Exception {
+    // DLV-931: a manifest or a stored grant from before the rename keeps working, under blaze IDs
+    // only.
+    var legacy =
+        asset(
+            "/content/blaze/system-design/lesson.json",
+            "pro",
+            List.of("look-ahead:system-design:caching"));
+    legacy.put("scopes", List.of("look-ahead:system-design"));
+    var policy = policy(List.of(legacy));
+    var asset = policy.find("/content/blaze/system-design/lesson.json").orElseThrow();
+    assertThat(asset.scopes()).containsExactly("blaze:system-design");
+    assertThat(asset.contentIds()).containsExactly("blaze:system-design:caching");
+    assertThat(policy.contentGrants(Set.of("blaze:system-design")))
+        .containsExactly("blaze:system-design:caching");
+    assertThat(policy.contentGrants(Set.of("look-ahead:system-design")))
+        .containsExactly("blaze:system-design:caching");
+    var service = service(policy, accounts);
+    when(accounts.isEnabled(learner.accountId())).thenReturn(true);
+    for (String grant : List.of("blaze:system-design", "look-ahead:system-design")) {
+      when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of(grant));
+      assertThat(service.read("/content/blaze/system-design/lesson.json", learner).bytes())
+          .isNotEmpty();
+    }
+    when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("blaze:other-course"));
+    denied(
+        () -> service.read("/content/blaze/system-design/lesson.json", learner),
+        403,
+        "CONTENT_SCOPE_REQUIRED");
+    var invalid = asset("/content/blaze/x.json", "pro", List.of());
+    invalid.put("scopes", List.of("look-ahead"));
+    assertThatThrownBy(() -> policy(List.of(invalid))).isInstanceOf(IllegalStateException.class);
+  }
+
+  @Test
+  void contentGrantsNeverUnlockAllScopeBundleFromOneCourseAndReevaluateRevocation()
+      throws Exception {
+    var all = asset("/content/bundle.json", "pro", List.of("bundle-first", "bundle-second"));
+    all.put("scopeMatch", "all");
+    var any = asset("/content/legacy.json", "pro", List.of("legacy-lesson"));
+    var free = asset("/content/free.json", "free", List.of("free-lesson"));
+    free.put("scopeMatch", "all");
+    var policy = policy(List.of(all, any, free));
+    assertThat(policy.contentGrants(Set.of())).containsExactly("free-lesson");
+    assertThat(policy.contentGrants(Set.of(BUNDLE_SCOPES.getFirst())))
+        .containsExactlyInAnyOrder("free-lesson", "legacy-lesson");
+    assertThat(policy.contentGrants(Set.copyOf(BUNDLE_SCOPES)))
+        .containsExactlyInAnyOrder("free-lesson", "legacy-lesson", "bundle-first", "bundle-second");
+    assertThat(policy.contentGrants(Set.of(BUNDLE_SCOPES.getLast())))
+        .containsExactlyInAnyOrder("free-lesson", "legacy-lesson");
+  }
+
+  @Test
+  void allScopeMatchingDoesNotChangePublicOrFreeAuthentication() throws Exception {
+    var publicEntry = asset("/content/public.json", "public", List.of("public-lesson"));
+    publicEntry.put("scopeMatch", "all");
+    var freeEntry = asset("/content/free.json", "free", List.of("free-lesson"));
+    freeEntry.put("scopeMatch", "all");
+    var service = service(policy(List.of(publicEntry, freeEntry)), accounts);
+    assertThat(service.read("/content/public.json", null).bytes()).isNotEmpty();
+    denied(() -> service.read("/content/free.json", null), 401, "AUTHENTICATION_REQUIRED");
+    when(accounts.isEnabled(learner.accountId())).thenReturn(true);
+    assertThat(service.read("/content/free.json", learner).bytes()).isNotEmpty();
+    verify(accounts, never()).findTopicGrants(any());
+  }
+
+  @Test
+  void invalidScopeMatchingValuesAndTypesFailClosed() throws Exception {
+    for (Object value :
+        Arrays.asList("ALL", "", "some", true, 1, List.of("all"), Map.of("rule", "all"), null)) {
+      var entry = asset("/content/bundle.json", "pro", List.of("bundle-lesson"));
+      entry.put("scopeMatch", value);
+      assertThatThrownBy(() -> policy(List.of(entry)))
+          .isInstanceOf(IllegalStateException.class)
+          .hasRootCauseMessage("Invalid scope matching rule");
+    }
+  }
+
+  @Test
+  void everyStudyPlanNamespaceAssetRejectsCurriculumGrantsRegardlessOfTier() throws Exception {
+    for (String path :
+        List.of(
+            "/content/study-plans/index.json",
+            "/content/study-plans/templates/sample-template.json",
+            "/content/study-plans/other.json")) {
+      for (String tier : List.of("public", "free", "pro")) {
+        var entry = asset(path, tier, List.of("would-unlock-curriculum"));
+        entry.put("scopeMatch", "all");
+        assertThatThrownBy(() -> policy(List.of(entry)))
+            .isInstanceOf(IllegalStateException.class)
+            .hasRootCauseMessage("Study plan assets cannot grant curriculum access");
+      }
+    }
+  }
+
+  @Test
+  void validStudyPlanIndexAndTemplateAssetsCannotAddContentGrants() throws Exception {
+    var index = asset("/content/study-plans/index.json", "free", List.of());
+    var template = asset("/content/study-plans/templates/sample-template.json", "pro", List.of());
+    template.put("scopeMatch", "all");
+    var policy = policy(List.of(index, template));
+    assertThat(policy.freeContentIds()).isEmpty();
+    assertThat(policy.contentGrants(Set.of())).isEmpty();
+    assertThat(policy.contentGrants(Set.copyOf(BUNDLE_SCOPES))).isEmpty();
+  }
+
+  /**
+   * DLV-968: Content publishes owner/staff documents as pro assets scoped staff:documents with no
+   * content IDs.
+   */
+  @Test
+  void staffDocumentsOpenForTheStaffScopeOnlyAndNeverUnlockLessons() throws Exception {
+    var entry = asset("/content/staff/handbook.json", "pro", List.of());
+    entry.put("scopes", List.of("staff:documents"));
+    entry.put("scopeMatch", "any");
+    var policy = policy(List.of(entry));
+    var service = service(policy, accounts);
+    assertThat(policy.find("/content/staff/handbook.json").orElseThrow().scopes())
+        .containsExactly("staff:documents");
+    denied(
+        () -> service.read("/content/staff/handbook.json", null), 401, "AUTHENTICATION_REQUIRED");
+    when(accounts.isEnabled(learner.accountId())).thenReturn(true);
+    when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.copyOf(BUNDLE_SCOPES));
+    denied(
+        () -> service.read("/content/staff/handbook.json", learner), 403, "CONTENT_SCOPE_REQUIRED");
+    when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("staff:documents"));
+    assertThat(service.read("/content/staff/handbook.json", learner).bytes()).isNotEmpty();
+    // The staff scope grants no lesson: no content IDs come from it, and it is no course grant for
+    // other assets.
+    assertThat(policy.contentGrants(Set.of("staff:documents"))).isEmpty();
+    assertThat(policy().contentGrants(Set.of("staff:documents")))
+        .containsExactlyInAnyOrder("free-lesson", "public-lesson");
+    var courses = service(policy(), accounts);
+    when(accounts.findTopicGrants(learner.accountId())).thenReturn(Set.of("staff:documents"));
+    denied(() -> courses.read("/content/pro.json", learner), 403, "CONTENT_SCOPE_REQUIRED");
+  }
+
+  @Test
+  void staffAssetsCannotCarryContentIdsAndUnknownScopePrefixesStayInvalid() throws Exception {
+    var withIds = asset("/content/staff/notes.json", "pro", List.of("staff-lesson"));
+    withIds.put("scopes", List.of("staff:documents"));
+    assertThatThrownBy(() -> policy(List.of(withIds)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasRootCauseMessage("Staff assets cannot grant curriculum access");
+    var mixed = asset("/content/staff/mixed.json", "pro", List.of("mixed-lesson"));
+    mixed.put("scopes", List.of("learn:sample-course", "staff:documents"));
+    assertThatThrownBy(() -> policy(List.of(mixed)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasRootCauseMessage("Staff assets cannot grant curriculum access");
+    var unknown = asset("/content/staff/other.json", "pro", List.of());
+    unknown.put("scopes", List.of("owner:documents"));
+    assertThatThrownBy(() -> policy(List.of(unknown)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasRootCauseMessage("Invalid course scope");
+  }
+
+  @Test
+  void allScopeProAssetsStillRequireNonemptyScopes() throws Exception {
+    var entry = asset("/content/bundle.json", "pro", List.of("bundle-lesson"));
+    entry.put("scopeMatch", "all");
+    entry.put("scopes", List.of());
+    assertThatThrownBy(() -> policy(List.of(entry)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasRootCauseMessage("Invalid course scope");
+  }
+
+  private static ProtectedContentService service(
+      ProtectedContentManifestService policy, AccountGrantService accounts) {
+    return new ProtectedContentService(
+        policy, new ProtectedContentFileStore(policy.root(), policy.version()), accounts);
+  }
 }

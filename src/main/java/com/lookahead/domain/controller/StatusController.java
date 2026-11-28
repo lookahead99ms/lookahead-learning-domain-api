@@ -2,7 +2,6 @@ package com.lookahead.domain.controller;
 
 import com.lookahead.domain.dto.ApiResponse;
 import com.lookahead.domain.dto.ApplicationStatus;
-
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,20 +14,19 @@ import org.springframework.web.bind.annotation.RestController;
 @Tag(name = "Application status")
 public class StatusController {
 
-    private final String applicationName;
-    private final String applicationVersion;
+  private final String applicationName;
+  private final String applicationVersion;
 
-    public StatusController(
-            @Value("${spring.application.name}") String applicationName,
-            @Value("${app.version}") String applicationVersion) {
-        this.applicationName = applicationName;
-        this.applicationVersion = applicationVersion;
-    }
+  public StatusController(
+      @Value("${spring.application.name}") String applicationName,
+      @Value("${app.version}") String applicationVersion) {
+    this.applicationName = applicationName;
+    this.applicationVersion = applicationVersion;
+  }
 
-    @GetMapping
-    @Operation(summary = "Return the current API status")
-    public ApiResponse<ApplicationStatus> status() {
-        return ApiResponse.success(
-                new ApplicationStatus(applicationName, "UP", applicationVersion));
-    }
+  @GetMapping
+  @Operation(summary = "Return the current API status")
+  public ApiResponse<ApplicationStatus> status() {
+    return ApiResponse.success(new ApplicationStatus(applicationName, "UP", applicationVersion));
+  }
 }

@@ -135,6 +135,31 @@ bean selection, invalid configuration rejection, and the real sign-in, review an
 lifecycle behaviour on DynamoDB Local. AWS provider calls remain mocked; coverage and
 local store passes do not certify live Cognito, S3 IAM, DynamoDB IAM or ECS secret injection.
 
+## Code style (DLV-1026)
+
+Every Java file (main and test) follows Google Java Style as google-java-format 2.0.0 writes it
+(2-space indent, 100 columns, its import order, long strings reflowed, Javadoc formatted). The
+pinned `spotless-maven-plugin` runs its `check` goal in `verify`, so `./mvnw verify`, the CI
+coverage build and the Docker image build fail on a mis-formatted file. `SourceLineLengthTest`
+fails on any Java line over 100 columns that the formatter cannot wrap (text-block lines, strings
+without spaces), apart from package and import lines and lines containing a URL.
+
+```sh
+./mvnw spotless:apply        # format every Java file
+./mvnw spotless:check        # what verify runs
+```
+
+The pipeline Python under `.github/pipeline/` follows PEP 8: Ruff formats it (Black-compatible,
+88 columns) and lints it (rule sets E, W, F, I), configured in `ruff.toml`. Ruff is pinned by
+version and hash in `.github/pipeline/shared/requirements-style.txt`; CI runs
+`ruff format --check .` and `ruff check .` before the Maven build.
+
+```sh
+python3 -m venv .venv && .venv/bin/python -m pip install --no-deps --require-hashes \
+  -r .github/pipeline/shared/requirements-style.txt
+.venv/bin/ruff format . && .venv/bin/ruff check .
+```
+
 ## Configuration
 
 | Property | Environment convenience | Purpose |

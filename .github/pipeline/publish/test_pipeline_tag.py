@@ -1,21 +1,22 @@
 """`01 · Full` tag cutting with a fake `gh`; no network."""
+
 from datetime import datetime, timezone
 import json
-import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
 import pipeline_tag as m
-import release_version as versions
 
-SHA, OLD, REPO = 'a' * 40, '9' * 40, 'owner/repo'
+SHA, OLD, REPO = "a" * 40, "9" * 40, "owner/repo"
 NOW = datetime(2026, 10, 27, 14, 30, tzinfo=timezone.utc)
 
 
 class FakeGithub:
-    """Minimal GitHub: tag inventory, ref creation that refuses duplicates, ref read-back."""
+    """Minimal GitHub: tag inventory, ref creation that refuses duplicates, ref
+    read-back."""
+
     def __init__(self, tags=None, main=SHA):
         self.tags = dict(tags or {})
         self.main = main
@@ -24,109 +25,235 @@ class FakeGithub:
 
     def run(self, args, env=None):
         self.calls.append((tuple(args), env))
-        path = args[1] if args[0] == 'api' else ''
-        if path.endswith('/git/matching-refs/tags/v'):
-            return ''.join('refs/tags/%s\t%s\t%s\n' % (tag, kind, sha) for tag, (kind, sha) in self.tags.items())
-        if path.endswith('/git/refs'):
-            ref = next(a for a in args if a.startswith('ref=')).split('=', 1)[1][len('refs/tags/'):]
-            sha = next(a for a in args if a.startswith('sha=')).split('=', 1)[1]
+        path = args[1] if args[0] == "api" else ""
+        if path.endswith("/git/matching-refs/tags/v"):
+            return "".join(
+                "refs/tags/%s\t%s\t%s\n" % (tag, kind, sha)
+                for tag, (kind, sha) in self.tags.items()
+            )
+        if path.endswith("/git/refs"):
+            ref = next(a for a in args if a.startswith("ref=")).split("=", 1)[1][
+                len("refs/tags/") :
+            ]
+            sha = next(a for a in args if a.startswith("sha=")).split("=", 1)[1]
             if ref in self.tags or self.refuseCreate:
-                raise ValueError('GitHub request failed; no tag was recorded')
-            self.tags[ref] = ('commit', sha)
-            return '{}'
-        if '/git/ref/tags/' in path:
-            kind, sha = self.tags[path.rsplit('/', 1)[1]]
-            return json.dumps({'object': {'type': kind, 'sha': sha}})
-        if path.endswith('/commits/main'):
-            return json.dumps({'sha': self.main})
-        if '/compare/' in path:
-            base, head = path.rsplit('/', 1)[1].split('...')
-            return json.dumps({'status': 'identical' if base == head else 'ahead', 'merge_base_commit': {'sha': base}})
-        raise AssertionError('Unexpected request ' + ' '.join(args))
+                raise ValueError("GitHub request failed; no tag was recorded")
+            self.tags[ref] = ("commit", sha)
+            return "{}"
+        if "/git/ref/tags/" in path:
+            kind, sha = self.tags[path.rsplit("/", 1)[1]]
+            return json.dumps({"object": {"type": kind, "sha": sha}})
+        if path.endswith("/commits/main"):
+            return json.dumps({"sha": self.main})
+        if "/compare/" in path:
+            base, head = path.rsplit("/", 1)[1].split("...")
+            return json.dumps(
+                {
+                    "status": "identical" if base == head else "ahead",
+                    "merge_base_commit": {"sha": base},
+                }
+            )
+        raise AssertionError("Unexpected request " + " ".join(args))
 
 
 class CutTests(unittest.TestCase):
     def test_cuts_next_counter_at_run_commit_records_it_and_never_moves_a_tag(self):
-        fake = FakeGithub({'v2026.10.27.14.00': ('commit', OLD), 'v2026.10.27.13.07': ('commit', OLD), 'release-1': ('commit', OLD)})
+        fake = FakeGithub(
+            {
+                "v2026.10.27.14.00": ("commit", OLD),
+                "v2026.10.27.13.07": ("commit", OLD),
+                "release-1": ("commit", OLD),
+            }
+        )
         with tempfile.TemporaryDirectory() as temp:
-            record = Path(temp) / 'release-tag.json'
-            result = m.cut('domain', REPO, SHA, '77', record, fake.run, NOW)
-            self.assertEqual(result['releaseVersion'], 'v2026.10.27.14.01')
-            self.assertEqual((result['sourceSha'], result['workflowSha'], result['runId']), (SHA, SHA, '77'))
-            self.assertNotIn('reused', result)
-            self.assertEqual(result['imageTag'], 'domain-v2026.10.27.14.01')
-            self.assertEqual(fake.tags['v2026.10.27.14.01'], ('commit', SHA))
+            record = Path(temp) / "release-tag.json"
+            result = m.cut("domain", REPO, SHA, "77", record, fake.run, NOW)
+            self.assertEqual(result["releaseVersion"], "v2026.10.27.14.01")
+            self.assertEqual(
+                (result["sourceSha"], result["workflowSha"], result["runId"]),
+                (SHA, SHA, "77"),
+            )
+            self.assertNotIn("reused", result)
+            self.assertEqual(result["imageTag"], "domain-v2026.10.27.14.01")
+            self.assertEqual(fake.tags["v2026.10.27.14.01"], ("commit", SHA))
             self.assertEqual(json.loads(record.read_text()), result)
-            create = next(call for call, _ in fake.calls if '--method' in call)
-            self.assertEqual(create[create.index('--method') + 1], 'POST')
-            self.assertIn('sha=' + SHA, create)
-            with self.assertRaisesRegex(ValueError, 'already exists'):
-                m.cut('domain', REPO, SHA, '78', record, fake.run, NOW)
+            create = next(call for call, _ in fake.calls if "--method" in call)
+            self.assertEqual(create[create.index("--method") + 1], "POST")
+            self.assertIn("sha=" + SHA, create)
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                m.cut("domain", REPO, SHA, "78", record, fake.run, NOW)
 
     def test_cuts_a_new_tag_even_when_earlier_tags_already_name_the_run_commit(self):
-        # Owner decision 2026-11-19: a version is the identity of a run; a dispatch on an unchanged main still gets the next name.
-        fake = FakeGithub({'v2026.10.27.14.00': ('commit', SHA), 'v2026.10.27.14.01': ('commit', SHA),
-                           'v2026.10.27.14.02': ('tag', 'b' * 40), 'v2026.10.27.13.00': ('commit', OLD)})
+        # Owner decision 2026-11-19: a version is the identity of a run; a dispatch on
+        # an unchanged main still gets the next name.
+        fake = FakeGithub(
+            {
+                "v2026.10.27.14.00": ("commit", SHA),
+                "v2026.10.27.14.01": ("commit", SHA),
+                "v2026.10.27.14.02": ("tag", "b" * 40),
+                "v2026.10.27.13.00": ("commit", OLD),
+            }
+        )
         with tempfile.TemporaryDirectory() as temp:
-            result = m.cut('web', REPO, SHA, '5', Path(temp) / 'r.json', fake.run, NOW)
-        self.assertEqual(result['releaseVersion'], 'v2026.10.27.14.03')
-        self.assertNotIn('reused', result)
-        self.assertEqual(fake.tags['v2026.10.27.14.03'], ('commit', SHA))
-        self.assertTrue(any('--method' in call for call, _ in fake.calls))
+            result = m.cut("web", REPO, SHA, "5", Path(temp) / "r.json", fake.run, NOW)
+        self.assertEqual(result["releaseVersion"], "v2026.10.27.14.03")
+        self.assertNotIn("reused", result)
+        self.assertEqual(fake.tags["v2026.10.27.14.03"], ("commit", SHA))
+        self.assertTrue(any("--method" in call for call, _ in fake.calls))
 
-    def test_claimed_name_wrong_target_bad_sha_and_hourly_reset_fail_or_advance_safely(self):
+    def test_claimed_name_wrong_target_bad_sha_and_hourly_reset_fail_or_advance_safely(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as temp:
-            fake = FakeGithub({'v2026.10.27.14.00': ('commit', OLD)}); fake.refuseCreate = True
-            with self.assertRaisesRegex(ValueError, 'could not be created'):
-                m.cut('domain', REPO, SHA, '1', Path(temp) / 'a.json', fake.run, NOW)
+            fake = FakeGithub({"v2026.10.27.14.00": ("commit", OLD)})
+            fake.refuseCreate = True
+            with self.assertRaisesRegex(ValueError, "could not be created"):
+                m.cut("domain", REPO, SHA, "1", Path(temp) / "a.json", fake.run, NOW)
             fake = FakeGithub()
             original = fake.run
+
             def swapped(args, env=None):
                 out = original(args, env)
-                if '/git/ref/tags/' in args[1]: fake.tags[args[1].rsplit('/', 1)[1]] = ('commit', OLD); return original(args, env)
+                if "/git/ref/tags/" in args[1]:
+                    fake.tags[args[1].rsplit("/", 1)[1]] = ("commit", OLD)
+                    return original(args, env)
                 return out
-            with self.assertRaisesRegex(ValueError, 'does not name the run commit'):
-                m.cut('domain', REPO, SHA, '1', Path(temp) / 'b.json', swapped, NOW)
-            with self.assertRaisesRegex(ValueError, 'Exact run commit'):
-                m.cut('domain', REPO, 'main', '1', Path(temp) / 'c.json', FakeGithub().run, NOW)
-            fake = FakeGithub({'v2026.10.27.13.41': ('commit', OLD)})
-            self.assertEqual(m.cut('gateway-bff', REPO, SHA, '1', Path(temp) / 'd.json', fake.run, NOW)['releaseVersion'], 'v2026.10.27.14.00')
 
-    def test_cli_requires_first_attempt_main_run_binds_main_per_event_and_writes_outputs(self):
-        base = {'GITHUB_REPOSITORY': REPO, 'GITHUB_SHA': SHA, 'GITHUB_REF': 'refs/heads/main', 'GITHUB_EVENT_NAME': 'push',
-                'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_RUN_ID': '9'}
+            with self.assertRaisesRegex(ValueError, "does not name the run commit"):
+                m.cut("domain", REPO, SHA, "1", Path(temp) / "b.json", swapped, NOW)
+            with self.assertRaisesRegex(ValueError, "Exact run commit"):
+                m.cut(
+                    "domain",
+                    REPO,
+                    "main",
+                    "1",
+                    Path(temp) / "c.json",
+                    FakeGithub().run,
+                    NOW,
+                )
+            fake = FakeGithub({"v2026.10.27.13.41": ("commit", OLD)})
+            self.assertEqual(
+                m.cut(
+                    "gateway-bff", REPO, SHA, "1", Path(temp) / "d.json", fake.run, NOW
+                )["releaseVersion"],
+                "v2026.10.27.14.00",
+            )
+
+    def test_cli_requires_first_attempt_main_run_binds_main_per_event_writes_outputs(
+        self,
+    ):
+        base = {
+            "GITHUB_REPOSITORY": REPO,
+            "GITHUB_SHA": SHA,
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_NAME": "push",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "9",
+        }
         with tempfile.TemporaryDirectory() as temp:
-            fake = FakeGithub(main='f' * 40)  # main moved on after the merge push: the merge commit is still an ancestor
-            output = Path(temp) / 'out'
-            with patch.object(m, 'gh', fake.run), patch('builtins.print'):
-                result = m.main(['cut', '--app', 'domain', '--record', str(Path(temp) / 'push.json')], {**base, 'GITHUB_OUTPUT': str(output)})
-            self.assertEqual(result['releaseVersion'][:1], 'v')
-            self.assertEqual(output.read_text(), 'release_version=' + result['releaseVersion'] + '\nsource_sha=' + SHA + '\n')
-            with patch.object(m, 'gh', FakeGithub(main='f' * 40).run), self.assertRaisesRegex(ValueError, 'Main moved'):
-                m.main(['cut', '--app', 'domain', '--record', str(Path(temp) / 'dispatch.json')], {**base, 'GITHUB_EVENT_NAME': 'workflow_dispatch'})
-            with patch.object(m, 'gh', FakeGithub().run), patch('builtins.print'):
-                self.assertEqual(m.main(['cut', '--app', 'domain', '--record', str(Path(temp) / 'dispatch.json')], {**base, 'GITHUB_EVENT_NAME': 'workflow_dispatch'})['sourceSha'], SHA)
-            for key, value in [('GITHUB_REF', 'refs/heads/feature'), ('GITHUB_EVENT_NAME', 'pull_request'), ('GITHUB_RUN_ATTEMPT', '2'), ('GITHUB_REPOSITORY', 'bad')]:
-                with self.subTest(key=key), patch.object(m, 'gh', FakeGithub().run), self.assertRaises(ValueError):
-                    m.main(['cut', '--app', 'domain', '--record', str(Path(temp) / 'x.json')], {**base, key: value})
-            with self.assertRaisesRegex(ValueError, '--record'):
-                m.main(['cut', '--app', 'domain'], base)
+            # main moved on after the merge push: the merge commit is still an ancestor
+            fake = FakeGithub(main="f" * 40)
+            output = Path(temp) / "out"
+            with patch.object(m, "gh", fake.run), patch("builtins.print"):
+                result = m.main(
+                    [
+                        "cut",
+                        "--app",
+                        "domain",
+                        "--record",
+                        str(Path(temp) / "push.json"),
+                    ],
+                    {**base, "GITHUB_OUTPUT": str(output)},
+                )
+            self.assertEqual(result["releaseVersion"][:1], "v")
+            self.assertEqual(
+                output.read_text(),
+                "release_version="
+                + result["releaseVersion"]
+                + "\nsource_sha="
+                + SHA
+                + "\n",
+            )
+            with (
+                patch.object(m, "gh", FakeGithub(main="f" * 40).run),
+                self.assertRaisesRegex(ValueError, "Main moved"),
+            ):
+                m.main(
+                    [
+                        "cut",
+                        "--app",
+                        "domain",
+                        "--record",
+                        str(Path(temp) / "dispatch.json"),
+                    ],
+                    {**base, "GITHUB_EVENT_NAME": "workflow_dispatch"},
+                )
+            with patch.object(m, "gh", FakeGithub().run), patch("builtins.print"):
+                self.assertEqual(
+                    m.main(
+                        [
+                            "cut",
+                            "--app",
+                            "domain",
+                            "--record",
+                            str(Path(temp) / "dispatch.json"),
+                        ],
+                        {**base, "GITHUB_EVENT_NAME": "workflow_dispatch"},
+                    )["sourceSha"],
+                    SHA,
+                )
+            for key, value in [
+                ("GITHUB_REF", "refs/heads/feature"),
+                ("GITHUB_EVENT_NAME", "pull_request"),
+                ("GITHUB_RUN_ATTEMPT", "2"),
+                ("GITHUB_REPOSITORY", "bad"),
+            ]:
+                with (
+                    self.subTest(key=key),
+                    patch.object(m, "gh", FakeGithub().run),
+                    self.assertRaises(ValueError),
+                ):
+                    m.main(
+                        [
+                            "cut",
+                            "--app",
+                            "domain",
+                            "--record",
+                            str(Path(temp) / "x.json"),
+                        ],
+                        {**base, key: value},
+                    )
+            with self.assertRaisesRegex(ValueError, "--record"):
+                m.main(["cut", "--app", "domain"], base)
             # A 40-hex SHA is never an input: the CLI has no such option.
             with self.assertRaises(SystemExit):
-                m.main(['cut', '--app', 'domain', '--record', 'r.json', '--sha', SHA], base)
+                m.main(
+                    ["cut", "--app", "domain", "--record", "r.json", "--sha", SHA], base
+                )
 
 
 class DeployRequestTests(unittest.TestCase):
     def test_gh_transport_is_bounded_and_fails_closed(self):
-        with patch.object(m.subprocess, 'run', return_value=Mock(returncode=0, stdout='ok')) as call:
-            self.assertEqual(m.gh(['api', 'x']), 'ok')
-            self.assertEqual(call.call_args.kwargs['timeout'], 60)
-        for result in [Mock(returncode=1, stdout='sensitive'), Mock(returncode=0, stdout='x' * (4 * 1024 * 1024 + 1))]:
-            with patch.object(m.subprocess, 'run', return_value=result), self.assertRaises(ValueError) as error:
-                m.gh(['api', 'x'])
-            self.assertNotIn('sensitive', str(error.exception))
-        self.assertEqual(m.inventory(REPO, lambda args, env=None: 'garbage\nrefs/tags/v1\tcommit\n'), [])
+        with patch.object(
+            m.subprocess, "run", return_value=Mock(returncode=0, stdout="ok")
+        ) as call:
+            self.assertEqual(m.gh(["api", "x"]), "ok")
+            self.assertEqual(call.call_args.kwargs["timeout"], 60)
+        for result in [
+            Mock(returncode=1, stdout="sensitive"),
+            Mock(returncode=0, stdout="x" * (4 * 1024 * 1024 + 1)),
+        ]:
+            with (
+                patch.object(m.subprocess, "run", return_value=result),
+                self.assertRaises(ValueError) as error,
+            ):
+                m.gh(["api", "x"])
+            self.assertNotIn("sensitive", str(error.exception))
+        self.assertEqual(
+            m.inventory(REPO, lambda args, env=None: "garbage\nrefs/tags/v1\tcommit\n"),
+            [],
+        )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

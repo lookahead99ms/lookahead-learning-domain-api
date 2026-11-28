@@ -1,129 +1,187 @@
 package com.lookahead.domain.service.plan;
 
 import com.lookahead.domain.db.store.content.ProtectedContentFileStore;
-import com.lookahead.domain.log.EventLog;
-import com.lookahead.domain.service.content.ProtectedContentManifestService;
 import com.lookahead.domain.exception.AccountFailure;
+import com.lookahead.domain.log.EventLog;
 import com.lookahead.domain.service.access.AccountGrantService;
+import com.lookahead.domain.service.content.ProtectedContentManifestService;
 import com.lookahead.domain.util.CatalogIds;
 import com.lookahead.domain.validator.StudyPlanReadyMadeTemplateValidator;
 import com.lookahead.domain.validator.StudyPlanSnapshotValidator;
-import org.springframework.context.annotation.Profile;
-import org.springframework.stereotype.Service;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
-
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
+import org.springframework.context.annotation.Profile;
+import org.springframework.stereotype.Service;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * Read-only preparation of a ready-made plan adoption. Never a write authorization: the write
- * ({@link StudyPlanReadyMadeWriteService}) repeats this check and enforces the account's reservations before saving.
+ * ({@link StudyPlanReadyMadeWriteService}) repeats this check and enforces the account's
+ * reservations before saving.
  */
 @Service
 @Profile("accounts")
 public final class StudyPlanReadyMadeAdoptionService {
-    public record Coverage(List<String> requiredCourseIds, List<String> coveredCourseIds,
-                           List<String> missingCourseIds, List<String> missingContentIds) {
-        public Coverage {
-            requiredCourseIds = List.copyOf(requiredCourseIds);
-            coveredCourseIds = List.copyOf(coveredCourseIds);
-            missingCourseIds = List.copyOf(missingCourseIds);
-            missingContentIds = List.copyOf(missingContentIds);
-        }
-        public boolean complete() { return missingCourseIds.isEmpty() && missingContentIds.isEmpty(); }
+  public record Coverage(
+      List<String> requiredCourseIds,
+      List<String> coveredCourseIds,
+      List<String> missingCourseIds,
+      List<String> missingContentIds) {
+    public Coverage {
+      requiredCourseIds = List.copyOf(requiredCourseIds);
+      coveredCourseIds = List.copyOf(coveredCourseIds);
+      missingCourseIds = List.copyOf(missingCourseIds);
+      missingContentIds = List.copyOf(missingContentIds);
     }
 
-    /** A prepared draft is owner-bound and is never an entitlement or persisted reservation. */
-    public record Prepared(UUID accountId, String templatePath, String templateSha256,
-                           String publicationVersion, Coverage coverage,
-                           StudyPlanReadyMadeTemplateValidator.Mapping mapping) {}
+    public boolean complete() {
+      return missingCourseIds.isEmpty() && missingContentIds.isEmpty();
+    }
+  }
 
-    private final ProtectedContentManifestService publication;
-    private final ProtectedContentFileStore contentFiles;
-    private final AccountGrantService accounts;
-    private final StudyPlanSnapshotValidator catalog;
-    private final ObjectMapper mapper;
-    private final StudyPlanReadyMadeTemplateValidator templates;
+  /** A prepared draft is owner-bound and is never an entitlement or persisted reservation. */
+  public record Prepared(
+      UUID accountId,
+      String templatePath,
+      String templateSha256,
+      String publicationVersion,
+      Coverage coverage,
+      StudyPlanReadyMadeTemplateValidator.Mapping mapping) {}
 
-    public StudyPlanReadyMadeAdoptionService(ProtectedContentManifestService publication, ProtectedContentFileStore contentFiles, AccountGrantService accounts,
-                                       StudyPlanSnapshotValidator catalog, ObjectMapper mapper) {
-        this.publication = publication;
-        this.contentFiles = contentFiles;
-        this.accounts = accounts;
-        this.catalog = catalog;
-        this.mapper = mapper;
-        this.templates = new StudyPlanReadyMadeTemplateValidator(mapper);
+  private final ProtectedContentManifestService publication;
+  private final ProtectedContentFileStore contentFiles;
+  private final AccountGrantService accounts;
+  private final StudyPlanSnapshotValidator catalog;
+  private final ObjectMapper mapper;
+  private final StudyPlanReadyMadeTemplateValidator templates;
+
+  public StudyPlanReadyMadeAdoptionService(
+      ProtectedContentManifestService publication,
+      ProtectedContentFileStore contentFiles,
+      AccountGrantService accounts,
+      StudyPlanSnapshotValidator catalog,
+      ObjectMapper mapper) {
+    this.publication = publication;
+    this.contentFiles = contentFiles;
+    this.accounts = accounts;
+    this.catalog = catalog;
+    this.mapper = mapper;
+    this.templates = new StudyPlanReadyMadeTemplateValidator(mapper);
+  }
+
+  public Prepared prepare(UUID accountId, String templateId, String expectedSha256) {
+    Objects.requireNonNull(accountId, "An owner is required");
+    if (templateId == null
+        || templateId.length() > 180
+        || !templateId.matches("[a-z0-9-]+-d[0-9]+-h[0-9]+")
+        || expectedSha256 == null
+        || !expectedSha256.matches("[a-f0-9]{64}"))
+      throw new IllegalArgumentException("Supply a bounded template identity and raw SHA-256 pin");
+    if (!accounts.isEnabled(accountId))
+      throw new AccountFailure(401, "AUTHENTICATION_REQUIRED", "Sign in to prepare this plan");
+    String path = "/content/study-plans/templates/" + templateId + ".json";
+    var asset =
+        publication
+            .find(path)
+            .orElseThrow(() -> new AccountFailure(404, "CONTENT_NOT_FOUND", "Template not found"));
+    if (!expectedSha256.equals(asset.sha256()))
+      throw new AccountFailure(
+          409, "TEMPLATE_CHANGED", "The published template changed. Review its current version.");
+    if (!asset.tier().equals("pro")
+        || !asset.scopeMatch().equals("all")
+        || !asset.mediaType().equals("application/json")
+        || !asset.contentIds().isEmpty())
+      throw defect(
+          templateId,
+          "TEMPLATE_ASSET_INVALID",
+          "its manifest entry is not a pro JSON asset that needs all its scopes and grants no"
+              + " content IDs");
+
+    StudyPlanReadyMadeTemplateValidator.Mapping mapping;
+    JsonNode template;
+    try {
+      // The production loader validates actual bytes, path boundaries and symlinks on every
+      // preparation.
+      publication.requirePublished(asset);
+      JsonNode source = mapper.readTree(contentFiles.read(asset));
+      if (!templateId.equals(source.path("templateId").asText()))
+        throw defect(templateId, "TEMPLATE_ID_MISMATCH", "its file names another templateId");
+      // DLV-931: the mapper verifies the published bytes; catalog checks use blaze IDs.
+      template = CatalogIds.normalize(source);
+      catalog.validateTemplateReferences(template);
+      mapping = templates.map(source, asset.sha256());
+      if (!mapping.topicIds().equals(asset.scopes()))
+        throw defect(
+            templateId,
+            "TEMPLATE_SCOPES_MISMATCH",
+            "its topics differ from the scopes its manifest entry grants");
+    } catch (AccountFailure failure) {
+      throw failure;
+    } catch (RuntimeException failure) {
+      // Server-owned catalog defects must not expose source data or appear as a learner payload
+      // failure.
+      // DLV-969 (owner, 2026-11-04): the 503 names the template and the failure's types for the
+      // owner.
+      EventLog.failed(EventLog.EVENT, "plan.template.prepare", "TEMPLATE_UNAVAILABLE")
+          .addKeyValue("template.id", templateId)
+          .addKeyValue("error.type", EventLog.types(failure))
+          .log(
+              "Ready-made template {} of release {} could not be prepared ({}); answered 503",
+              templateId,
+              publication.version(),
+              EventLog.types(failure));
+      throw unavailable();
     }
 
-    public Prepared prepare(UUID accountId, String templateId, String expectedSha256) {
-        Objects.requireNonNull(accountId, "An owner is required");
-        if (templateId == null || templateId.length() > 180 || !templateId.matches("[a-z0-9-]+-d[0-9]+-h[0-9]+")
-                || expectedSha256 == null || !expectedSha256.matches("[a-f0-9]{64}"))
-            throw new IllegalArgumentException("Supply a bounded template identity and raw SHA-256 pin");
-        if (!accounts.isEnabled(accountId))
-            throw new AccountFailure(401, "AUTHENTICATION_REQUIRED", "Sign in to prepare this plan");
-        String path = "/content/study-plans/templates/" + templateId + ".json";
-        var asset = publication.find(path).orElseThrow(() ->
-                new AccountFailure(404, "CONTENT_NOT_FOUND", "Template not found"));
-        if (!expectedSha256.equals(asset.sha256()))
-            throw new AccountFailure(409, "TEMPLATE_CHANGED", "The published template changed. Review its current version.");
-        if (!asset.tier().equals("pro") || !asset.scopeMatch().equals("all")
-                || !asset.mediaType().equals("application/json") || !asset.contentIds().isEmpty())
-            throw defect(templateId, "TEMPLATE_ASSET_INVALID", "its manifest entry is not a pro JSON asset that needs all its scopes and grants no content IDs");
+    // Read current complete-course grants after source verification; no role, claimed access or
+    // future term check.
+    Set<String> grants = accounts.findTopicGrants(accountId);
+    var covered = new TreeSet<>(asset.scopes());
+    covered.retainAll(grants);
+    var missing = new TreeSet<>(asset.scopes());
+    missing.removeAll(grants);
+    var missingContent = new TreeSet<String>();
+    for (var reference : template.path("references"))
+      if (missing.contains(reference.path("topicId").asText()))
+        missingContent.add(reference.path("contentId").asText());
+    Coverage coverage =
+        new Coverage(
+            List.copyOf(new TreeSet<>(asset.scopes())),
+            List.copyOf(covered),
+            List.copyOf(missing),
+            List.copyOf(missingContent));
+    // Exact IDs are bounded by source validation (100 topics / 10,000 references); never silently
+    // truncate.
+    return new Prepared(
+        accountId,
+        path,
+        asset.sha256(),
+        publication.version(),
+        coverage,
+        coverage.complete() ? mapping : null);
+  }
 
-        StudyPlanReadyMadeTemplateValidator.Mapping mapping;
-        JsonNode template;
-        try {
-            // The production loader validates actual bytes, path boundaries and symlinks on every preparation.
-            publication.requirePublished(asset);
-            JsonNode source = mapper.readTree(contentFiles.read(asset));
-            if (!templateId.equals(source.path("templateId").asText())) throw defect(templateId, "TEMPLATE_ID_MISMATCH", "its file names another templateId");
-            // DLV-931: the mapper verifies the published bytes; catalog checks use blaze IDs.
-            template = CatalogIds.normalize(source);
-            catalog.validateTemplateReferences(template);
-            mapping = templates.map(source, asset.sha256());
-            if (!mapping.topicIds().equals(asset.scopes())) throw defect(templateId, "TEMPLATE_SCOPES_MISMATCH", "its topics differ from the scopes its manifest entry grants");
-        } catch (AccountFailure failure) {
-            throw failure;
-        } catch (RuntimeException failure) {
-            // Server-owned catalog defects must not expose source data or appear as a learner payload failure.
-            // DLV-969 (owner, 2026-11-04): the 503 names the template and the failure's types for the owner.
-            EventLog.failed(EventLog.EVENT, "plan.template.prepare", "TEMPLATE_UNAVAILABLE")
-                    .addKeyValue("template.id", templateId).addKeyValue("error.type", EventLog.types(failure))
-                    .log("Ready-made template {} of release {} could not be prepared ({}); answered 503", templateId, publication.version(),
-                            EventLog.types(failure));
-            throw unavailable();
-        }
+  /**
+   * DLV-969 (owner, 2026-11-04): a published template that cannot be used is a release defect; the
+   * 503 says which.
+   */
+  private AccountFailure defect(String templateId, String reason, String words) {
+    EventLog.failed(EventLog.EVENT, "plan.template.prepare", reason)
+        .addKeyValue("template.id", templateId)
+        .log(
+            "Ready-made template {} of release {} cannot be used: {}; answered 503",
+            templateId,
+            publication.version(),
+            words);
+    return unavailable();
+  }
 
-        // Read current complete-course grants after source verification; no role, claimed access or future term check.
-        Set<String> grants = accounts.findTopicGrants(accountId);
-        var covered = new TreeSet<>(asset.scopes());
-        covered.retainAll(grants);
-        var missing = new TreeSet<>(asset.scopes());
-        missing.removeAll(grants);
-        var missingContent = new TreeSet<String>();
-        for (var reference : template.path("references"))
-            if (missing.contains(reference.path("topicId").asText()))
-                missingContent.add(reference.path("contentId").asText());
-        Coverage coverage = new Coverage(List.copyOf(new TreeSet<>(asset.scopes())), List.copyOf(covered),
-                List.copyOf(missing), List.copyOf(missingContent));
-        // Exact IDs are bounded by source validation (100 topics / 10,000 references); never silently truncate.
-        return new Prepared(accountId, path, asset.sha256(), publication.version(), coverage,
-                coverage.complete() ? mapping : null);
-    }
-
-    /** DLV-969 (owner, 2026-11-04): a published template that cannot be used is a release defect; the 503 says which. */
-    private AccountFailure defect(String templateId, String reason, String words) {
-        EventLog.failed(EventLog.EVENT, "plan.template.prepare", reason).addKeyValue("template.id", templateId)
-                .log("Ready-made template {} of release {} cannot be used: {}; answered 503", templateId, publication.version(), words);
-        return unavailable();
-    }
-
-    private static AccountFailure unavailable() {
-        return new AccountFailure(503, "TEMPLATE_UNAVAILABLE", "This template is temporarily unavailable.");
-    }
+  private static AccountFailure unavailable() {
+    return new AccountFailure(
+        503, "TEMPLATE_UNAVAILABLE", "This template is temporarily unavailable.");
+  }
 }

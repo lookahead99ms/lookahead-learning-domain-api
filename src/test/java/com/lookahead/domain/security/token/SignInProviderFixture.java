@@ -8,24 +8,43 @@ import software.amazon.awssdk.services.cognitoidentityprovider.CognitoIdentityPr
 import software.amazon.awssdk.services.cognitoidentityprovider.model.*;
 
 public final class SignInProviderFixture {
-    public final AtomicInteger calls=new AtomicInteger();
-    public Function<GetUserRequest,GetUserResponse> response=request->{throw new IllegalStateException("No fixture");};
-    Runnable changePassword=()->{};
-    Runnable globalSignOut=()->{};
-    public final CognitoIdentityProviderClient client=(CognitoIdentityProviderClient)Proxy.newProxyInstance(CognitoIdentityProviderClient.class.getClassLoader(),new Class<?>[]{CognitoIdentityProviderClient.class},(proxy,method,args)->{
-        if(method.getName().equals("getUser")){
-            calls.incrementAndGet();GetUserRequest request;
-            if(args[0] instanceof GetUserRequest value)request=value;
-            else {var builder=GetUserRequest.builder();((Consumer<GetUserRequest.Builder>)args[0]).accept(builder);request=builder.build();}
-            return response.apply(request);
-        }
-        if(method.getName().equals("changePassword")){changePassword.run();return ChangePasswordResponse.builder().build();}
-        if(method.getName().equals("globalSignOut")){globalSignOut.run();return GlobalSignOutResponse.builder().build();}
-        if(method.getName().equals("close"))return null;
-        if(method.getName().equals("serviceName"))return "cognito-idp";
-        if(method.getName().equals("toString"))return "SignInProviderFixture";
-        if(method.getName().equals("hashCode"))return System.identityHashCode(proxy);
-        if(method.getName().equals("equals"))return proxy==args[0];
-        throw new java.lang.UnsupportedOperationException(method.getName());
-    });
+  public final AtomicInteger calls = new AtomicInteger();
+  public Function<GetUserRequest, GetUserResponse> response =
+      request -> {
+        throw new IllegalStateException("No fixture");
+      };
+  Runnable changePassword = () -> {};
+  Runnable globalSignOut = () -> {};
+  public final CognitoIdentityProviderClient client =
+      (CognitoIdentityProviderClient)
+          Proxy.newProxyInstance(
+              CognitoIdentityProviderClient.class.getClassLoader(),
+              new Class<?>[] {CognitoIdentityProviderClient.class},
+              (proxy, method, args) -> {
+                if (method.getName().equals("getUser")) {
+                  calls.incrementAndGet();
+                  GetUserRequest request;
+                  if (args[0] instanceof GetUserRequest value) request = value;
+                  else {
+                    var builder = GetUserRequest.builder();
+                    ((Consumer<GetUserRequest.Builder>) args[0]).accept(builder);
+                    request = builder.build();
+                  }
+                  return response.apply(request);
+                }
+                if (method.getName().equals("changePassword")) {
+                  changePassword.run();
+                  return ChangePasswordResponse.builder().build();
+                }
+                if (method.getName().equals("globalSignOut")) {
+                  globalSignOut.run();
+                  return GlobalSignOutResponse.builder().build();
+                }
+                if (method.getName().equals("close")) return null;
+                if (method.getName().equals("serviceName")) return "cognito-idp";
+                if (method.getName().equals("toString")) return "SignInProviderFixture";
+                if (method.getName().equals("hashCode")) return System.identityHashCode(proxy);
+                if (method.getName().equals("equals")) return proxy == args[0];
+                throw new java.lang.UnsupportedOperationException(method.getName());
+              });
 }

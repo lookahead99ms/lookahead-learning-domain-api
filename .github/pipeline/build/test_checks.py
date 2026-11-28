@@ -2,26 +2,40 @@ import copy
 from datetime import date
 import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
-import tempfile
 
-spec = importlib.util.spec_from_file_location('security_checks', Path(__file__).with_name('check.py'))
+spec = importlib.util.spec_from_file_location(
+    "security_checks", Path(__file__).with_name("check.py")
+)
 checks = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checks)
+
 
 class SecurityGateTests(unittest.TestCase):
     def fixturePolicy(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
-        source = root / 'SyntheticSecurity.java'
-        source.write_text('synthetic security fixture')
-        policy = {'version': 1, 'exceptions': [{
-            'ruleId': 'java/spring-disabled-csrf-protection', 'file': source.name,
-            'sourceSha256': checks.hashlib.sha256(source.read_bytes()).hexdigest(),
-            'expiresAt': '2026-10-19', 'ticket': 'TEST-1', 'rationale': 'Synthetic fixture only'}]}
-        path = root / 'exceptions.json'
+        source = root / "SyntheticSecurity.java"
+        source.write_text("synthetic security fixture")
+        policy = {
+            "version": 1,
+            "exceptions": [
+                {
+                    "ruleId": "java/spring-disabled-csrf-protection",
+                    "file": source.name,
+                    "sourceSha256": checks.hashlib.sha256(
+                        source.read_bytes()
+                    ).hexdigest(),
+                    "expiresAt": "2026-10-19",
+                    "ticket": "TEST-1",
+                    "rationale": "Synthetic fixture only",
+                }
+            ],
+        }
+        path = root / "exceptions.json"
         path.write_text(checks.json.dumps(policy))
         return path, root
 
@@ -31,435 +45,1294 @@ class SecurityGateTests(unittest.TestCase):
 
     def test_reviewed_cloud_findings_are_bound_and_other_findings_still_block(self):
         exceptions = self.fixtureExceptions()
-        rules = [{'id': rule, 'properties': {'security-severity': '8.8'}}
-                 for rule in sorted({key[0] for key in exceptions})]
-        results = [{'ruleId': rule, 'locations': [{'physicalLocation': {
-            'artifactLocation': {'uri': file}, 'region': {'startLine': 54}}}]}
-            for rule, file in exceptions]
-        document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': rules}},
-            'invocations': [{'executionSuccessful': True}], 'results': results}]}
+        rules = [
+            {"id": rule, "properties": {"security-severity": "8.8"}}
+            for rule in sorted({key[0] for key in exceptions})
+        ]
+        results = [
+            {
+                "ruleId": rule,
+                "locations": [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": {"uri": file},
+                            "region": {"startLine": 54},
+                        }
+                    }
+                ],
+            }
+            for rule, file in exceptions
+        ]
+        document = {
+            "runs": [
+                {
+                    "tool": {"driver": {"name": "CodeQL", "rules": rules}},
+                    "invocations": [{"executionSuccessful": True}],
+                    "results": results,
+                }
+            ]
+        }
         used = set()
-        self.assertEqual(checks.sarif_gate([document], exceptions=exceptions, used=used), 0)
+        self.assertEqual(
+            checks.sarif_gate([document], exceptions=exceptions, used=used), 0
+        )
         checks.require_all_exceptions_used(exceptions, used)
         changed = copy.deepcopy(document)
-        changed['runs'][0]['results'][0]['locations'][0]['physicalLocation']['artifactLocation']['uri'] = 'src/main/java/Unreviewed.java'
+        changed["runs"][0]["results"][0]["locations"][0]["physicalLocation"][
+            "artifactLocation"
+        ]["uri"] = "src/main/java/Unreviewed.java"
         self.assertEqual(checks.sarif_gate([changed], exceptions=exceptions), 1)
 
     def test_retired_account_get_exception_cannot_hide_reappearing_findings(self):
         exceptions = checks.load_sast_exceptions()
-        rule = 'java/csrf-unprotected-request-type'
-        file = 'src/main/java/com/lookahead/domain/controller/AccountController.java'
-        document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': [
-            {'id': rule, 'properties': {'security-severity': '8.8'}},
-            {'id': 'java/comparison-with-wider-type', 'properties': {'security-severity': '8.1'}}]}},
-            'invocations': [{'executionSuccessful': True}], 'results': [
-                {'ruleId': rule, 'locations': [{'physicalLocation': {'artifactLocation': {'uri': file}}}]}]}]}
+        rule = "java/csrf-unprotected-request-type"
+        file = "src/main/java/com/lookahead/domain/controller/AccountController.java"
+        document = {
+            "runs": [
+                {
+                    "tool": {
+                        "driver": {
+                            "name": "CodeQL",
+                            "rules": [
+                                {
+                                    "id": rule,
+                                    "properties": {"security-severity": "8.8"},
+                                },
+                                {
+                                    "id": "java/comparison-with-wider-type",
+                                    "properties": {"security-severity": "8.1"},
+                                },
+                            ],
+                        }
+                    },
+                    "invocations": [{"executionSuccessful": True}],
+                    "results": [
+                        {
+                            "ruleId": rule,
+                            "locations": [
+                                {
+                                    "physicalLocation": {
+                                        "artifactLocation": {"uri": file}
+                                    }
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
         self.assertNotIn((rule, file), exceptions)
         self.assertEqual(1, checks.sarif_gate([document], exceptions=exceptions))
-        document['runs'][0]['results'][0]['ruleId'] = 'java/comparison-with-wider-type'
-        self.assertEqual(1, checks.sarif_gate([document], exceptions=checks.load_sast_exceptions()))
+        document["runs"][0]["results"][0]["ruleId"] = "java/comparison-with-wider-type"
+        self.assertEqual(
+            1, checks.sarif_gate([document], exceptions=checks.load_sast_exceptions())
+        )
 
     def test_unused_exception_reports_metadata_before_failing_closed(self):
         exceptions = self.fixtureExceptions()
-        document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': [
-            {'id': 'fixture', 'properties': {'security-severity': '8'}}]}},
-            'invocations': [{'executionSuccessful': True}], 'results': []}]}
+        document = {
+            "runs": [
+                {
+                    "tool": {
+                        "driver": {
+                            "name": "CodeQL",
+                            "rules": [
+                                {
+                                    "id": "fixture",
+                                    "properties": {"security-severity": "8"},
+                                }
+                            ],
+                        }
+                    },
+                    "invocations": [{"executionSuccessful": True}],
+                    "results": [],
+                }
+            ]
+        }
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            (output / 'codeql').mkdir()
-            (output / 'codeql/java.sarif').write_text(checks.json.dumps(document))
-            with patch.object(checks, 'load_sast_exceptions', return_value=exceptions), patch.object(checks, 'OUT', output), patch.object(checks.sys, 'argv', ['check.py', 'sarif']), patch('builtins.print') as printed:
-                with self.assertRaisesRegex(ValueError, '^SAST exception is stale or was not exercised$'):
+            (output / "codeql").mkdir()
+            (output / "codeql/java.sarif").write_text(checks.json.dumps(document))
+            with (
+                patch.object(checks, "load_sast_exceptions", return_value=exceptions),
+                patch.object(checks, "OUT", output),
+                patch.object(checks.sys, "argv", ["check.py", "sarif"]),
+                patch("builtins.print") as printed,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "^SAST exception is stale or was not exercised$"
+                ):
                     checks.main()
-            summary = checks.json.loads((output / 'sarif-summary.json').read_text())
-            self.assertEqual(0, summary['sastFindingsRequiringAction'])
-            self.assertEqual(len(exceptions), len(summary['unusedSastExceptions']))
+            summary = checks.json.loads((output / "sarif-summary.json").read_text())
+            self.assertEqual(0, summary["sastFindingsRequiringAction"])
+            self.assertEqual(len(exceptions), len(summary["unusedSastExceptions"]))
             self.assertEqual(summary, checks.json.loads(printed.call_args.args[0]))
-            for item in summary['unusedSastExceptions']:
-                self.assertEqual({'ruleId', 'file', 'ticket'}, set(item))
-            self.assertNotIn('rationale', checks.json.dumps(summary))
-            self.assertNotIn('sourceSha256', checks.json.dumps(summary))
+            for item in summary["unusedSastExceptions"]:
+                self.assertEqual({"ruleId", "file", "ticket"}, set(item))
+            self.assertNotIn("rationale", checks.json.dumps(summary))
+            self.assertNotIn("sourceSha256", checks.json.dumps(summary))
 
     def test_retired_bypass_exception_cannot_suppress_a_reappearing_finding(self):
         exceptions = checks.load_sast_exceptions()
         self.assertEqual({}, exceptions)
-        rule = 'java/user-controlled-bypass'
-        document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': [
-            {'id': rule, 'properties': {'security-severity': '7.8'}}]}},
-            'invocations': [{'executionSuccessful': True}], 'results': [
-                {'ruleId': rule, 'locations': [{'physicalLocation': {
-                    'artifactLocation': {'uri': 'src/main/java/com/lookahead/domain/security/config/SignInSecurityConfiguration.java'}}}]}]}]}
+        rule = "java/user-controlled-bypass"
+        document = {
+            "runs": [
+                {
+                    "tool": {
+                        "driver": {
+                            "name": "CodeQL",
+                            "rules": [
+                                {"id": rule, "properties": {"security-severity": "7.8"}}
+                            ],
+                        }
+                    },
+                    "invocations": [{"executionSuccessful": True}],
+                    "results": [
+                        {
+                            "ruleId": rule,
+                            "locations": [
+                                {
+                                    "physicalLocation": {
+                                        "artifactLocation": {
+                                            "uri": (
+                                                "src/main/java/com/lookahead/"
+                                                "domain/security/config/"
+                                                "SignInSecurityConfiguration.java"
+                                            )
+                                        }
+                                    }
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
         findings = []
         self.assertEqual(1, checks.sarif_gate([document], findings, exceptions))
-        self.assertEqual('requires-action', findings[0]['disposition'])
-        self.assertIsNone(findings[0]['ticket'])
+        self.assertEqual("requires-action", findings[0]["disposition"])
+        self.assertIsNone(findings[0]["ticket"])
 
     def test_full_repository_analysis_rejects_incremental_or_invalid_scope(self):
-        run = {'tool': {'driver': {'name': 'CodeQL', 'rules': [{'id': 'fixture'}]}},
-               'results': [], 'invocations': [{'executionSuccessful': True}]}
-        for properties in ({'incrementalMode': 'diff-informed'}, {'incrementalMode': 'overlay'},
-                           {'incrementalMode': 'diff-informed,overlay'}, {'incrementalMode': True}, []):
-            with self.subTest(properties=properties), self.assertRaisesRegex(ValueError, '^SAST full analysis required$'):
-                checks.sarif_gate([{'runs': [{**run, 'properties': properties}]}])
-        self.assertEqual(0, checks.sarif_gate([{'runs': [run]}]))
-        workflow = checks.json.loads((checks.ROOT / '.github/workflows/ci.yml').read_text())
-        self.assertEqual('false', workflow['jobs']['verify']['env']['CODEQL_ACTION_DIFF_INFORMED_QUERIES'])
-        self.assertEqual('false', workflow['jobs']['verify']['env']['CODEQL_ACTION_OVERLAY_ANALYSIS'])
+        run = {
+            "tool": {"driver": {"name": "CodeQL", "rules": [{"id": "fixture"}]}},
+            "results": [],
+            "invocations": [{"executionSuccessful": True}],
+        }
+        for properties in (
+            {"incrementalMode": "diff-informed"},
+            {"incrementalMode": "overlay"},
+            {"incrementalMode": "diff-informed,overlay"},
+            {"incrementalMode": True},
+            [],
+        ):
+            with (
+                self.subTest(properties=properties),
+                self.assertRaisesRegex(ValueError, "^SAST full analysis required$"),
+            ):
+                checks.sarif_gate([{"runs": [{**run, "properties": properties}]}])
+        self.assertEqual(0, checks.sarif_gate([{"runs": [run]}]))
+        workflow = checks.json.loads(
+            (checks.ROOT / ".github/workflows/ci.yml").read_text()
+        )
+        self.assertEqual(
+            "false",
+            workflow["jobs"]["verify"]["env"]["CODEQL_ACTION_DIFF_INFORMED_QUERIES"],
+        )
+        self.assertEqual(
+            "false", workflow["jobs"]["verify"]["env"]["CODEQL_ACTION_OVERLAY_ANALYSIS"]
+        )
 
     def test_public_failure_reason_exposes_only_reviewed_constants(self):
         for reason in checks.SAFE_SAST_FAILURES:
             self.assertIn(reason, checks.failure_message(ValueError(reason)))
-        for error in (ValueError('synthetic-secret'), ValueError('Expired SAST exception synthetic-secret'),
-                      KeyError('synthetic-secret'), OSError('synthetic-secret')):
-            self.assertNotIn('synthetic-secret', checks.failure_message(error))
-            self.assertIn('inspect the step', checks.failure_message(error))
+        for error in (
+            ValueError("synthetic-secret"),
+            ValueError("Expired SAST exception synthetic-secret"),
+            KeyError("synthetic-secret"),
+            OSError("synthetic-secret"),
+        ):
+            self.assertNotIn("synthetic-secret", checks.failure_message(error))
+            self.assertIn("inspect the step", checks.failure_message(error))
 
     def test_notification_rejection_has_safe_distinct_reason(self):
-        run = {'tool': {'driver': {'name': 'CodeQL', 'rules': [{'id': 'fixture'}]}},
-               'results': [], 'invocations': [{'executionSuccessful': True,
-                   'toolExecutionNotifications': [{'level': 'warning', 'message': {'text': 'synthetic-secret'}}]}]}
-        with self.assertRaisesRegex(ValueError, '^SAST notification requires review$'):
-            checks.sarif_gate([{'runs': [run]}])
-        run['invocations'][0]['toolExecutionNotifications'] = 'synthetic-secret'
-        with self.assertRaisesRegex(ValueError, '^SAST notification inventory invalid$'):
-            checks.sarif_gate([{'runs': [run]}])
+        run = {
+            "tool": {"driver": {"name": "CodeQL", "rules": [{"id": "fixture"}]}},
+            "results": [],
+            "invocations": [
+                {
+                    "executionSuccessful": True,
+                    "toolExecutionNotifications": [
+                        {"level": "warning", "message": {"text": "synthetic-secret"}}
+                    ],
+                }
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "^SAST notification requires review$"):
+            checks.sarif_gate([{"runs": [run]}])
+        run["invocations"][0]["toolExecutionNotifications"] = "synthetic-secret"
+        with self.assertRaisesRegex(
+            ValueError, "^SAST notification inventory invalid$"
+        ):
+            checks.sarif_gate([{"runs": [run]}])
 
     def test_reviewed_sources_and_expiry_remain_enforced(self):
         path, root = self.fixturePolicy()
         checks.load_sast_exceptions(path, root, today=date(2026, 10, 19))
-        with self.assertRaisesRegex(ValueError, '^Expired SAST exception$'):
+        with self.assertRaisesRegex(ValueError, "^Expired SAST exception$"):
             checks.load_sast_exceptions(path, root, today=date(2026, 10, 20))
-        (root / 'SyntheticSecurity.java').write_text('changed')
-        with self.assertRaisesRegex(ValueError, '^SAST exception source changed or is missing$'):
+        (root / "SyntheticSecurity.java").write_text("changed")
+        with self.assertRaisesRegex(
+            ValueError, "^SAST exception source changed or is missing$"
+        ):
             checks.load_sast_exceptions(path, root, today=date(2026, 10, 19))
 
     def test_retired_csrf_exceptions_cannot_hide_findings(self):
         exceptions = checks.load_sast_exceptions()
         self.assertEqual({}, exceptions)
-        for source in ('security/config/ApiSecurityConfiguration', 'security/config/SignInSecurityConfiguration',
-                       'security/config/TestAccountSecurityConfiguration', 'security/config/OtherMaintenanceSecurity'):
-            rule = 'java/spring-disabled-csrf-protection'
-            document = {'runs': [{'tool': {'driver': {'name': 'CodeQL', 'rules': [
-                {'id': rule, 'properties': {'security-severity': '8.8'}}]}},
-                'invocations': [{'executionSuccessful': True}], 'results': [{'ruleId': rule,
-                'locations': [{'physicalLocation': {'artifactLocation': {
-                    'uri': 'src/main/java/com/lookahead/domain/' + source + '.java'}}}]}]}]}
+        for source in (
+            "security/config/ApiSecurityConfiguration",
+            "security/config/SignInSecurityConfiguration",
+            "security/config/TestAccountSecurityConfiguration",
+            "security/config/OtherMaintenanceSecurity",
+        ):
+            rule = "java/spring-disabled-csrf-protection"
+            document = {
+                "runs": [
+                    {
+                        "tool": {
+                            "driver": {
+                                "name": "CodeQL",
+                                "rules": [
+                                    {
+                                        "id": rule,
+                                        "properties": {"security-severity": "8.8"},
+                                    }
+                                ],
+                            }
+                        },
+                        "invocations": [{"executionSuccessful": True}],
+                        "results": [
+                            {
+                                "ruleId": rule,
+                                "locations": [
+                                    {
+                                        "physicalLocation": {
+                                            "artifactLocation": {
+                                                "uri": "src/main/java/com/lookahead/"
+                                                "domain/" + source + ".java"
+                                            }
+                                        }
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
             self.assertEqual(1, checks.sarif_gate([document], exceptions=exceptions))
 
     def test_runtime_base_avoids_known_vulnerable_alpine_pin(self):
-        dockerfile = (checks.ROOT / 'Dockerfile').read_text()
-        self.assertEqual('eclipse-temurin:21-jre-noble@sha256:0d57a8e90c2bb844c5a8e1b2b71e11eff06dad7edcfd803cd21ed4ae203b2515', checks.base_images(dockerfile)[1])
-        self.assertIn('USER 10001:10001', dockerfile)
-        self.assertIn('--shell /usr/sbin/nologin', dockerfile)
-        self.assertIn('HEALTHCHECK', dockerfile)
-        self.assertNotIn('apk upgrade', dockerfile)
+        dockerfile = (checks.ROOT / "Dockerfile").read_text()
+        self.assertEqual(
+            "eclipse-temurin:21-jre-noble@sha256:"
+            "0d57a8e90c2bb844c5a8e1b2b71e11eff06dad7edcfd803cd21ed4ae203b2515",
+            checks.base_images(dockerfile)[1],
+        )
+        self.assertIn("USER 10001:10001", dockerfile)
+        self.assertIn("--shell /usr/sbin/nologin", dockerfile)
+        self.assertIn("HEALTHCHECK", dockerfile)
+        self.assertNotIn("apk upgrade", dockerfile)
 
     def test_repository_sast_exception_binding_is_current(self):
         checks.load_sast_exceptions()
 
     def test_trace_notifications_are_informational_but_warnings_still_block(self):
-        run = {'tool': {'driver': {'name': 'CodeQL', 'rules': [{'id': 'fixture'}]}},
-               'results': [], 'invocations': [{'executionSuccessful': True,
-                   'toolExecutionNotifications': [{'level': 'none'}]}]}
-        self.assertEqual(0, checks.sarif_gate([{'runs': [run]}]))
-        run['invocations'][0]['toolExecutionNotifications'][0]['level'] = 'warning'
-        with self.assertRaises(ValueError): checks.sarif_gate([{'runs': [run]}])
+        run = {
+            "tool": {"driver": {"name": "CodeQL", "rules": [{"id": "fixture"}]}},
+            "results": [],
+            "invocations": [
+                {
+                    "executionSuccessful": True,
+                    "toolExecutionNotifications": [{"level": "none"}],
+                }
+            ],
+        }
+        self.assertEqual(0, checks.sarif_gate([{"runs": [run]}]))
+        run["invocations"][0]["toolExecutionNotifications"][0]["level"] = "warning"
+        with self.assertRaises(ValueError):
+            checks.sarif_gate([{"runs": [run]}])
 
     def test_notification_summary_never_includes_messages_or_unknown_ids(self):
-        summary = checks.notification_summary([
-            {'level': 'warning', 'descriptor': {'id': 'java/diagnostics/extraction-warnings'},
-             'message': {'text': 'synthetic-secret'}, 'properties': {'secret': 'synthetic-secret'}},
-            {'level': 'synthetic-secret', 'descriptor': {'id': 'synthetic-secret'}},
-            None])
-        self.assertNotIn('synthetic-secret', str(summary))
-        self.assertEqual('java/diagnostics/extraction-warnings', summary[0]['id'])
-        self.assertEqual('invalid', summary[1]['level'])
+        summary = checks.notification_summary(
+            [
+                {
+                    "level": "warning",
+                    "descriptor": {"id": "java/diagnostics/extraction-warnings"},
+                    "message": {"text": "synthetic-secret"},
+                    "properties": {"secret": "synthetic-secret"},
+                },
+                {"level": "synthetic-secret", "descriptor": {"id": "synthetic-secret"}},
+                None,
+            ]
+        )
+        self.assertNotIn("synthetic-secret", str(summary))
+        self.assertEqual("java/diagnostics/extraction-warnings", summary[0]["id"])
+        self.assertEqual("invalid", summary[1]["level"])
 
     def test_resolved_bom_keeps_distinct_versions_and_deduplicates(self):
-        a={'group':'org.example','name':'fixture','version':'1'}
-        bom=checks.java_bom([a,a,{**a,'version':'2'}])
-        self.assertEqual(2,len(bom['components']))
-        with self.assertRaises(ValueError):checks.java_bom([])
+        a = {"group": "org.example", "name": "fixture", "version": "1"}
+        bom = checks.java_bom([a, a, {**a, "version": "2"}])
+        self.assertEqual(2, len(bom["components"]))
+        with self.assertRaises(ValueError):
+            checks.java_bom([])
 
     def test_sarif_clean_and_high_security_finding(self):
-        run={'invocations':[{'executionSuccessful':True}],'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':'8.1'}}]}},'results':[]}
-        self.assertEqual(0,checks.sarif_gate([{'runs':[run]}]))
-        run['results']=[{'ruleId':'fixture'}]
-        self.assertEqual(1,checks.sarif_gate([{'runs':[run]}]))
+        run = {
+            "invocations": [{"executionSuccessful": True}],
+            "tool": {
+                "driver": {
+                    "name": "CodeQL",
+                    "rules": [
+                        {"id": "fixture", "properties": {"security-severity": "8.1"}}
+                    ],
+                }
+            },
+            "results": [],
+        }
+        self.assertEqual(0, checks.sarif_gate([{"runs": [run]}]))
+        run["results"] = [{"ruleId": "fixture"}]
+        self.assertEqual(1, checks.sarif_gate([{"runs": [run]}]))
 
     def test_sarif_missing_or_failed_analysis_is_not_clean(self):
-        with self.assertRaises(ValueError):checks.sarif_gate([])
-        run={'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture'}]}},'invocations':[{'executionSuccessful':False}]}
-        with self.assertRaises(ValueError):checks.sarif_gate([{'runs':[run]}])
-        run['invocations']=[{'executionSuccessful':True}];run['results']=[{'ruleId':'unrecognized'}]
-        with self.assertRaises(ValueError):checks.sarif_gate([{'runs':[run]}])
+        with self.assertRaises(ValueError):
+            checks.sarif_gate([])
+        run = {
+            "tool": {"driver": {"name": "CodeQL", "rules": [{"id": "fixture"}]}},
+            "invocations": [{"executionSuccessful": False}],
+        }
+        with self.assertRaises(ValueError):
+            checks.sarif_gate([{"runs": [run]}])
+        run["invocations"] = [{"executionSuccessful": True}]
+        run["results"] = [{"ruleId": "unrecognized"}]
+        with self.assertRaises(ValueError):
+            checks.sarif_gate([{"runs": [run]}])
 
     def test_sarif_requires_success_and_rejects_incomplete_analysis_notifications(self):
-        clean={'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture'}]}},'results':[]}
-        for invocations in (None, [], [{}], [{'executionSuccessful':False}], [{'executionSuccessful':'true'}], [None]):
-            run={**clean,'invocations':invocations}
+        clean = {
+            "tool": {"driver": {"name": "CodeQL", "rules": [{"id": "fixture"}]}},
+            "results": [],
+        }
+        for invocations in (
+            None,
+            [],
+            [{}],
+            [{"executionSuccessful": False}],
+            [{"executionSuccessful": "true"}],
+            [None],
+        ):
+            run = {**clean, "invocations": invocations}
             with self.subTest(invocations=invocations), self.assertRaises(ValueError):
-                checks.sarif_gate([{'runs':[run]}])
-        with self.assertRaises(ValueError): checks.sarif_gate([{'runs':[clean]}])
-        for field in ('toolExecutionNotifications','toolConfigurationNotifications'):
-            for notification in ({'level':'error'},{'level':'warning'},{},{'level':'invalid'},None):
-                run={**clean,'invocations':[{'executionSuccessful':True,field:[notification]}]}
-                with self.subTest(field=field,notification=notification), self.assertRaises(ValueError):
-                    checks.sarif_gate([{'runs':[run]}])
-            run={**clean,'invocations':[{'executionSuccessful':True,field:[{'level':'note'}]}]}
-            self.assertEqual(0,checks.sarif_gate([{'runs':[run]}]))
-            run['invocations'].append({'executionSuccessful':False})
-            with self.assertRaises(ValueError): checks.sarif_gate([{'runs':[run]}])
+                checks.sarif_gate([{"runs": [run]}])
+        with self.assertRaises(ValueError):
+            checks.sarif_gate([{"runs": [clean]}])
+        for field in ("toolExecutionNotifications", "toolConfigurationNotifications"):
+            for notification in (
+                {"level": "error"},
+                {"level": "warning"},
+                {},
+                {"level": "invalid"},
+                None,
+            ):
+                run = {
+                    **clean,
+                    "invocations": [
+                        {"executionSuccessful": True, field: [notification]}
+                    ],
+                }
+                with (
+                    self.subTest(field=field, notification=notification),
+                    self.assertRaises(ValueError),
+                ):
+                    checks.sarif_gate([{"runs": [run]}])
+            run = {
+                **clean,
+                "invocations": [
+                    {"executionSuccessful": True, field: [{"level": "note"}]}
+                ],
+            }
+            self.assertEqual(0, checks.sarif_gate([{"runs": [run]}]))
+            run["invocations"].append({"executionSuccessful": False})
+            with self.assertRaises(ValueError):
+                checks.sarif_gate([{"runs": [run]}])
 
     def test_image_needs_os_and_package_coverage(self):
-        report={'Metadata':{'OS':{'Family':'ubuntu'}},'Results':[{'Class':'os-pkgs','Packages':[{'Name':'fixture','Version':'1'}]}]}
-        self.assertFalse(any(checks.trivy_gate(report,'image').values()))
-        for bad in [{}, {'Results':[]}, {'Results':[{'Packages':[{}]}]}, {'Metadata':{'OS':{'Family':'ubuntu','EOSL':True}},'Results':[{'Packages':[{}]}]}]:
-            with self.assertRaises(ValueError):checks.trivy_gate(bad,'image')
+        report = {
+            "Metadata": {"OS": {"Family": "ubuntu"}},
+            "Results": [
+                {"Class": "os-pkgs", "Packages": [{"Name": "fixture", "Version": "1"}]}
+            ],
+        }
+        self.assertFalse(any(checks.trivy_gate(report, "image").values()))
+        for bad in [
+            {},
+            {"Results": []},
+            {"Results": [{"Packages": [{}]}]},
+            {
+                "Metadata": {"OS": {"Family": "ubuntu", "EOSL": True}},
+                "Results": [{"Packages": [{}]}],
+            },
+        ]:
+            with self.assertRaises(ValueError):
+                checks.trivy_gate(bad, "image")
 
     def test_vulnerability_gate_keeps_unfixed_high_findings(self):
-        report={'Results':[{'Class':'lang-pkgs','Type':'jar','Packages':[{'Name':'fixture','Version':'1'}],'Vulnerabilities':[{'Severity':'HIGH','FixedVersion':''},{'Severity':'LOW'}]}]}
-        self.assertEqual(1,checks.trivy_gate(report,'sbom')['vulnerabilities'])
+        report = {
+            "Results": [
+                {
+                    "Class": "lang-pkgs",
+                    "Type": "jar",
+                    "Packages": [{"Name": "fixture", "Version": "1"}],
+                    "Vulnerabilities": [
+                        {"Severity": "HIGH", "FixedVersion": ""},
+                        {"Severity": "LOW"},
+                    ],
+                }
+            ]
+        }
+        self.assertEqual(1, checks.trivy_gate(report, "sbom")["vulnerabilities"])
 
     def test_secret_always_fails_even_low_severity(self):
-        report={'Results':[{'Class':'config','Target':'Dockerfile','MisconfSummary':{'Successes':1},'Secrets':[{'Severity':'LOW','Match':'synthetic'}]}]}
-        counts=checks.trivy_gate(report,'config')
-        self.assertEqual(1,counts['secrets'])
-        self.assertNotIn('synthetic',str(counts))
+        report = {
+            "Results": [
+                {
+                    "Class": "config",
+                    "Target": "Dockerfile",
+                    "MisconfSummary": {"Successes": 1},
+                    "Secrets": [{"Severity": "LOW", "Match": "synthetic"}],
+                }
+            ]
+        }
+        counts = checks.trivy_gate(report, "config")
+        self.assertEqual(1, counts["secrets"])
+        self.assertNotIn("synthetic", str(counts))
 
     def test_config_coverage_and_high_misconfiguration(self):
-        with self.assertRaises(ValueError):checks.trivy_gate({'Results':[]},'config')
-        counts=checks.trivy_gate({'Results':[{'Class':'config','Target':'Dockerfile','MisconfSummary':{'Failures':1},'Misconfigurations':[{'Severity':'CRITICAL'}]}]},'config')
-        self.assertEqual(1,counts['misconfigurations'])
+        with self.assertRaises(ValueError):
+            checks.trivy_gate({"Results": []}, "config")
+        counts = checks.trivy_gate(
+            {
+                "Results": [
+                    {
+                        "Class": "config",
+                        "Target": "Dockerfile",
+                        "MisconfSummary": {"Failures": 1},
+                        "Misconfigurations": [{"Severity": "CRITICAL"}],
+                    }
+                ]
+            },
+            "config",
+        )
+        self.assertEqual(1, counts["misconfigurations"])
 
     def test_sarif_nonfinite_severity_fails(self):
-        for value in ('NaN', 'Infinity', '-1', '11'):
-            run={'invocations':[{'executionSuccessful':True}],'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':value}}]}},'results':[{'ruleId':'fixture'}]}
-            with self.assertRaises(ValueError): checks.sarif_gate([{'runs':[run]}])
+        for value in ("NaN", "Infinity", "-1", "11"):
+            run = {
+                "invocations": [{"executionSuccessful": True}],
+                "tool": {
+                    "driver": {
+                        "name": "CodeQL",
+                        "rules": [
+                            {
+                                "id": "fixture",
+                                "properties": {"security-severity": value},
+                            }
+                        ],
+                    }
+                },
+                "results": [{"ruleId": "fixture"}],
+            }
+            with self.assertRaises(ValueError):
+                checks.sarif_gate([{"runs": [run]}])
 
     def test_application_image_needs_java_and_os(self):
-        os_result={'Class':'os-pkgs','Packages':[{'Name':'libc','Version':'1'}]}
-        java_result={'Class':'lang-pkgs','Type':'jar','Packages':[{'Name':'spring-core','Version':'1'}]}
+        os_result = {"Class": "os-pkgs", "Packages": [{"Name": "libc", "Version": "1"}]}
+        java_result = {
+            "Class": "lang-pkgs",
+            "Type": "jar",
+            "Packages": [{"Name": "spring-core", "Version": "1"}],
+        }
         for results in ([os_result], [java_result]):
-            with self.assertRaises(ValueError):checks.trivy_gate({'Metadata':{'OS':{'Family':'ubuntu'}},'Results':results},'image',True)
-        self.assertFalse(any(checks.trivy_gate({'Metadata':{'OS':{'Family':'ubuntu'}},'Results':[os_result,java_result]},'image',True).values()))
+            with self.assertRaises(ValueError):
+                checks.trivy_gate(
+                    {"Metadata": {"OS": {"Family": "ubuntu"}}, "Results": results},
+                    "image",
+                    True,
+                )
+        self.assertFalse(
+            any(
+                checks.trivy_gate(
+                    {
+                        "Metadata": {"OS": {"Family": "ubuntu"}},
+                        "Results": [os_result, java_result],
+                    },
+                    "image",
+                    True,
+                ).values()
+            )
+        )
 
     def test_grouped_sarif_rules_are_resolved(self):
-        run={'invocations':[{'executionSuccessful':True}],'tool':{'driver':{'name':'CodeQL'},'extensions':[{'rules':[{'id':'fixture','properties':{'security-severity':'8'}}]}]},'results':[{'rule':{'id':'fixture'}}]}
-        self.assertEqual(1,checks.sarif_gate([{'runs':[run]}]))
+        run = {
+            "invocations": [{"executionSuccessful": True}],
+            "tool": {
+                "driver": {"name": "CodeQL"},
+                "extensions": [
+                    {
+                        "rules": [
+                            {"id": "fixture", "properties": {"security-severity": "8"}}
+                        ]
+                    }
+                ],
+            },
+            "results": [{"rule": {"id": "fixture"}}],
+        }
+        self.assertEqual(1, checks.sarif_gate([{"runs": [run]}]))
 
     def test_sast_exception_is_exact_expiring_and_hash_bound(self):
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory); source=root/'src/Security.java'; source.parent.mkdir(); source.write_text('fixture')
-            policy=root/'exceptions.json'
-            item={'ruleId':'fixture','file':'src/Security.java','sourceSha256':checks.hashlib.sha256(source.read_bytes()).hexdigest(),
-                  'expiresAt':'2026-10-19','ticket':'DLV-804','rationale':'Reviewed synthetic fixture.'}
-            policy.write_text(checks.json.dumps({'version':1,'exceptions':[item]}))
-            exceptions=checks.load_sast_exceptions(policy,root,date(2026,9,19))
-            run={'invocations':[{'executionSuccessful':True}],'tool':{'driver':{'name':'CodeQL','rules':[{'id':'fixture','properties':{'security-severity':'8'}}]}},
-                 'results':[{'ruleId':'fixture','locations':[{'physicalLocation':{'artifactLocation':{'uri':'src/Security.java'},'region':{'startLine':7}}}]}]}
-            details=[]; used=set()
-            self.assertEqual(0,checks.sarif_gate([{'runs':[run]}],details,exceptions,used))
-            self.assertEqual('reviewed-exception',details[0]['disposition'])
-            checks.require_all_exceptions_used(exceptions,used)
-            source.write_text('changed')
-            with self.assertRaises(ValueError):checks.load_sast_exceptions(policy,root,date(2026,9,19))
-            source.write_text('fixture'); item['expiresAt']='2026-09-18'; policy.write_text(checks.json.dumps({'version':1,'exceptions':[item]}))
-            with self.assertRaises(ValueError):checks.load_sast_exceptions(policy,root,date(2026,9,19))
+            root = Path(directory)
+            source = root / "src/Security.java"
+            source.parent.mkdir()
+            source.write_text("fixture")
+            policy = root / "exceptions.json"
+            item = {
+                "ruleId": "fixture",
+                "file": "src/Security.java",
+                "sourceSha256": checks.hashlib.sha256(source.read_bytes()).hexdigest(),
+                "expiresAt": "2026-10-19",
+                "ticket": "DLV-804",
+                "rationale": "Reviewed synthetic fixture.",
+            }
+            policy.write_text(checks.json.dumps({"version": 1, "exceptions": [item]}))
+            exceptions = checks.load_sast_exceptions(policy, root, date(2026, 9, 19))
+            run = {
+                "invocations": [{"executionSuccessful": True}],
+                "tool": {
+                    "driver": {
+                        "name": "CodeQL",
+                        "rules": [
+                            {"id": "fixture", "properties": {"security-severity": "8"}}
+                        ],
+                    }
+                },
+                "results": [
+                    {
+                        "ruleId": "fixture",
+                        "locations": [
+                            {
+                                "physicalLocation": {
+                                    "artifactLocation": {"uri": "src/Security.java"},
+                                    "region": {"startLine": 7},
+                                }
+                            }
+                        ],
+                    }
+                ],
+            }
+            details = []
+            used = set()
+            self.assertEqual(
+                0, checks.sarif_gate([{"runs": [run]}], details, exceptions, used)
+            )
+            self.assertEqual("reviewed-exception", details[0]["disposition"])
+            checks.require_all_exceptions_used(exceptions, used)
+            source.write_text("changed")
+            with self.assertRaises(ValueError):
+                checks.load_sast_exceptions(policy, root, date(2026, 9, 19))
+            source.write_text("fixture")
+            item["expiresAt"] = "2026-09-18"
+            policy.write_text(checks.json.dumps({"version": 1, "exceptions": [item]}))
+            with self.assertRaises(ValueError):
+                checks.load_sast_exceptions(policy, root, date(2026, 9, 19))
 
     def test_source_scan_disables_external_scanner_overrides(self):
-        report={'Results':[{'Class':'config','Target':'Dockerfile','MisconfSummary':{'Successes':1}}]}
-        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run') as execute, patch.object(checks,'read',return_value=report), patch.object(checks,'load_misconfiguration_exceptions',return_value={}), patch.dict(checks.os.environ,{'TRIVY_IGNORE_UNFIXED':'true','TRIVY_CONFIG':'untrusted.yml'}):
-            checks.scan('config')
-            command=execute.call_args.args[0]
-            self.assertIn('--ignorefile',command)
-            self.assertIn('--config',command)
-            self.assertFalse(any(k.startswith('TRIVY_') for k in execute.call_args.kwargs['env']))
+        report = {
+            "Results": [
+                {
+                    "Class": "config",
+                    "Target": "Dockerfile",
+                    "MisconfSummary": {"Successes": 1},
+                }
+            ]
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(checks, "OUT", Path(directory)),
+            patch.object(checks, "run") as execute,
+            patch.object(checks, "read", return_value=report),
+            patch.object(checks, "load_misconfiguration_exceptions", return_value={}),
+            patch.dict(
+                checks.os.environ,
+                {"TRIVY_IGNORE_UNFIXED": "true", "TRIVY_CONFIG": "untrusted.yml"},
+            ),
+        ):
+            checks.scan("config")
+            command = execute.call_args.args[0]
+            self.assertIn("--ignorefile", command)
+            self.assertIn("--config", command)
+            self.assertFalse(
+                any(k.startswith("TRIVY_") for k in execute.call_args.kwargs["env"])
+            )
 
     def test_history_disables_inline_and_repository_suppressions(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run') as execute, patch.object(checks.subprocess,'check_output',return_value='false'), patch.dict(checks.os.environ,{'GITLEAKS_CONFIG':'untrusted.toml'}):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(checks, "OUT", Path(directory)),
+            patch.object(checks, "run") as execute,
+            patch.object(checks.subprocess, "check_output", return_value="false"),
+            patch.dict(checks.os.environ, {"GITLEAKS_CONFIG": "untrusted.toml"}),
+        ):
             checks.history()
-            command=execute.call_args.args[0]
-            self.assertIn('--ignore-gitleaks-allow',command)
-            self.assertIn('--gitleaks-ignore-path',command)
-            self.assertFalse(any(k.startswith('GITLEAKS_') for k in execute.call_args.kwargs['env']))
+            command = execute.call_args.args[0]
+            self.assertIn("--ignore-gitleaks-allow", command)
+            self.assertIn("--gitleaks-ignore-path", command)
+            self.assertFalse(
+                any(k.startswith("GITLEAKS_") for k in execute.call_args.kwargs["env"])
+            )
 
     def test_both_base_stages_must_be_pinned(self):
-        valid='FROM eclipse-temurin:21-jdk@sha256:'+64*'a'+' AS build\nFROM eclipse-temurin:21-jre@sha256:'+64*'b'+' AS runtime'
-        self.assertEqual(2,len(checks.base_images(valid)))
-        self.assertEqual(2,len(checks.base_images(valid.replace("21-jdk@", "21-jdk-noble@").replace("21-jre@", "21-jre-noble@"))))
-        self.assertEqual(2,len(checks.base_images(valid.replace("21-jdk@", "21-jdk-noble@").replace("21-jre@", "21-jre-alpine@"))))
-        for bad in [valid.replace("21-jdk@", "21-jdk-unknown@"), valid.replace("21-jdk@", "21-jdk-alpine@"), valid.replace("21-jre@", "21-jre-unknown@"), "\n".join(reversed(valid.splitlines()))]:
-            with self.assertRaises(ValueError):checks.base_images(bad)
-        for bad in ['FROM eclipse-temurin:21-jre', valid.splitlines()[0], valid.replace('21-jdk@sha256:'+64*'a','21-jdk'), valid.replace('21-jre@sha256:'+64*'b','21-jre-alpine'), valid.replace('eclipse-temurin:21-jre@','untrusted/java:21-jre@')]:
-            with self.assertRaises(ValueError):checks.base_images(bad)
+        valid = (
+            "FROM eclipse-temurin:21-jdk@sha256:"
+            + 64 * "a"
+            + " AS build\nFROM eclipse-temurin:21-jre@sha256:"
+            + 64 * "b"
+            + " AS runtime"
+        )
+        self.assertEqual(2, len(checks.base_images(valid)))
+        self.assertEqual(
+            2,
+            len(
+                checks.base_images(
+                    valid.replace("21-jdk@", "21-jdk-noble@").replace(
+                        "21-jre@", "21-jre-noble@"
+                    )
+                )
+            ),
+        )
+        self.assertEqual(
+            2,
+            len(
+                checks.base_images(
+                    valid.replace("21-jdk@", "21-jdk-noble@").replace(
+                        "21-jre@", "21-jre-alpine@"
+                    )
+                )
+            ),
+        )
+        for bad in [
+            valid.replace("21-jdk@", "21-jdk-unknown@"),
+            valid.replace("21-jdk@", "21-jdk-alpine@"),
+            valid.replace("21-jre@", "21-jre-unknown@"),
+            "\n".join(reversed(valid.splitlines())),
+        ]:
+            with self.assertRaises(ValueError):
+                checks.base_images(bad)
+        for bad in [
+            "FROM eclipse-temurin:21-jre",
+            valid.splitlines()[0],
+            valid.replace("21-jdk@sha256:" + 64 * "a", "21-jdk"),
+            valid.replace("21-jre@sha256:" + 64 * "b", "21-jre-alpine"),
+            valid.replace("eclipse-temurin:21-jre@", "untrusted/java:21-jre@"),
+        ]:
+            with self.assertRaises(ValueError):
+                checks.base_images(bad)
 
-
-    def test_vulnerability_exceptions_are_reviewed_expiring_and_written_to_the_ignore_file(self):
-        # Owner decision 2026-10-29: an advisory in a pinned base image may be carried for a bounded time; nothing else is ignored.
+    def test_vulnerability_exceptions_are_reviewed_expiring_and_in_the_ignore_file(
+        self,
+    ):
+        # Owner decision 2026-10-29: an advisory in a pinned base image may be carried
+        # for a bounded time; nothing else is ignored.
         with tempfile.TemporaryDirectory() as directory:
-            policy=Path(directory)/'vulnerability-exceptions.json'
-            item={'vulnerabilityId':'CVE-2026-111497','package':'libbrotli1','expiresAt':'2026-11-05','ticket':'DLV-914','rationale':'Reviewed synthetic fixture.'}
-            policy.write_text(checks.json.dumps({'version':1,'exceptions':[item]}))
-            self.assertEqual(['CVE-2026-111497'],list(checks.load_vulnerability_exceptions(policy,date(2026,11,5))))
-            with self.assertRaisesRegex(ValueError,'Expired'):checks.load_vulnerability_exceptions(policy,date(2026,11,6))
-            for bad in [dict(item,vulnerabilityId='not-an-id'),dict(item,expiresAt='soon'),{k:v for k,v in item.items() if k!='rationale'}]:
-                policy.write_text(checks.json.dumps({'version':1,'exceptions':[bad]}))
-                with self.assertRaises(ValueError):checks.load_vulnerability_exceptions(policy,date(2026,11,1))
-            policy.write_text(checks.json.dumps({'version':1,'exceptions':[item,item]}))
-            with self.assertRaisesRegex(ValueError,'Duplicate'):checks.load_vulnerability_exceptions(policy,date(2026,11,1))
-            self.assertEqual({},checks.load_vulnerability_exceptions(Path(directory)/'missing.json',date(2026,11,1)))
-        image={'Metadata':{'OS':{'Family':'ubuntu'}},'Results':[{'Class':'os-pkgs','Packages':[{'Name':'fixture','Version':'1'}]}]}
-        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run'), patch.object(checks,'read',return_value=image), patch.object(checks,'load_vulnerability_exceptions',return_value={'CVE-2026-111497':{'expiresAt':'2026-11-05'}}):
-            checks.scan('image','fixture:1')
-            self.assertEqual('CVE-2026-111497 exp:2026-11-05\n',(Path(directory)/'scanner-config'/'ignore').read_text())
-        config={'Results':[{'Class':'config','Target':'Dockerfile','MisconfSummary':{'Successes':1}}]}
-        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run'), patch.object(checks,'read',return_value=config), patch.object(checks,'load_vulnerability_exceptions',side_effect=AssertionError('source scans must not read the policy')), patch.object(checks,'load_misconfiguration_exceptions',return_value={}):
-            checks.scan('config')
-            self.assertEqual('',(Path(directory)/'scanner-config'/'ignore').read_text())
+            policy = Path(directory) / "vulnerability-exceptions.json"
+            item = {
+                "vulnerabilityId": "CVE-2026-111497",
+                "package": "libbrotli1",
+                "expiresAt": "2026-11-05",
+                "ticket": "DLV-914",
+                "rationale": "Reviewed synthetic fixture.",
+            }
+            policy.write_text(checks.json.dumps({"version": 1, "exceptions": [item]}))
+            self.assertEqual(
+                ["CVE-2026-111497"],
+                list(checks.load_vulnerability_exceptions(policy, date(2026, 11, 5))),
+            )
+            with self.assertRaisesRegex(ValueError, "Expired"):
+                checks.load_vulnerability_exceptions(policy, date(2026, 11, 6))
+            for bad in [
+                dict(item, vulnerabilityId="not-an-id"),
+                dict(item, expiresAt="soon"),
+                {k: v for k, v in item.items() if k != "rationale"},
+            ]:
+                policy.write_text(
+                    checks.json.dumps({"version": 1, "exceptions": [bad]})
+                )
+                with self.assertRaises(ValueError):
+                    checks.load_vulnerability_exceptions(policy, date(2026, 11, 1))
+            policy.write_text(
+                checks.json.dumps({"version": 1, "exceptions": [item, item]})
+            )
+            with self.assertRaisesRegex(ValueError, "Duplicate"):
+                checks.load_vulnerability_exceptions(policy, date(2026, 11, 1))
+            self.assertEqual(
+                {},
+                checks.load_vulnerability_exceptions(
+                    Path(directory) / "missing.json", date(2026, 11, 1)
+                ),
+            )
+        image = {
+            "Metadata": {"OS": {"Family": "ubuntu"}},
+            "Results": [
+                {"Class": "os-pkgs", "Packages": [{"Name": "fixture", "Version": "1"}]}
+            ],
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(checks, "OUT", Path(directory)),
+            patch.object(checks, "run"),
+            patch.object(checks, "read", return_value=image),
+            patch.object(
+                checks,
+                "load_vulnerability_exceptions",
+                return_value={"CVE-2026-111497": {"expiresAt": "2026-11-05"}},
+            ),
+        ):
+            checks.scan("image", "fixture:1")
+            self.assertEqual(
+                "CVE-2026-111497 exp:2026-11-05\n",
+                (Path(directory) / "scanner-config" / "ignore").read_text(),
+            )
+        config = {
+            "Results": [
+                {
+                    "Class": "config",
+                    "Target": "Dockerfile",
+                    "MisconfSummary": {"Successes": 1},
+                }
+            ]
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(checks, "OUT", Path(directory)),
+            patch.object(checks, "run"),
+            patch.object(checks, "read", return_value=config),
+            patch.object(
+                checks,
+                "load_vulnerability_exceptions",
+                side_effect=AssertionError("source scans must not read the policy"),
+            ),
+            patch.object(checks, "load_misconfiguration_exceptions", return_value={}),
+        ):
+            checks.scan("config")
+            self.assertEqual(
+                "", (Path(directory) / "scanner-config" / "ignore").read_text()
+            )
 
     def test_retired_apt_exception_still_expires_at_its_original_boundary(self):
         # Keep the original expiry regression after removing the now-patched advisory.
         with tempfile.TemporaryDirectory() as directory:
-            policy=Path(directory)/'vulnerability-exceptions.json'
-            item={'vulnerabilityId':'CVE-2026-109518','package':'apt','expiresAt':'2026-11-12',
-                  'ticket':'DLV-969','rationale':'Historical policy fixture; never used by the scanner.'}
-            policy.write_text(checks.json.dumps({'version':1,'exceptions':[item]}))
-            accepted=checks.load_vulnerability_exceptions(policy,today=date(2026,11,5))
-            self.assertEqual(['CVE-2026-109518'],sorted(accepted))
-            self.assertEqual('apt',accepted['CVE-2026-109518']['package'])
-            self.assertLessEqual(date.fromisoformat(accepted['CVE-2026-109518']['expiresAt']),date(2026,11,12))
-            with self.assertRaisesRegex(ValueError,'Expired vulnerability exception'):
-                checks.load_vulnerability_exceptions(policy,today=date(2026,11,13))
+            policy = Path(directory) / "vulnerability-exceptions.json"
+            item = {
+                "vulnerabilityId": "CVE-2026-109518",
+                "package": "apt",
+                "expiresAt": "2026-11-12",
+                "ticket": "DLV-969",
+                "rationale": "Historical policy fixture; never used by the scanner.",
+            }
+            policy.write_text(checks.json.dumps({"version": 1, "exceptions": [item]}))
+            accepted = checks.load_vulnerability_exceptions(
+                policy, today=date(2026, 11, 5)
+            )
+            self.assertEqual(["CVE-2026-109518"], sorted(accepted))
+            self.assertEqual("apt", accepted["CVE-2026-109518"]["package"])
+            self.assertLessEqual(
+                date.fromisoformat(accepted["CVE-2026-109518"]["expiresAt"]),
+                date(2026, 11, 12),
+            )
+            with self.assertRaisesRegex(ValueError, "Expired vulnerability exception"):
+                checks.load_vulnerability_exceptions(policy, today=date(2026, 11, 13))
 
     def test_patched_bases_need_no_vulnerability_exception(self):
-        self.assertEqual({},checks.load_vulnerability_exceptions(today=date(2026,11,16)))
-        self.assertEqual({},checks.load_vulnerability_exceptions(today=date(2027,11,16)))
-        bases=checks.base_images((checks.ROOT/'Dockerfile').read_text())
-        self.assertEqual([
-            'eclipse-temurin:21-jdk-noble@sha256:06c1f157dacf6b68198bd9a4186dd4c34ef24e65d7bbbe2a0cf8e62571ad38c9',
-            'eclipse-temurin:21-jre-noble@sha256:0d57a8e90c2bb844c5a8e1b2b71e11eff06dad7edcfd803cd21ed4ae203b2515',
-        ],bases)
+        self.assertEqual(
+            {}, checks.load_vulnerability_exceptions(today=date(2026, 11, 16))
+        )
+        self.assertEqual(
+            {}, checks.load_vulnerability_exceptions(today=date(2027, 11, 16))
+        )
+        bases = checks.base_images((checks.ROOT / "Dockerfile").read_text())
+        self.assertEqual(
+            [
+                "eclipse-temurin:21-jdk-noble@sha256:"
+                "06c1f157dacf6b68198bd9a4186dd4c34ef24e65d7bbbe2a0cf8e62571ad38c9",
+                "eclipse-temurin:21-jre-noble@sha256:"
+                "0d57a8e90c2bb844c5a8e1b2b71e11eff06dad7edcfd803cd21ed4ae203b2515",
+            ],
+            bases,
+        )
 
     def test_sbom_and_image_scans_do_not_suppress_the_patched_apt_advisory(self):
-        for kind in ('sbom','image'):
-            document={'Metadata':{'OS':{'Family':'ubuntu'}},'Results':[
-                {'Class':'os-pkgs','Packages':[{'Name':'apt','Version':'2.8.3'}],
-                 'Vulnerabilities':[{'VulnerabilityID':'CVE-2026-109518','Severity':'HIGH'}]},
-                {'Class':'lang-pkgs','Type':'jar','Packages':[{'Name':'fixture','Version':'1'}]}]}
+        for kind in ("sbom", "image"):
+            document = {
+                "Metadata": {"OS": {"Family": "ubuntu"}},
+                "Results": [
+                    {
+                        "Class": "os-pkgs",
+                        "Packages": [{"Name": "apt", "Version": "2.8.3"}],
+                        "Vulnerabilities": [
+                            {"VulnerabilityID": "CVE-2026-109518", "Severity": "HIGH"}
+                        ],
+                    },
+                    {
+                        "Class": "lang-pkgs",
+                        "Type": "jar",
+                        "Packages": [{"Name": "fixture", "Version": "1"}],
+                    },
+                ],
+            }
+
             def scanFixture(args, **kwargs):
-                Path(args[args.index('--output')+1]).write_text(checks.json.dumps(document))
-            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run',side_effect=scanFixture), patch('builtins.print'):
-                with self.assertRaisesRegex(ValueError,'Security findings require review'):
-                    checks.scan(kind,'fixture:1')
-                self.assertEqual('',(Path(directory)/'scanner-config'/'ignore').read_text())
+                Path(args[args.index("--output") + 1]).write_text(
+                    checks.json.dumps(document)
+                )
+
+            with (
+                self.subTest(kind=kind),
+                tempfile.TemporaryDirectory() as directory,
+                patch.object(checks, "OUT", Path(directory)),
+                patch.object(checks, "run", side_effect=scanFixture),
+                patch("builtins.print"),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "Security findings require review"
+                ):
+                    checks.scan(kind, "fixture:1")
+                self.assertEqual(
+                    "", (Path(directory) / "scanner-config" / "ignore").read_text()
+                )
 
     def test_image_gate_requires_the_built_image(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks.sys,'argv',['check.py','images']), patch.object(checks,'scan') as scan:
-            with self.assertRaisesRegex(ValueError,'Built application image is required'):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(checks, "OUT", Path(directory)),
+            patch.object(checks.sys, "argv", ["check.py", "images"]),
+            patch.object(checks, "scan") as scan,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "Built application image is required"
+            ):
                 checks.main()
             scan.assert_not_called()
 
     def test_image_gate_scans_both_pins_and_requires_java_in_the_final_image(self):
-        bases=checks.base_images((checks.ROOT/'Dockerfile').read_text())
-        for failed in (False,True):
-            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks.sys,'argv',['check.py','images','--image','fixture:built']), patch.object(checks,'scan',side_effect=[ValueError('Security findings require review') if failed else None,None,None]) as scan, patch('builtins.print'):
+        bases = checks.base_images((checks.ROOT / "Dockerfile").read_text())
+        for failed in (False, True):
+            with (
+                self.subTest(failed=failed),
+                tempfile.TemporaryDirectory() as directory,
+                patch.object(checks, "OUT", Path(directory)),
+                patch.object(
+                    checks.sys,
+                    "argv",
+                    ["check.py", "images", "--image", "fixture:built"],
+                ),
+                patch.object(
+                    checks,
+                    "scan",
+                    side_effect=[
+                        ValueError("Security findings require review")
+                        if failed
+                        else None,
+                        None,
+                        None,
+                    ],
+                ) as scan,
+                patch("builtins.print"),
+            ):
                 if failed:
-                    with self.assertRaisesRegex(ValueError,'Image findings or coverage failures require review'):
+                    with self.assertRaisesRegex(
+                        ValueError, "Image findings or coverage failures require review"
+                    ):
                         checks.main()
                 else:
                     checks.main()
-                self.assertEqual([('image',bases[0]),('image',bases[1]),('image','fixture:built')],
-                                 [call.args for call in scan.call_args_list])
-                self.assertEqual([False,False,True],
-                                 [call.kwargs['require_java'] for call in scan.call_args_list])
+                self.assertEqual(
+                    [
+                        ("image", bases[0]),
+                        ("image", bases[1]),
+                        ("image", "fixture:built"),
+                    ],
+                    [call.args for call in scan.call_args_list],
+                )
+                self.assertEqual(
+                    [False, False, True],
+                    [call.kwargs["require_java"] for call in scan.call_args_list],
+                )
 
     def test_maven_sbom_includes_transitives_and_test_scope_without_private_root(self):
-        tree={'groupId':'private.fixture','artifactId':'private-root','version':'1','children':[
-            {'groupId':'org.example','artifactId':'runtime','version':'2','scope':'compile','children':[
-                {'groupId':'org.example','artifactId':'transitive','version':'3'}]},
-            {'groupId':'org.example','artifactId':'test-helper','version':'4','scope':'test'}]}
-        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run') as run, patch('builtins.print'):
-            (Path(directory)/'maven-tree.json').write_text(checks.json.dumps(tree))
-            checks.dependencies('maven')
-            bom=checks.read(Path(directory)/'dependencies.cdx.json')
-            self.assertEqual({'runtime','transitive','test-helper'}, {item['name'] for item in bom['components']})
-            self.assertNotIn('private-root',checks.json.dumps(bom))
-            command=run.call_args.args[0]
-            self.assertIn('-DoutputType=json',command)
-            self.assertFalse(any('scope' in value.lower() for value in command))
+        tree = {
+            "groupId": "private.fixture",
+            "artifactId": "private-root",
+            "version": "1",
+            "children": [
+                {
+                    "groupId": "org.example",
+                    "artifactId": "runtime",
+                    "version": "2",
+                    "scope": "compile",
+                    "children": [
+                        {
+                            "groupId": "org.example",
+                            "artifactId": "transitive",
+                            "version": "3",
+                        }
+                    ],
+                },
+                {
+                    "groupId": "org.example",
+                    "artifactId": "test-helper",
+                    "version": "4",
+                    "scope": "test",
+                },
+            ],
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(checks, "OUT", Path(directory)),
+            patch.object(checks, "run") as run,
+            patch("builtins.print"),
+        ):
+            (Path(directory) / "maven-tree.json").write_text(checks.json.dumps(tree))
+            checks.dependencies("maven")
+            bom = checks.read(Path(directory) / "dependencies.cdx.json")
+            self.assertEqual(
+                {"runtime", "transitive", "test-helper"},
+                {item["name"] for item in bom["components"]},
+            )
+            self.assertNotIn("private-root", checks.json.dumps(bom))
+            command = run.call_args.args[0]
+            self.assertIn("-DoutputType=json", command)
+            self.assertFalse(any("scope" in value.lower() for value in command))
 
     def test_vulnerability_policy_rejects_a_malformed_document(self):
         with tempfile.TemporaryDirectory() as directory:
-            policy=Path(directory)/'exceptions.json'
-            for document in ({'version':2,'exceptions':[]},{'version':1,'exceptions':{}}):
+            policy = Path(directory) / "exceptions.json"
+            for document in (
+                {"version": 2, "exceptions": []},
+                {"version": 1, "exceptions": {}},
+            ):
                 policy.write_text(checks.json.dumps(document))
-                with self.assertRaisesRegex(ValueError,'Invalid vulnerability exception contract'):
+                with self.assertRaisesRegex(
+                    ValueError, "Invalid vulnerability exception contract"
+                ):
                     checks.load_vulnerability_exceptions(policy)
 
-    def test_misconfiguration_exceptions_are_exact_expiring_and_bound_to_an_existing_target(self):
-        # DLV-968: a trivy check that is a false positive on one named file may be carried for a bounded time; nothing else is ignored.
+    def test_misconfiguration_exceptions_are_exact_expiring_and_bound_to_a_target(
+        self,
+    ):
+        # DLV-968: a trivy check that is a false positive on one named file may be
+        # carried for a bounded time; nothing else is ignored.
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory); (root/'.github/pipeline/deploy/dev').mkdir(parents=True); (root/'.github/pipeline/deploy/dev/service.template.json').write_text('{}')
-            policy=root/'misconfiguration-exceptions.json'
-            item={'checkId':'AVD-AWS-0035','target':'.github/pipeline/deploy/dev/service.template.json','expiresAt':'2027-01-31','ticket':'DLV-968','rationale':'Reviewed synthetic fixture.'}
-            policy.write_text(checks.json.dumps({'version':1,'exceptions':[item]}))
-            loaded=checks.load_misconfiguration_exceptions(policy,date(2027,1,31),root)
-            self.assertEqual([('AVD-AWS-0035','.github/pipeline/deploy/dev/service.template.json')],list(loaded))
-            self.assertEqual('DLV-968',loaded[('AVD-AWS-0035','.github/pipeline/deploy/dev/service.template.json')]['ticket'])
-            with self.assertRaisesRegex(ValueError,'^Expired misconfiguration exception$'):checks.load_misconfiguration_exceptions(policy,date(2027,2,1),root)
-            for bad,reason in [(dict(item,checkId='AWS-0035'),'^Invalid misconfiguration exception identifier$'),(dict(item,checkId='CVE-2026-111497'),'^Invalid misconfiguration exception identifier$'),
-                               (dict(item,expiresAt='soon'),'^Invalid misconfiguration exception expiry$'),({k:v for k,v in item.items() if k!='rationale'},'^Incomplete misconfiguration exception$'),
-                               (dict(item,rationale='  '),'^Incomplete misconfiguration exception$'),(dict(item,note='unreviewed'),'^Unexpected misconfiguration exception key$'),
-                               (dict(item,target='.github/pipeline/deploy/dev/missing.template.json'),'^Misconfiguration exception target is missing$'),(dict(item,target='.github/pipeline/deploy/dev'),'^Misconfiguration exception target is missing$'),
-                               (dict(item,target=str(root/'.github/pipeline/deploy/dev/service.template.json')),'^Misconfiguration exception target must be repository-relative$'),
-                               (dict(item,target='../service.template.json'),'^Misconfiguration exception target must be repository-relative$'),(dict(item,ticket='dlv-968'),'^Invalid misconfiguration exception ticket$')]:
-                policy.write_text(checks.json.dumps({'version':1,'exceptions':[bad]}))
-                with self.subTest(reason=reason), self.assertRaisesRegex(ValueError,reason) as failure:checks.load_misconfiguration_exceptions(policy,date(2026,11,1),root)
-                self.assertIn(str(failure.exception),checks.failure_message(failure.exception))
-            policy.write_text(checks.json.dumps({'version':1,'exceptions':[item,item]}))
-            with self.assertRaisesRegex(ValueError,'^Duplicate misconfiguration exception$'):checks.load_misconfiguration_exceptions(policy,date(2026,11,1),root)
-            policy.write_text(checks.json.dumps({'version':2,'exceptions':[item]}))
-            with self.assertRaisesRegex(ValueError,'^Invalid misconfiguration exception contract$'):checks.load_misconfiguration_exceptions(policy,date(2026,11,1),root)
-            self.assertEqual({},checks.load_misconfiguration_exceptions(root/'missing.json',date(2026,11,1),root))
+            root = Path(directory)
+            (root / ".github/pipeline/deploy/dev").mkdir(parents=True)
+            (root / ".github/pipeline/deploy/dev/service.template.json").write_text(
+                "{}"
+            )
+            policy = root / "misconfiguration-exceptions.json"
+            item = {
+                "checkId": "AVD-AWS-0035",
+                "target": ".github/pipeline/deploy/dev/service.template.json",
+                "expiresAt": "2027-01-31",
+                "ticket": "DLV-968",
+                "rationale": "Reviewed synthetic fixture.",
+            }
+            policy.write_text(checks.json.dumps({"version": 1, "exceptions": [item]}))
+            loaded = checks.load_misconfiguration_exceptions(
+                policy, date(2027, 1, 31), root
+            )
+            self.assertEqual(
+                [("AVD-AWS-0035", ".github/pipeline/deploy/dev/service.template.json")],
+                list(loaded),
+            )
+            self.assertEqual(
+                "DLV-968",
+                loaded[
+                    (
+                        "AVD-AWS-0035",
+                        ".github/pipeline/deploy/dev/service.template.json",
+                    )
+                ]["ticket"],
+            )
+            with self.assertRaisesRegex(
+                ValueError, "^Expired misconfiguration exception$"
+            ):
+                checks.load_misconfiguration_exceptions(policy, date(2027, 2, 1), root)
+            for bad, reason in [
+                (
+                    dict(item, checkId="AWS-0035"),
+                    "^Invalid misconfiguration exception identifier$",
+                ),
+                (
+                    dict(item, checkId="CVE-2026-111497"),
+                    "^Invalid misconfiguration exception identifier$",
+                ),
+                (
+                    dict(item, expiresAt="soon"),
+                    "^Invalid misconfiguration exception expiry$",
+                ),
+                (
+                    {k: v for k, v in item.items() if k != "rationale"},
+                    "^Incomplete misconfiguration exception$",
+                ),
+                (dict(item, rationale="  "), "^Incomplete misconfiguration exception$"),
+                (
+                    dict(item, note="unreviewed"),
+                    "^Unexpected misconfiguration exception key$",
+                ),
+                (
+                    dict(
+                        item, target=".github/pipeline/deploy/dev/missing.template.json"
+                    ),
+                    "^Misconfiguration exception target is missing$",
+                ),
+                (
+                    dict(item, target=".github/pipeline/deploy/dev"),
+                    "^Misconfiguration exception target is missing$",
+                ),
+                (
+                    dict(
+                        item,
+                        target=str(
+                            root / ".github/pipeline/deploy/dev/service.template.json"
+                        ),
+                    ),
+                    "^Misconfiguration exception target must be repository-relative$",
+                ),
+                (
+                    dict(item, target="../service.template.json"),
+                    "^Misconfiguration exception target must be repository-relative$",
+                ),
+                (
+                    dict(item, ticket="dlv-968"),
+                    "^Invalid misconfiguration exception ticket$",
+                ),
+            ]:
+                policy.write_text(
+                    checks.json.dumps({"version": 1, "exceptions": [bad]})
+                )
+                with (
+                    self.subTest(reason=reason),
+                    self.assertRaisesRegex(ValueError, reason) as failure,
+                ):
+                    checks.load_misconfiguration_exceptions(
+                        policy, date(2026, 11, 1), root
+                    )
+                self.assertIn(
+                    str(failure.exception), checks.failure_message(failure.exception)
+                )
+            policy.write_text(
+                checks.json.dumps({"version": 1, "exceptions": [item, item]})
+            )
+            with self.assertRaisesRegex(
+                ValueError, "^Duplicate misconfiguration exception$"
+            ):
+                checks.load_misconfiguration_exceptions(policy, date(2026, 11, 1), root)
+            policy.write_text(checks.json.dumps({"version": 2, "exceptions": [item]}))
+            with self.assertRaisesRegex(
+                ValueError, "^Invalid misconfiguration exception contract$"
+            ):
+                checks.load_misconfiguration_exceptions(policy, date(2026, 11, 1), root)
+            self.assertEqual(
+                {},
+                checks.load_misconfiguration_exceptions(
+                    root / "missing.json", date(2026, 11, 1), root
+                ),
+            )
 
-    def test_config_scan_writes_reviewed_check_ignores_and_proves_each_was_exercised(self):
-        exception={('AVD-AWS-0035','.github/pipeline/deploy/dev/service.template.json'):{'expiresAt':'2027-01-31','ticket':'DLV-968'}}
-        suppressed={'Results':[{'Class':'config','Target':'Dockerfile','MisconfSummary':{'Successes':27,'Failures':0}},
-                               {'Class':'config','Target':'.github/pipeline/deploy/dev/service.template.json','MisconfSummary':{'Successes':26,'Failures':0},
-                                'ExperimentalModifiedFindings':[{'Type':'misconfiguration','Status':'ignored','Source':'ignore','Finding':{'ID':'AWS-0035','Severity':'HIGH'}}]}]}
-        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run') as execute, patch.object(checks,'read',return_value=suppressed), patch.object(checks,'load_misconfiguration_exceptions',return_value=exception), patch('builtins.print') as printed:
-            checks.scan('config')
-            self.assertEqual('AVD-AWS-0035 exp:2027-01-31\n',(Path(directory)/'scanner-config'/'ignore').read_text())
-            command=execute.call_args.args[0]
-            self.assertIn('--show-suppressed',command); self.assertIn('--ignorefile',command)
-            summary=checks.json.loads(printed.call_args.args[0])
-            self.assertEqual(['AVD-AWS-0035'],summary['ignoredChecks']); self.assertEqual([],summary['ignoredAdvisories']); self.assertEqual(0,summary['countsRequiringAction']['misconfigurations'])
-        prefixed=copy.deepcopy(suppressed); prefixed['Results'][1]['ExperimentalModifiedFindings'][0]['Finding']={'ID':'AVD-AWS-0035','AVDID':'AVD-AWS-0035','Severity':'HIGH'}
-        self.assertEqual({('AVD-AWS-0035','.github/pipeline/deploy/dev/service.template.json')},checks.ignored_misconfigurations(prefixed))
-        unexercised={'Results':[{'Class':'config','Target':'.github/pipeline/deploy/dev/service.template.json','MisconfSummary':{'Successes':27,'Failures':0}}]}
-        elsewhere=copy.deepcopy(suppressed); elsewhere['Results'][1]['Target']='.github/pipeline/deploy/dev/other.template.json'
-        for report,reason in [(unexercised,'^Misconfiguration exception is stale or was not exercised$'),(elsewhere,'^Misconfiguration ignored without a reviewed exception$')]:
-            with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run'), patch.object(checks,'read',return_value=report), patch.object(checks,'load_misconfiguration_exceptions',return_value=exception), patch('builtins.print') as printed:
-                with self.subTest(reason=reason), self.assertRaisesRegex(ValueError,reason):checks.scan('config')
-                self.assertEqual(['AVD-AWS-0035'],checks.json.loads(printed.call_args.args[0])['ignoredChecks'])
-        # A reviewed exception never hides a HIGH finding that trivy still reports, and image scans never read the misconfiguration policy.
-        still_failing=copy.deepcopy(suppressed); still_failing['Results'][1]['MisconfSummary']['Failures']=1; still_failing['Results'][1]['Misconfigurations']=[{'ID':'AWS-0034','Severity':'HIGH'}]
-        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run'), patch.object(checks,'read',return_value=still_failing), patch.object(checks,'load_misconfiguration_exceptions',return_value=exception), patch('builtins.print'):
-            with self.assertRaisesRegex(ValueError,'^Security findings require review$'):checks.scan('config')
-        image={'Metadata':{'OS':{'Family':'ubuntu'}},'Results':[{'Class':'os-pkgs','Packages':[{'Name':'fixture','Version':'1'}]}]}
-        with tempfile.TemporaryDirectory() as directory, patch.object(checks,'OUT',Path(directory)), patch.object(checks,'run'), patch.object(checks,'read',return_value=image), patch.object(checks,'load_vulnerability_exceptions',return_value={}), patch.object(checks,'load_misconfiguration_exceptions',side_effect=AssertionError('image scans must not read the policy')), patch('builtins.print') as printed:
-            checks.scan('image','fixture:1')
-            self.assertEqual('',(Path(directory)/'scanner-config'/'ignore').read_text()); self.assertEqual([],checks.json.loads(printed.call_args.args[0])['ignoredChecks'])
+    def test_config_scan_writes_reviewed_check_ignores_and_proves_each_was_exercised(
+        self,
+    ):
+        exception = {
+            ("AVD-AWS-0035", ".github/pipeline/deploy/dev/service.template.json"): {
+                "expiresAt": "2027-01-31",
+                "ticket": "DLV-968",
+            }
+        }
+        suppressed = {
+            "Results": [
+                {
+                    "Class": "config",
+                    "Target": "Dockerfile",
+                    "MisconfSummary": {"Successes": 27, "Failures": 0},
+                },
+                {
+                    "Class": "config",
+                    "Target": ".github/pipeline/deploy/dev/service.template.json",
+                    "MisconfSummary": {"Successes": 26, "Failures": 0},
+                    "ExperimentalModifiedFindings": [
+                        {
+                            "Type": "misconfiguration",
+                            "Status": "ignored",
+                            "Source": "ignore",
+                            "Finding": {"ID": "AWS-0035", "Severity": "HIGH"},
+                        }
+                    ],
+                },
+            ]
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(checks, "OUT", Path(directory)),
+            patch.object(checks, "run") as execute,
+            patch.object(checks, "read", return_value=suppressed),
+            patch.object(
+                checks, "load_misconfiguration_exceptions", return_value=exception
+            ),
+            patch("builtins.print") as printed,
+        ):
+            checks.scan("config")
+            self.assertEqual(
+                "AVD-AWS-0035 exp:2027-01-31\n",
+                (Path(directory) / "scanner-config" / "ignore").read_text(),
+            )
+            command = execute.call_args.args[0]
+            self.assertIn("--show-suppressed", command)
+            self.assertIn("--ignorefile", command)
+            summary = checks.json.loads(printed.call_args.args[0])
+            self.assertEqual(["AVD-AWS-0035"], summary["ignoredChecks"])
+            self.assertEqual([], summary["ignoredAdvisories"])
+            self.assertEqual(0, summary["countsRequiringAction"]["misconfigurations"])
+        prefixed = copy.deepcopy(suppressed)
+        prefixed["Results"][1]["ExperimentalModifiedFindings"][0]["Finding"] = {
+            "ID": "AVD-AWS-0035",
+            "AVDID": "AVD-AWS-0035",
+            "Severity": "HIGH",
+        }
+        self.assertEqual(
+            {("AVD-AWS-0035", ".github/pipeline/deploy/dev/service.template.json")},
+            checks.ignored_misconfigurations(prefixed),
+        )
+        unexercised = {
+            "Results": [
+                {
+                    "Class": "config",
+                    "Target": ".github/pipeline/deploy/dev/service.template.json",
+                    "MisconfSummary": {"Successes": 27, "Failures": 0},
+                }
+            ]
+        }
+        elsewhere = copy.deepcopy(suppressed)
+        elsewhere["Results"][1]["Target"] = (
+            ".github/pipeline/deploy/dev/other.template.json"
+        )
+        for report, reason in [
+            (unexercised, "^Misconfiguration exception is stale or was not exercised$"),
+            (elsewhere, "^Misconfiguration ignored without a reviewed exception$"),
+        ]:
+            with (
+                tempfile.TemporaryDirectory() as directory,
+                patch.object(checks, "OUT", Path(directory)),
+                patch.object(checks, "run"),
+                patch.object(checks, "read", return_value=report),
+                patch.object(
+                    checks, "load_misconfiguration_exceptions", return_value=exception
+                ),
+                patch("builtins.print") as printed,
+            ):
+                with (
+                    self.subTest(reason=reason),
+                    self.assertRaisesRegex(ValueError, reason),
+                ):
+                    checks.scan("config")
+                self.assertEqual(
+                    ["AVD-AWS-0035"],
+                    checks.json.loads(printed.call_args.args[0])["ignoredChecks"],
+                )
+        # A reviewed exception never hides a HIGH finding that trivy still reports, and
+        # image scans never read the misconfiguration policy.
+        still_failing = copy.deepcopy(suppressed)
+        still_failing["Results"][1]["MisconfSummary"]["Failures"] = 1
+        still_failing["Results"][1]["Misconfigurations"] = [
+            {"ID": "AWS-0034", "Severity": "HIGH"}
+        ]
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(checks, "OUT", Path(directory)),
+            patch.object(checks, "run"),
+            patch.object(checks, "read", return_value=still_failing),
+            patch.object(
+                checks, "load_misconfiguration_exceptions", return_value=exception
+            ),
+            patch("builtins.print"),
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "^Security findings require review$"
+            ):
+                checks.scan("config")
+        image = {
+            "Metadata": {"OS": {"Family": "ubuntu"}},
+            "Results": [
+                {"Class": "os-pkgs", "Packages": [{"Name": "fixture", "Version": "1"}]}
+            ],
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(checks, "OUT", Path(directory)),
+            patch.object(checks, "run"),
+            patch.object(checks, "read", return_value=image),
+            patch.object(checks, "load_vulnerability_exceptions", return_value={}),
+            patch.object(
+                checks,
+                "load_misconfiguration_exceptions",
+                side_effect=AssertionError("image scans must not read the policy"),
+            ),
+            patch("builtins.print") as printed,
+        ):
+            checks.scan("image", "fixture:1")
+            self.assertEqual(
+                "", (Path(directory) / "scanner-config" / "ignore").read_text()
+            )
+            self.assertEqual(
+                [], checks.json.loads(printed.call_args.args[0])["ignoredChecks"]
+            )
 
-    def test_repository_misconfiguration_exception_is_current_and_covers_only_the_slot_template_efs_check(self):
-        # DLV-968: AVD-AWS-0035 fires on every ECS volume without EFSVolumeConfiguration; the slot template only mounts Fargate ephemeral volumes.
-        exceptions=checks.load_misconfiguration_exceptions()
-        self.assertEqual([('AVD-AWS-0035','.github/pipeline/deploy/dev/service.template.json')],list(exceptions))
-        entry=exceptions[('AVD-AWS-0035','.github/pipeline/deploy/dev/service.template.json')]
-        self.assertEqual('DLV-968',entry['ticket']); self.assertIn('EFSVolumeConfiguration',entry['rationale'])
-        volumes=[volume for resource in checks.read(checks.ROOT/'.github/pipeline/deploy/dev/service.template.json')['Resources'].values()
-                 if resource.get('Type')=='AWS::ECS::TaskDefinition' for volume in resource['Properties'].get('Volumes',[])]
-        self.assertTrue(volumes); self.assertFalse(any('EFSVolumeConfiguration' in volume for volume in volumes))
+    def test_repository_misconfiguration_exception_covers_only_the_slot_efs_check(
+        self,
+    ):
+        # DLV-968: AVD-AWS-0035 fires on every ECS volume without
+        # EFSVolumeConfiguration; the slot template only mounts Fargate ephemeral
+        # volumes.
+        exceptions = checks.load_misconfiguration_exceptions()
+        self.assertEqual(
+            [("AVD-AWS-0035", ".github/pipeline/deploy/dev/service.template.json")],
+            list(exceptions),
+        )
+        entry = exceptions[
+            ("AVD-AWS-0035", ".github/pipeline/deploy/dev/service.template.json")
+        ]
+        self.assertEqual("DLV-968", entry["ticket"])
+        self.assertIn("EFSVolumeConfiguration", entry["rationale"])
+        volumes = [
+            volume
+            for resource in checks.read(
+                checks.ROOT / ".github/pipeline/deploy/dev/service.template.json"
+            )["Resources"].values()
+            if resource.get("Type") == "AWS::ECS::TaskDefinition"
+            for volume in resource["Properties"].get("Volumes", [])
+        ]
+        self.assertTrue(volumes)
+        self.assertFalse(any("EFSVolumeConfiguration" in volume for volume in volumes))
 
-if __name__=='__main__':unittest.main()
+
+if __name__ == "__main__":
+    unittest.main()

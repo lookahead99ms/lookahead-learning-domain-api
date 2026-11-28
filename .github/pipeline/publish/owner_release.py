@@ -1,116 +1,217 @@
-"""Owner approval and single-attempt publication of the same-run tested image; identical in Domain, Web and Gateway/BFF."""
+"""Owner approval and single-attempt publication of the same-run tested image; identical
+in Domain, Web and Gateway/BFF."""
+
 import argparse
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
-import sys; from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'shared'))  # ../shared holds the modules every pipeline step imports
+# ../shared holds the modules every pipeline step imports
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
 import image
 import owner_approval as approval
 import registry
 
-REPOSITORY = '509614632283.dkr.ecr.us-east-2.amazonaws.com/lookahead-dev-ecr'
+REPOSITORY = "509614632283.dkr.ecr.us-east-2.amazonaws.com/lookahead-dev-ecr"
 
 
 def gate(env, get=approval.api):
     identity = approval.provenance(env, get)
-    approval.require(env.get('ECR_REPOSITORY') == REPOSITORY, 'Exact shared DEV ECR target required')
+    approval.require(
+        env.get("ECR_REPOSITORY") == REPOSITORY,
+        "Exact shared DEV ECR target required",
+    )
     return identity
 
 
 def plan(directory, env, get=approval.api, sourceRoot=None):
     identity = gate(env, get)
     directory = Path(directory)
-    archive, receiptPath = directory / 'image.tar', directory / 'image.json'
-    approval.require(not any(p.is_symlink() for p in [directory, *directory.parents, archive, receiptPath]),
-                     'Image artifact symlinks rejected')
-    # The tooling runs from main (workflowSha); the image was built from the tag-resolved source (sourceSha).
-    expected = image.inputs(Path.cwd(), sourceRoot, identity['workflowSha'])
-    approval.require(expected['revision'] == identity['sourceSha'], 'Checkout differs from the tag-resolved source')
-    approval.require(expected['workflowSha'] == identity['workflowSha'], 'Build workflow differs from the executed main workflow')
+    archive, receiptPath = directory / "image.tar", directory / "image.json"
+    approval.require(
+        not any(
+            p.is_symlink()
+            for p in [directory, *directory.parents, archive, receiptPath]
+        ),
+        "Image artifact symlinks rejected",
+    )
+    # The tooling runs from main (workflowSha); the image was built from the
+    # tag-resolved source (sourceSha).
+    expected = image.inputs(Path.cwd(), sourceRoot, identity["workflowSha"])
+    approval.require(
+        expected["revision"] == identity["sourceSha"],
+        "Checkout differs from the tag-resolved source",
+    )
+    approval.require(
+        expected["workflowSha"] == identity["workflowSha"],
+        "Build workflow differs from the executed main workflow",
+    )
     receipt = json.loads(receiptPath.read_text(), object_pairs_hook=approval.unique)
-    approval.versions.validate(receipt, identity['app'])
-    approval.require(receipt.get('releaseVersion') == identity['releaseVersion'], 'Built release differs from approved tag')
-    imageId = image.validate(receipt, archive, {**expected, **{k: identity[k] for k in approval.versions.FIELDS}})
-    result = {'schema': 'image-owner-approval/v1', **identity, 'role': env.get('DEPLOY_ROLE', ''),
-              'sourceChanges': approval.sourceChanges(identity['repository'], identity['sourceSha'], get),
-              'imageId': imageId, 'files': {p.name: image.digest(p) for p in (archive, receiptPath)}}
+    approval.versions.validate(receipt, identity["app"])
+    approval.require(
+        receipt.get("releaseVersion") == identity["releaseVersion"],
+        "Built release differs from approved tag",
+    )
+    imageId = image.validate(
+        receipt,
+        archive,
+        {**expected, **{k: identity[k] for k in approval.versions.FIELDS}},
+    )
+    result = {
+        "schema": "image-owner-approval/v1",
+        **identity,
+        "role": env.get("DEPLOY_ROLE", ""),
+        "sourceChanges": approval.sourceChanges(
+            identity["repository"], identity["sourceSha"], get
+        ),
+        "imageId": imageId,
+        "files": {p.name: image.digest(p) for p in (archive, receiptPath)},
+    }
     approval.validatePlan(result, env, get)
     return result
 
 
 def aws(*args):
-    result = subprocess.run(['aws', *args, '--region', 'us-east-2', '--output', 'json', '--no-cli-pager',
-                             '--cli-connect-timeout', '10', '--cli-read-timeout', '25'],
-                            capture_output=True, text=True, timeout=40)
-    approval.require(result.returncode == 0, 'ECR request failed; preserve intent and reconcile before another run')
+    result = subprocess.run(
+        [
+            "aws",
+            *args,
+            "--region",
+            "us-east-2",
+            "--output",
+            "json",
+            "--no-cli-pager",
+            "--cli-connect-timeout",
+            "10",
+            "--cli-read-timeout",
+            "25",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=40,
+    )
+    approval.require(
+        result.returncode == 0,
+        "ECR request failed; preserve intent and reconcile before another run",
+    )
     return json.loads(result.stdout, object_pairs_hook=approval.unique)
 
 
 def write(path, value, *, new=False):
-    with Path(path).open('x' if new else 'w') as stream:
+    with Path(path).open("x" if new else "w") as stream:
         json.dump(value, stream, sort_keys=True, indent=2)
-        stream.write('\n')
+        stream.write("\n")
 
 
-def publish(directory, receiptPath, env, loaded, get=approval.api, provider=aws, sourceRoot=None):
+def publish(
+    directory, receiptPath, env, loaded, get=approval.api, provider=aws, sourceRoot=None
+):
     directory, receiptPath = Path(directory), Path(receiptPath)
     selected = plan(directory, env, get, sourceRoot)
     decision = json.loads(receiptPath.read_text(), object_pairs_hook=approval.unique)
     approval.verify(selected, decision, env, get)
-    approval.require(provider('sts', 'get-caller-identity').get('Account') == approval.ACCOUNT, 'Wrong AWS account')
-    repos = provider('ecr', 'describe-repositories', '--repository-names', 'lookahead-dev-ecr').get('repositories', [])
-    approval.require(len(repos) == 1 and repos[0].get('repositoryUri') == REPOSITORY
-                     and repos[0].get('imageTagMutability') == 'IMMUTABLE', 'Exact immutable shared repository required')
-    readArgs = ('ecr', 'batch-get-image', '--repository-name', 'lookahead-dev-ecr',
-                '--image-ids', 'imageTag=' + selected['imageTag'])
+    approval.require(
+        provider("sts", "get-caller-identity").get("Account") == approval.ACCOUNT,
+        "Wrong AWS account",
+    )
+    repos = provider(
+        "ecr", "describe-repositories", "--repository-names", "lookahead-dev-ecr"
+    ).get("repositories", [])
+    approval.require(
+        len(repos) == 1
+        and repos[0].get("repositoryUri") == REPOSITORY
+        and repos[0].get("imageTagMutability") == "IMMUTABLE",
+        "Exact immutable shared repository required",
+    )
+    readArgs = (
+        "ecr",
+        "batch-get-image",
+        "--repository-name",
+        "lookahead-dev-ecr",
+        "--image-ids",
+        "imageTag=" + selected["imageTag"],
+    )
     existing = provider(*readArgs)
-    approval.require(existing.get('images') == [] and len(existing.get('failures', [])) == 1
-                     and existing['failures'][0].get('failureCode') == 'ImageNotFound',
-                     'Tag exists or state unknown; reconcile without retry')
-    image.verifyLoaded(loaded, selected['imageId'])
-    subprocess.run(['docker', 'tag', loaded, selected['target']], check=True, timeout=30)
+    approval.require(
+        existing.get("images") == []
+        and len(existing.get("failures", [])) == 1
+        and existing["failures"][0].get("failureCode") == "ImageNotFound",
+        "Tag exists or state unknown; reconcile without retry",
+    )
+    image.verifyLoaded(loaded, selected["imageId"])
+    subprocess.run(
+        ["docker", "tag", loaded, selected["target"]], check=True, timeout=30
+    )
     approval.verify(selected, decision, env, get)
-    outcome = {'sourceSha': selected['sourceSha'], 'workflowSha': selected['workflowSha'], 'releaseVersion': selected['releaseVersion'],
-               'runId': selected['runId'], 'target': selected['target'],
-               'imageId': selected['imageId'], 'approvalDigest': approval.digest(selected),
-               'pushAttempted': True, 'pushReturned': False, 'readbackVerified': False}
-    outcomePath = receiptPath.parent / 'publication-outcome.json'
+    outcome = {
+        "sourceSha": selected["sourceSha"],
+        "workflowSha": selected["workflowSha"],
+        "releaseVersion": selected["releaseVersion"],
+        "runId": selected["runId"],
+        "target": selected["target"],
+        "imageId": selected["imageId"],
+        "approvalDigest": approval.digest(selected),
+        "pushAttempted": True,
+        "pushReturned": False,
+        "readbackVerified": False,
+    }
+    outcomePath = receiptPath.parent / "publication-outcome.json"
     write(outcomePath, outcome, new=True)
-    subprocess.run(['docker', 'push', '--platform', 'linux/amd64', selected['target']], check=True, timeout=900)
-    outcome['pushReturned'] = True
+    subprocess.run(
+        ["docker", "push", "--platform", "linux/amd64", selected["target"]],
+        check=True,
+        timeout=900,
+    )
+    outcome["pushReturned"] = True
     write(outcomePath, outcome)
-    receipt = json.loads((directory / 'image.json').read_text(), object_pairs_hook=approval.unique)
-    bound = registry.bind(receipt, provider(*readArgs), REPOSITORY, selected['sourceSha'])
-    write(receiptPath.parent / 'registry-image.json', bound, new=True)
-    write(outcomePath, {**outcome, 'readbackVerified': True, 'image': bound['image']})
+    receipt = json.loads(
+        (directory / "image.json").read_text(), object_pairs_hook=approval.unique
+    )
+    bound = registry.bind(
+        receipt, provider(*readArgs), REPOSITORY, selected["sourceSha"]
+    )
+    write(receiptPath.parent / "registry-image.json", bound, new=True)
+    write(outcomePath, {**outcome, "readbackVerified": True, "image": bound["image"]})
     return bound
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['gate', 'approve', 'check', 'publish'])
-    parser.add_argument('--directory', required=True)
-    parser.add_argument('--receipt', required=True)
-    parser.add_argument('--loaded')
-    parser.add_argument('--source-root', help='Tag-resolved source checkout; the tooling itself runs from main')
+    parser.add_argument("mode", choices=["gate", "approve", "check", "publish"])
+    parser.add_argument("--directory", required=True)
+    parser.add_argument("--receipt", required=True)
+    parser.add_argument("--loaded")
+    parser.add_argument(
+        "--source-root",
+        help="Tag-resolved source checkout; the tooling itself runs from main",
+    )
     args = parser.parse_args(argv)
-    if args.mode == 'gate':
+    if args.mode == "gate":
         gate(os.environ)
         return
     selected = plan(args.directory, os.environ, sourceRoot=args.source_root)
     receiptPath = Path(args.receipt)
-    if args.mode == 'approve':
-        write(receiptPath.parent / 'owner-plan.json', selected, new=True)
+    if args.mode == "approve":
+        write(receiptPath.parent / "owner-plan.json", selected, new=True)
         write(receiptPath, approval.approve(selected, os.environ), new=True)
-    elif args.mode == 'check':
-        approval.verify(selected, json.loads(receiptPath.read_text(), object_pairs_hook=approval.unique), os.environ)
+    elif args.mode == "check":
+        approval.verify(
+            selected,
+            json.loads(receiptPath.read_text(), object_pairs_hook=approval.unique),
+            os.environ,
+        )
     else:
-        approval.require(bool(args.loaded), 'Exact verified loaded image required')
-        publish(args.directory, receiptPath, os.environ, args.loaded, sourceRoot=args.source_root)
+        approval.require(bool(args.loaded), "Exact verified loaded image required")
+        publish(
+            args.directory,
+            receiptPath,
+            os.environ,
+            args.loaded,
+            sourceRoot=args.source_root,
+        )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

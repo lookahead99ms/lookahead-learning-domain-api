@@ -1,43 +1,61 @@
 package com.lookahead.domain.contract;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
-import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * DLV-968 (owner decision 2026-11-06): every cross-repository contract lives only in Content, under
- * {@code contracts/}; this repository keeps no copy. {@code .github/pipeline/build/fetch-contracts.sh} reads the files this
- * repository tests against from Content main into {@code .contracts/} (git-ignored; CI step "Fetch contracts from
- * Content" with {@code CONTENT_READ_TOKEN}, a developer's own {@code gh} login locally). {@code -Dcontracts.dir=<folder>}
- * points the tests at another folder. A missing file fails with the one message that names the fix.
+ * {@code contracts/}; this repository keeps no copy. {@code
+ * .github/pipeline/build/fetch-contracts.sh} reads the files this repository tests against from
+ * Content main into {@code .contracts/} (git-ignored; CI step "Fetch contracts from Content" with
+ * {@code CONTENT_READ_TOKEN}, a developer's own {@code gh} login locally). {@code
+ * -Dcontracts.dir=<folder>} points the tests at another folder. A missing file fails with the one
+ * message that names the fix.
  */
 final class ContractFiles {
-    static final String PROPERTY = "contracts.dir";
-    static final String DEFAULT_DIRECTORY = ".contracts";
-    static final String SCRIPT = ".github/pipeline/build/fetch-contracts.sh";
-    /** JUnit tag of the tests that read a fetched file; the image build excludes it ({@code -DexcludedGroups}). */
-    static final String TAG = "fetched-contract";
+  static final String PROPERTY = "contracts.dir";
+  static final String DEFAULT_DIRECTORY = ".contracts";
+  static final String SCRIPT = ".github/pipeline/build/fetch-contracts.sh";
 
-    private ContractFiles() {}
+  /**
+   * JUnit tag of the tests that read a fetched file; the image build excludes it ({@code
+   * -DexcludedGroups}).
+   */
+  static final String TAG = "fetched-contract";
 
-    static Path directory() {
-        return Path.of(System.getProperty("user.dir")).resolve(System.getProperty(PROPERTY, DEFAULT_DIRECTORY));
-    }
+  private ContractFiles() {}
 
-    static Path of(String file) { return directory().resolve(file); }
+  static Path directory() {
+    return Path.of(System.getProperty("user.dir"))
+        .resolve(System.getProperty(PROPERTY, DEFAULT_DIRECTORY));
+  }
 
-    static String missing(Path contract) {
-        return "Contract file absent: " + contract + ". Contracts live only in Content (contracts/); run " + SCRIPT
-                + " to fetch them (CI: step \"Fetch contracts from Content\" with CONTENT_READ_TOKEN), or point -D" + PROPERTY
-                + " at the folder that holds them.";
-    }
+  static Path of(String file) {
+    return directory().resolve(file);
+  }
 
-    /** The fetched contract as JSON; a missing file fails with {@link #missing(Path)} and nothing else. */
-    static JsonNode read(Path contract) throws IOException {
-        assertThat(contract).as(missing(contract)).isRegularFile();
-        return JsonMapper.builder().build().readTree(Files.readString(contract));
-    }
+  static String missing(Path contract) {
+    return "Contract file absent: "
+        + contract
+        + ". Contracts live only in Content (contracts/); run "
+        + SCRIPT
+        + " to fetch them (CI: step \"Fetch contracts from Content\" with CONTENT_READ_TOKEN), or"
+        + " point -D"
+        + PROPERTY
+        + " at the folder that holds them.";
+  }
+
+  /**
+   * The fetched contract as JSON; a missing file fails with {@link #missing(Path)} and nothing
+   * else.
+   */
+  static JsonNode read(Path contract) throws IOException {
+    assertThat(contract).as(missing(contract)).isRegularFile();
+    return JsonMapper.builder().build().readTree(Files.readString(contract));
+  }
 }

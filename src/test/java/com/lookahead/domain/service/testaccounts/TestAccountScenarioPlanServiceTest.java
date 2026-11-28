@@ -1,86 +1,217 @@
 package com.lookahead.domain.service.testaccounts;
 
+import static org.assertj.core.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
 import com.lookahead.domain.db.store.content.ProtectedContentFileStore;
+import com.lookahead.domain.db.store.plan.StudyPlanParts;
 import com.lookahead.domain.db.store.testaccounts.TestAccountPlanFixtureFileStore;
 import com.lookahead.domain.model.ProtectedContentModels;
 import com.lookahead.domain.model.TestAccountScenario;
 import com.lookahead.domain.service.content.AccountCatalogService;
 import com.lookahead.domain.service.content.ProtectedContentManifestService;
 import com.lookahead.domain.service.plan.StudyPlanLifecycleService;
-import com.lookahead.domain.validator.StudyPlanSnapshotValidator;
-import com.lookahead.domain.db.store.plan.StudyPlanParts;
 import com.lookahead.domain.util.StudyPlanJson;
+import com.lookahead.domain.validator.StudyPlanSnapshotValidator;
+import java.nio.file.*;
+import java.time.*;
+import java.util.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import org.mockito.MockMakers;
 import tools.jackson.databind.*;
-import java.nio.file.*;
-import java.time.*;
-import java.util.*;
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.Mockito.*;
 
 class TestAccountScenarioPlanServiceTest {
- @TempDir Path root;
- ObjectMapper json=new ObjectMapper();
- @Test void everyScenarioWritesRealVersionProgressAndExplicitLifecycle() throws Exception {
-  var publication=mock(ProtectedContentManifestService.class);var contentFiles=mock(ProtectedContentFileStore.class);var catalog=mock(StudyPlanSnapshotValidator.class);var accountCatalog=mock(AccountCatalogService.class);
-  var plans=mock(StudyPlanParts.class, withSettings().mockMaker(MockMakers.PROXY));var lifecycle=mock(StudyPlanLifecycleService.class);
-  JsonNode source=json.readTree(getClass().getResourceAsStream("/study-plans/synthetic-adoption-template.json"));
-  Set<String> topics=new HashSet<>();source.path("topicIds").forEach(t->topics.add(t.asText()));
-  var asset=new ProtectedContentModels.Asset("fixture","a".repeat(64),"application/json","pro",topics,Set.of(),"all");
-  when(publication.find(anyString())).thenReturn(Optional.of(asset));when(contentFiles.read(asset)).thenReturn(json.writeValueAsBytes(source));
-  JsonNode custom=json.readTree(getClass().getResourceAsStream("/accounts/generated-plan.json"));
-  var bundle=json.createObjectNode().put("schemaVersion","test-account-plans/v1");bundle.set("customLearn",custom);bundle.set("customGrow",custom);
-  Path file=root.resolve("plans.json");Files.writeString(file,bundle.toString());
-  Map<String,String> members=new LinkedHashMap<>();for(var day:custom.path("snapshot").path("days"))for(var assignment:day.path("assignments"))members.put(assignment.path("id").asText(),assignment.path("contentId").asText());
-  when(accountCatalog.allTopicIds()).thenReturn(topics);
-  when(catalog.validate(any(),any(),eq(false),eq(topics))).thenReturn(new StudyPlanSnapshotValidator.ValidationResult(members,Set.copyOf(members.values()),"fixture",custom.path("provenance")));
-  var service=new TestAccountScenarioPlanService(publication,contentFiles,catalog,accountCatalog,plans,plans,lifecycle,new StudyPlanJson(json),json,new TestAccountModeService(TestAccountModeServiceTest.local()),new TestAccountPlanFixtureFileStore(),file.toString());
-  Instant now=Instant.parse("2026-10-15T12:00:00Z");
-  for(var row:TestAccountScenario.all()) {
-   clearInvocations(plans,lifecycle);UUID owner=UUID.randomUUID();service.populate(owner,row,now);
-   int count=row.planKind()==TestAccountScenario.PlanKind.NONE?0:row.planKind()==TestAccountScenario.PlanKind.SEVERAL?2:1;
-   var progress=ArgumentCaptor.forClass(JsonNode.class);
-   verify(plans,times(count)).createPlan(eq(owner),any(),any(),anyString(),progress.capture(),anyString(),anyLong());
-   var snapshots=ArgumentCaptor.forClass(JsonNode.class);var starts=ArgumentCaptor.forClass(JsonNode.class);
-   verify(lifecycle,times(count)).create(eq(owner),any(),snapshots.capture(),starts.capture(),eq(false));
-   verify(plans,times(count)).insertVersion(eq(owner),any(),any(),isNull(),any(),anyString(),any(),any(),eq("create"),any());
-   for(int i=0;i<count;i++) {
-    int completed=progress.getAllValues().get(i).path("completedSessionIds").size();
-    int assignments=0;for(var day:snapshots.getAllValues().get(i).path("days"))assignments+=day.path("assignments").size();
-    if(row.progress()==TestAccountScenario.Progress.NOT_STARTED)assertThat(completed).isZero();else assertThat(completed).isPositive();
-    if(row.progress()==TestAccountScenario.Progress.FINISHED)assertThat(completed).isEqualTo(assignments);
-    LocalDate start=LocalDate.parse(starts.getAllValues().get(i).asText());
-    if(row.progress()==TestAccountScenario.Progress.OVERDUE)assertThat(start.plusDays(snapshots.getAllValues().get(i).path("config").path("days").asInt())).isBefore(LocalDate.of(2026,10,15));
-   }
-   verify(lifecycle,times(row.progress()==TestAccountScenario.Progress.FINISHED?count:0)).transition(eq(owner),any(),any(),eq("completed"),any());
+  @TempDir Path root;
+  ObjectMapper json = new ObjectMapper();
+
+  @Test
+  void everyScenarioWritesRealVersionProgressAndExplicitLifecycle() throws Exception {
+    var publication = mock(ProtectedContentManifestService.class);
+    var contentFiles = mock(ProtectedContentFileStore.class);
+    var catalog = mock(StudyPlanSnapshotValidator.class);
+    var accountCatalog = mock(AccountCatalogService.class);
+    var plans = mock(StudyPlanParts.class, withSettings().mockMaker(MockMakers.PROXY));
+    var lifecycle = mock(StudyPlanLifecycleService.class);
+    JsonNode source =
+        json.readTree(
+            getClass().getResourceAsStream("/study-plans/synthetic-adoption-template.json"));
+    Set<String> topics = new HashSet<>();
+    source.path("topicIds").forEach(t -> topics.add(t.asText()));
+    var asset =
+        new ProtectedContentModels.Asset(
+            "fixture", "a".repeat(64), "application/json", "pro", topics, Set.of(), "all");
+    when(publication.find(anyString())).thenReturn(Optional.of(asset));
+    when(contentFiles.read(asset)).thenReturn(json.writeValueAsBytes(source));
+    JsonNode custom =
+        json.readTree(getClass().getResourceAsStream("/accounts/generated-plan.json"));
+    var bundle = json.createObjectNode().put("schemaVersion", "test-account-plans/v1");
+    bundle.set("customLearn", custom);
+    bundle.set("customGrow", custom);
+    Path file = root.resolve("plans.json");
+    Files.writeString(file, bundle.toString());
+    Map<String, String> members = new LinkedHashMap<>();
+    for (var day : custom.path("snapshot").path("days"))
+      for (var assignment : day.path("assignments"))
+        members.put(assignment.path("id").asText(), assignment.path("contentId").asText());
+    when(accountCatalog.allTopicIds()).thenReturn(topics);
+    when(catalog.validate(any(), any(), eq(false), eq(topics)))
+        .thenReturn(
+            new StudyPlanSnapshotValidator.ValidationResult(
+                members, Set.copyOf(members.values()), "fixture", custom.path("provenance")));
+    var service =
+        new TestAccountScenarioPlanService(
+            publication,
+            contentFiles,
+            catalog,
+            accountCatalog,
+            plans,
+            plans,
+            lifecycle,
+            new StudyPlanJson(json),
+            json,
+            new TestAccountModeService(TestAccountModeServiceTest.local()),
+            new TestAccountPlanFixtureFileStore(),
+            file.toString());
+    Instant now = Instant.parse("2026-10-15T12:00:00Z");
+    for (var row : TestAccountScenario.all()) {
+      clearInvocations(plans, lifecycle);
+      UUID owner = UUID.randomUUID();
+      service.populate(owner, row, now);
+      int count =
+          row.planKind() == TestAccountScenario.PlanKind.NONE
+              ? 0
+              : row.planKind() == TestAccountScenario.PlanKind.SEVERAL ? 2 : 1;
+      var progress = ArgumentCaptor.forClass(JsonNode.class);
+      verify(plans, times(count))
+          .createPlan(
+              eq(owner), any(), any(), anyString(), progress.capture(), anyString(), anyLong());
+      var snapshots = ArgumentCaptor.forClass(JsonNode.class);
+      var starts = ArgumentCaptor.forClass(JsonNode.class);
+      verify(lifecycle, times(count))
+          .create(eq(owner), any(), snapshots.capture(), starts.capture(), eq(false));
+      verify(plans, times(count))
+          .insertVersion(
+              eq(owner),
+              any(),
+              any(),
+              isNull(),
+              any(),
+              anyString(),
+              any(),
+              any(),
+              eq("create"),
+              any());
+      for (int i = 0; i < count; i++) {
+        int completed = progress.getAllValues().get(i).path("completedSessionIds").size();
+        int assignments = 0;
+        for (var day : snapshots.getAllValues().get(i).path("days"))
+          assignments += day.path("assignments").size();
+        if (row.progress() == TestAccountScenario.Progress.NOT_STARTED)
+          assertThat(completed).isZero();
+        else assertThat(completed).isPositive();
+        if (row.progress() == TestAccountScenario.Progress.FINISHED)
+          assertThat(completed).isEqualTo(assignments);
+        LocalDate start = LocalDate.parse(starts.getAllValues().get(i).asText());
+        if (row.progress() == TestAccountScenario.Progress.OVERDUE)
+          assertThat(
+                  start.plusDays(
+                      snapshots.getAllValues().get(i).path("config").path("days").asInt()))
+              .isBefore(LocalDate.of(2026, 10, 15));
+      }
+      verify(lifecycle, times(row.progress() == TestAccountScenario.Progress.FINISHED ? count : 0))
+          .transition(eq(owner), any(), any(), eq("completed"), any());
+    }
   }
- }
- /** DLV-969 S35: DEV has no custom-plan fixture file; the custom scenarios get the ready-made plan, with no fixture read. */
- @Test void devGivesTheCustomScenariosTheReadyMadePlan() throws Exception {
-  var publication=mock(ProtectedContentManifestService.class);var contentFiles=mock(ProtectedContentFileStore.class);var catalog=mock(StudyPlanSnapshotValidator.class);var accountCatalog=mock(AccountCatalogService.class);var plans=mock(StudyPlanParts.class, withSettings().mockMaker(MockMakers.PROXY));
-  JsonNode source=json.readTree(getClass().getResourceAsStream("/study-plans/synthetic-adoption-template.json"));
-  Set<String> topics=new HashSet<>();source.path("topicIds").forEach(t->topics.add(t.asText()));
-  var asset=new ProtectedContentModels.Asset("fixture","a".repeat(64),"application/json","pro",topics,Set.of(),"all");
-  when(publication.find(anyString())).thenReturn(Optional.of(asset));when(contentFiles.read(asset)).thenReturn(json.writeValueAsBytes(source));
-  var service=new TestAccountScenarioPlanService(publication,contentFiles,catalog,accountCatalog,plans,plans,mock(StudyPlanLifecycleService.class),new StudyPlanJson(json),json,new TestAccountModeService(TestAccountModeServiceTest.cloud("dev")),new TestAccountPlanFixtureFileStore(),"");
-  UUID owner=UUID.randomUUID();
-  service.populate(owner,TestAccountScenario.of(3),Instant.parse("2026-11-03T12:00:00Z"));
-  verify(publication).find("/content/study-plans/templates/coding-interviews-d7-h1.json");
-  verify(plans).createPlan(eq(owner),any(),any(),anyString(),any(),anyString(),anyLong());
-  verify(catalog,never()).validate(any(),any(),anyBoolean(),any());
-  // Outside Local and DEV nothing is written.
-  var off=new TestAccountScenarioPlanService(publication,contentFiles,catalog,accountCatalog,plans,plans,mock(StudyPlanLifecycleService.class),new StudyPlanJson(json),json,new TestAccountModeService(TestAccountModeServiceTest.cloud("prod")),new TestAccountPlanFixtureFileStore(),"");
-  assertThatThrownBy(()->off.populate(owner,TestAccountScenario.of(3),Instant.now())).hasMessageContaining("disabled");
- }
- @Test void missingOrUntrustedFixturesFailBeforePlanWrites() throws Exception {
-  var publication=mock(ProtectedContentManifestService.class);var contentFiles=mock(ProtectedContentFileStore.class);var catalog=mock(StudyPlanSnapshotValidator.class);var accountCatalog=mock(AccountCatalogService.class);var plans=mock(StudyPlanParts.class, withSettings().mockMaker(MockMakers.PROXY));
-  var service=new TestAccountScenarioPlanService(publication,contentFiles,catalog,accountCatalog,plans,plans,mock(StudyPlanLifecycleService.class),new StudyPlanJson(json),json,new TestAccountModeService(TestAccountModeServiceTest.local()),new TestAccountPlanFixtureFileStore(),root.resolve("missing").toString());
-  assertThatThrownBy(()->service.populate(UUID.randomUUID(),TestAccountScenario.of(3),Instant.now())).hasMessageContaining("prepared");
-  when(publication.find(anyString())).thenReturn(Optional.empty());
-  assertThatThrownBy(()->service.populate(UUID.randomUUID(),TestAccountScenario.of(2),Instant.now())).hasMessageContaining("missing");
-  verifyNoInteractions(plans);
- }
+
+  /**
+   * DLV-969 S35: DEV has no custom-plan fixture file; the custom scenarios get the ready-made plan,
+   * with no fixture read.
+   */
+  @Test
+  void devGivesTheCustomScenariosTheReadyMadePlan() throws Exception {
+    var publication = mock(ProtectedContentManifestService.class);
+    var contentFiles = mock(ProtectedContentFileStore.class);
+    var catalog = mock(StudyPlanSnapshotValidator.class);
+    var accountCatalog = mock(AccountCatalogService.class);
+    var plans = mock(StudyPlanParts.class, withSettings().mockMaker(MockMakers.PROXY));
+    JsonNode source =
+        json.readTree(
+            getClass().getResourceAsStream("/study-plans/synthetic-adoption-template.json"));
+    Set<String> topics = new HashSet<>();
+    source.path("topicIds").forEach(t -> topics.add(t.asText()));
+    var asset =
+        new ProtectedContentModels.Asset(
+            "fixture", "a".repeat(64), "application/json", "pro", topics, Set.of(), "all");
+    when(publication.find(anyString())).thenReturn(Optional.of(asset));
+    when(contentFiles.read(asset)).thenReturn(json.writeValueAsBytes(source));
+    var service =
+        new TestAccountScenarioPlanService(
+            publication,
+            contentFiles,
+            catalog,
+            accountCatalog,
+            plans,
+            plans,
+            mock(StudyPlanLifecycleService.class),
+            new StudyPlanJson(json),
+            json,
+            new TestAccountModeService(TestAccountModeServiceTest.cloud("dev")),
+            new TestAccountPlanFixtureFileStore(),
+            "");
+    UUID owner = UUID.randomUUID();
+    service.populate(owner, TestAccountScenario.of(3), Instant.parse("2026-11-03T12:00:00Z"));
+    verify(publication).find("/content/study-plans/templates/coding-interviews-d7-h1.json");
+    verify(plans).createPlan(eq(owner), any(), any(), anyString(), any(), anyString(), anyLong());
+    verify(catalog, never()).validate(any(), any(), anyBoolean(), any());
+    // Outside Local and DEV nothing is written.
+    var off =
+        new TestAccountScenarioPlanService(
+            publication,
+            contentFiles,
+            catalog,
+            accountCatalog,
+            plans,
+            plans,
+            mock(StudyPlanLifecycleService.class),
+            new StudyPlanJson(json),
+            json,
+            new TestAccountModeService(TestAccountModeServiceTest.cloud("prod")),
+            new TestAccountPlanFixtureFileStore(),
+            "");
+    assertThatThrownBy(() -> off.populate(owner, TestAccountScenario.of(3), Instant.now()))
+        .hasMessageContaining("disabled");
+  }
+
+  @Test
+  void missingOrUntrustedFixturesFailBeforePlanWrites() throws Exception {
+    var publication = mock(ProtectedContentManifestService.class);
+    var contentFiles = mock(ProtectedContentFileStore.class);
+    var catalog = mock(StudyPlanSnapshotValidator.class);
+    var accountCatalog = mock(AccountCatalogService.class);
+    var plans = mock(StudyPlanParts.class, withSettings().mockMaker(MockMakers.PROXY));
+    var service =
+        new TestAccountScenarioPlanService(
+            publication,
+            contentFiles,
+            catalog,
+            accountCatalog,
+            plans,
+            plans,
+            mock(StudyPlanLifecycleService.class),
+            new StudyPlanJson(json),
+            json,
+            new TestAccountModeService(TestAccountModeServiceTest.local()),
+            new TestAccountPlanFixtureFileStore(),
+            root.resolve("missing").toString());
+    assertThatThrownBy(
+            () -> service.populate(UUID.randomUUID(), TestAccountScenario.of(3), Instant.now()))
+        .hasMessageContaining("prepared");
+    when(publication.find(anyString())).thenReturn(Optional.empty());
+    assertThatThrownBy(
+            () -> service.populate(UUID.randomUUID(), TestAccountScenario.of(2), Instant.now()))
+        .hasMessageContaining("missing");
+    verifyNoInteractions(plans);
+  }
 }

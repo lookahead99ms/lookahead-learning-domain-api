@@ -1,9 +1,11 @@
 package com.lookahead.domain.db.store.plan;
 
-import com.lookahead.domain.db.store.dynamodb.OwnerTransactionManager;
-import com.lookahead.domain.db.store.dynamodb.OwnerTransactionReads;
+import static org.assertj.core.api.Assertions.*;
+
 import com.lookahead.domain.db.store.dynamodb.DynamoItems;
 import com.lookahead.domain.db.store.dynamodb.DynamoWrites;
+import com.lookahead.domain.db.store.dynamodb.OwnerTransactionManager;
+import com.lookahead.domain.db.store.dynamodb.OwnerTransactionReads;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -14,66 +16,126 @@ import org.springframework.transaction.support.TransactionTemplate;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
-import static org.assertj.core.api.Assertions.*;
 
 /**
- * DLV-970 (P5), real DynamoDB Local: a mutation whose response (above the inline budget) was published as a document
- * before its own owner transaction lost the fence is retried by the client with the same key, later, under a new
- * staging deadline. The published document is reused as it is (same content, its original deadline) and the retry
- * succeeds instead of being refused for ever with "Document ID reused with different content or deadline".
+ * DLV-970 (P5), real DynamoDB Local: a mutation whose response (above the inline budget) was
+ * published as a document before its own owner transaction lost the fence is retried by the client
+ * with the same key, later, under a new staging deadline. The published document is reused as it is
+ * (same content, its original deadline) and the retry succeeds instead of being refused for ever
+ * with "Document ID reused with different content or deadline".
  */
 @EnabledIfEnvironmentVariable(named = "DLV970_DYNAMODB_TEST_ENDPOINT", matches = ".+")
 class StudyPlanStoreLargeReceiptDatabaseTest {
-    private static DynamoDbClient client;
-    private static final String ACCOUNTS = StudyPlanStoreLocalFixture.TABLES.userAccountDetailsTableName();
-    private static final String STUDY = StudyPlanStoreLocalFixture.TABLES.userStudyPlanDetailsTableName();
-    private final JsonMapper mapper = new JsonMapper();
-    private final StudyPlanStoreLocalFixture.MutableClock clock = new StudyPlanStoreLocalFixture.MutableClock(Instant.parse("2026-11-10T06:00:00Z"));
-    private final StudyPlanStore repository = new StudyPlanStore(client, StudyPlanStoreLocalFixture.TABLES, mapper, clock);
-    private final TransactionTemplate transactions = new TransactionTemplate(new OwnerTransactionManager(client, StudyPlanStoreLocalFixture.TABLES, clock));
+  private static DynamoDbClient client;
+  private static final String ACCOUNTS =
+      StudyPlanStoreLocalFixture.TABLES.userAccountDetailsTableName();
+  private static final String STUDY =
+      StudyPlanStoreLocalFixture.TABLES.userStudyPlanDetailsTableName();
+  private final JsonMapper mapper = new JsonMapper();
+  private final StudyPlanStoreLocalFixture.MutableClock clock =
+      new StudyPlanStoreLocalFixture.MutableClock(Instant.parse("2026-11-10T06:00:00Z"));
+  private final StudyPlanStore repository =
+      new StudyPlanStore(client, StudyPlanStoreLocalFixture.TABLES, mapper, clock);
+  private final TransactionTemplate transactions =
+      new TransactionTemplate(
+          new OwnerTransactionManager(client, StudyPlanStoreLocalFixture.TABLES, clock));
 
-    @BeforeAll static void connect() { client = StudyPlanStoreLocalFixture.connect(); }
-    @AfterAll static void close() { if (client != null) client.close(); }
+  @BeforeAll
+  static void connect() {
+    client = StudyPlanStoreLocalFixture.connect();
+  }
 
-    @Test void aRetriedMutationReplaysTheResponseDocumentPublishedBeforeItsFailedCommit() {
-        UUID owner = StudyPlanStoreLocalFixture.owner(client), key = UUID.randomUUID(), plan = UUID.randomUUID(), version = UUID.randomUUID();
-        ObjectNode big = mapper.createObjectNode().put("planId", plan.toString()).put("filler", "x".repeat(StudyPlanStore.INLINE_BYTES + 1024));
-        UUID documentId = StudyPlanDocumentPublishStore.operation("plan-receipt", owner, key.toString());
-        String manifestPk = "DOC#" + owner + "#" + documentId;
-        long firstDeadline = clock.instant().getEpochSecond() + StudyPlanDocumentPublishStore.STAGE_SECONDS;
+  @AfterAll
+  static void close() {
+    if (client != null) client.close();
+  }
 
-        // First attempt: the response document is staged and published, then the owner fence is lost before the unit commits.
-        assertThatThrownBy(() -> transactions.executeWithoutResult(status -> {
-            repository.lockMutation(owner, key);
-            repository.createPlan(owner, plan, version, "Big", mapper.createObjectNode(), "Big plan", repository.allocatePlanNumber(owner));
-            repository.insertReceipt(owner, key, "sha256:big", plan, big, 201);
-            client.updateItem(b -> b.tableName(ACCOUNTS).key(DynamoItems.key(DynamoItems.account(owner), "META"))
-                    .updateExpression("SET revision = revision + :one").expressionAttributeValues(Map.of(":one", DynamoItems.n(1))));
-        })).isInstanceOf(DynamoWrites.Conflict.class);
-        var manifest = StudyPlanStoreLocalFixture.item(client, STUDY, manifestPk, "MANIFEST");
-        assertThat(manifest.get("lifecycle").s()).isEqualTo("COMMITTED");
-        assertThat(DynamoItems.number(manifest, "abandonAfter")).isEqualTo(firstDeadline);
-        assertThat(repository.findReceipt(owner, key)).isEmpty();
-        assertThat(StudyPlanStoreLocalFixture.items(client, DynamoItems.account(owner), "PLAN#")).isEmpty();
+  @Test
+  void aRetriedMutationReplaysTheResponseDocumentPublishedBeforeItsFailedCommit() {
+    UUID owner = StudyPlanStoreLocalFixture.owner(client),
+        key = UUID.randomUUID(),
+        plan = UUID.randomUUID(),
+        version = UUID.randomUUID();
+    ObjectNode big =
+        mapper
+            .createObjectNode()
+            .put("planId", plan.toString())
+            .put("filler", "x".repeat(StudyPlanStore.INLINE_BYTES + 1024));
+    UUID documentId =
+        StudyPlanDocumentPublishStore.operation("plan-receipt", owner, key.toString());
+    String manifestPk = "DOC#" + owner + "#" + documentId;
+    long firstDeadline =
+        clock.instant().getEpochSecond() + StudyPlanDocumentPublishStore.STAGE_SECONDS;
 
-        // The client retries the same mutation key five minutes later: a new staging deadline, the same bytes.
-        clock.advance(Duration.ofMinutes(5));
-        transactions.executeWithoutResult(status -> {
-            repository.lockMutation(owner, key);
-            repository.createPlan(owner, plan, version, "Big", mapper.createObjectNode(), "Big plan", repository.allocatePlanNumber(owner));
-            repository.insertReceipt(owner, key, "sha256:big", plan, big, 201);
-        });
-        var receipt = repository.findReceipt(owner, key).orElseThrow();
-        assertThat(receipt.status()).isEqualTo(201);
-        assertThat(receipt.response().path("filler").asText()).hasSize(StudyPlanStore.INLINE_BYTES + 1024);
-        var stored = StudyPlanStoreLocalFixture.item(client, ACCOUNTS, DynamoItems.account(owner), "MUTATION#" + key);
-        assertThat(DynamoItems.uuid(stored, "documentId")).isEqualTo(documentId);
-        // The receipt references the document as published: one manifest, the original deadline, one publication audit event.
-        assertThat(DynamoItems.number(stored, "abandonAfter")).isEqualTo(firstDeadline);
-        assertThat(DynamoItems.number(StudyPlanStoreLocalFixture.item(client, STUDY, manifestPk, "MANIFEST"), "abandonAfter")).isEqualTo(firstDeadline);
-        assertThat(OwnerTransactionReads.queryAll(client, StudyPlanStoreLocalFixture.TABLES.administratorAuditEventsTableName(), DynamoItems.account(owner), "EVENT#")).hasSize(1);
-        // Replaying the finished mutation reads the same answer; the document is still one document.
-        assertThat(repository.findReceipt(owner, key).orElseThrow().response()).isEqualTo(receipt.response());
-        assertThat(OwnerTransactionReads.queryAll(client, STUDY, manifestPk, "CHUNK#")).isNotEmpty();
-    }
+    // First attempt: the response document is staged and published, then the owner fence is lost
+    // before the unit commits.
+    assertThatThrownBy(() ->
+            transactions.executeWithoutResult(status -> {
+              repository.lockMutation(owner, key);
+              repository.createPlan(
+                  owner,
+                  plan,
+                  version,
+                  "Big",
+                  mapper.createObjectNode(),
+                  "Big plan",
+                  repository.allocatePlanNumber(owner));
+              repository.insertReceipt(owner, key, "sha256:big", plan, big, 201);
+              client.updateItem(b ->
+                  b.tableName(ACCOUNTS)
+                      .key(DynamoItems.key(DynamoItems.account(owner), "META"))
+                      .updateExpression("SET revision = revision + :one")
+                      .expressionAttributeValues(Map.of(":one", DynamoItems.n(1))));
+            }))
+        .isInstanceOf(DynamoWrites.Conflict.class);
+    var manifest = StudyPlanStoreLocalFixture.item(client, STUDY, manifestPk, "MANIFEST");
+    assertThat(manifest.get("lifecycle").s()).isEqualTo("COMMITTED");
+    assertThat(DynamoItems.number(manifest, "abandonAfter")).isEqualTo(firstDeadline);
+    assertThat(repository.findReceipt(owner, key)).isEmpty();
+    assertThat(StudyPlanStoreLocalFixture.items(client, DynamoItems.account(owner), "PLAN#"))
+        .isEmpty();
+
+    // The client retries the same mutation key five minutes later: a new staging deadline, the same
+    // bytes.
+    clock.advance(Duration.ofMinutes(5));
+    transactions.executeWithoutResult(status -> {
+      repository.lockMutation(owner, key);
+      repository.createPlan(
+          owner,
+          plan,
+          version,
+          "Big",
+          mapper.createObjectNode(),
+          "Big plan",
+          repository.allocatePlanNumber(owner));
+      repository.insertReceipt(owner, key, "sha256:big", plan, big, 201);
+    });
+    var receipt = repository.findReceipt(owner, key).orElseThrow();
+    assertThat(receipt.status()).isEqualTo(201);
+    assertThat(receipt.response().path("filler").asText())
+        .hasSize(StudyPlanStore.INLINE_BYTES + 1024);
+    var stored =
+        StudyPlanStoreLocalFixture.item(
+            client, ACCOUNTS, DynamoItems.account(owner), "MUTATION#" + key);
+    assertThat(DynamoItems.uuid(stored, "documentId")).isEqualTo(documentId);
+    // The receipt references the document as published: one manifest, the original deadline, one
+    // publication audit event.
+    assertThat(DynamoItems.number(stored, "abandonAfter")).isEqualTo(firstDeadline);
+    assertThat(
+            DynamoItems.number(
+                StudyPlanStoreLocalFixture.item(client, STUDY, manifestPk, "MANIFEST"),
+                "abandonAfter"))
+        .isEqualTo(firstDeadline);
+    assertThat(
+            OwnerTransactionReads.queryAll(
+                client,
+                StudyPlanStoreLocalFixture.TABLES.administratorAuditEventsTableName(),
+                DynamoItems.account(owner),
+                "EVENT#"))
+        .hasSize(1);
+    // Replaying the finished mutation reads the same answer; the document is still one document.
+    assertThat(repository.findReceipt(owner, key).orElseThrow().response())
+        .isEqualTo(receipt.response());
+    assertThat(OwnerTransactionReads.queryAll(client, STUDY, manifestPk, "CHUNK#")).isNotEmpty();
+  }
 }
