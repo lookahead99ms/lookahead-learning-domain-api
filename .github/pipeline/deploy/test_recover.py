@@ -12,7 +12,7 @@ from unittest.mock import patch
 import deploy
 import owner_approval as owner
 import recover as m
-from test_deploy import APP, NY_0020, NY_2350, DeployFixture
+from test_deploy import APP, NAME, NY_0020, NY_2350, DeployFixture
 from test_owner_approval import record
 
 FALLBACK = "v2026.10.20.10.00"
@@ -327,9 +327,42 @@ class ApprovalTests(RecoverFixture):
         receipt = self.approvedRecovery(planned)
         self.assertEqual((7, "deploy"), (receipt["commentId"], receipt["mode"]))
         issue = self.github.data["issues/3"]
-        self.assertIn("Recover " + APP, issue["title"])
-        for phrase in (
+        self.assertEqual(
+            "DEV: Recover " + NAME + " " + planned["releaseVersion"], issue["title"]
+        )
+        command = "APPROVE recover dev " + NAME + " " + planned["releaseVersion"]
+        self.assertEqual({"deploy": command}, m.commands(planned))
+        self.assertTrue(
+            issue["body"].startswith(
+                "Recovers "
+                + planned["stack"]
+                + ": parks it, serves "
+                + planned["releaseVersion"]
+                + " and falls back to "
+                + planned["fallbackReleaseVersion"]
+                + " if needed. Nothing is deleted.\n\n```text\n"
+                + command
+                + "\n```\n"
+            )
+        )
+        # Old forms, another environment, application or version, and other letter
+        # case never approve the recovery.
+        for wrong in (
             "APPROVE RECOVER " + planned["imageTag"],
+            command.replace(" dev ", " prod "),
+            command.replace(" " + NAME + " ", " other-app "),
+            command.replace(
+                planned["releaseVersion"], planned["fallbackReleaseVersion"]
+            ),
+            command.replace("recover", "Recover"),
+            command.replace("recover", "deploy"),
+        ):
+            self.github.comments[0]["body"] = wrong
+            with self.assertRaisesRegex(ValueError, "Exact live owner approval"):
+                m.verify(planned, receipt, self.env, self.root, self.get, self.now)
+        self.github.comments[0]["body"] = " " + command + "\n"
+        for phrase in (
+            planned["planDigest"],
             "app-12-park-final",
             "web-deploy-12-5",
             planned["fallbackImageTag"],

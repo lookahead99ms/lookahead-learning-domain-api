@@ -28,7 +28,7 @@ class TemplateTests(unittest.TestCase):
             owner="example",
             expires="2026-10-26T23:00:00Z",
             permissionDeadline="2027-10-26T13:00:00Z",
-            command="APPROVE APPLY " + "a" * 64,
+            command="APPROVE apply stack dev lookahead-dev-compute",
             payload={"source": "b" * 40},
             created="2026-10-26T22:20:00Z",
             planDeadline="2026-10-26T23:00:00Z",
@@ -61,8 +61,8 @@ class TemplateTests(unittest.TestCase):
         self.assertIn("| Approve | `" + options["command"] + "` |", body)
         self.assertEqual(options, original)
         block = (
-            "APPROVE APPLY s3 CREATE synthetic-bucket\nAPPROVE POST APPLY SMOKE "
-            + "b" * 64
+            "APPROVE create bucket dev synthetic-bucket\n"
+            "APPROVE smoke test dev synthetic-bucket"
         )
         self.assertIn(
             template.code(block), template.render(**dict(options, command=block))
@@ -88,52 +88,112 @@ class TemplateTests(unittest.TestCase):
             ("repository", "bad/url/extra"),
             ("owner", "user\n## fake"),
             ("runId", "1?x=2"),
-            ("command", "APPROVE APPLY " + "a" * 64 + "\nREJECT"),
-            ("command", "APPROVE APPLY wrong"),
+            ("command", "APPROVE apply stack dev lookahead-dev-compute\nREJECT"),
+            ("command", "APPROVE apply stack lookahead-dev-compute"),
         ]:
             with self.subTest(field=field), self.assertRaises(ValueError):
                 template.render(**dict(options, **{field: value}))
 
-    def test_image_approvals_name_the_version_as_ecr_shows_it(self):
-        """User decision 2026-10-28: the comment names the ECR image tag, not the plan
-        digest; the digest stays in the body."""
+    def test_commands_are_readable_phrases_with_the_environment(self):
+        """DLV-1027 (owner decision 2026-11-27): `APPROVE <action> <env> <subject>
+        <version or name>`; digests, bare code words and a missing environment are no
+        longer commands. The comment matcher compares exactly (case-sensitive)."""
         options = self.fixture()
-        headline = {
-            "env": "DEV",
-            "action": "Publish image",
-            "subject": "web-v2026.10.28.15.01",
-            "change": "numbered pipeline",
-        }
-        body = template.render(
-            **dict(options, command="APPROVE IMAGE web-v2026.10.28.15.01"),
-            headline=headline,
-        )
-        self.assertIn("Comment `APPROVE IMAGE <version>` or `REJECT`", body)
-        self.assertIn("```text\nAPPROVE IMAGE web-v2026.10.28.15.01\n```", body)
-        self.assertIn(
-            "Comment `APPROVE KEEP <version>` or `REJECT`",
-            template.render(
-                **dict(
-                    options, command="APPROVE KEEP DEV gateway-bff-v2026.10.28.15.00"
-                ),
-                headline=headline,
-            ),
-        )
-        self.assertIn(
-            "Comment `APPROVE DEV <version>` or `REJECT`",
-            template.render(
-                **dict(options, command="APPROVE DEV RESTART v2026.10.28.16.00"),
-                headline=headline,
-            ),
-        )
+        for good in (
+            "APPROVE publish image dev web v2026.11.27.19.00",
+            "APPROVE deploy dev domain-api v2026.11.27.19.00",
+            "APPROVE refresh dev gateway-bff v2026.11.27.19.00",
+            "APPROVE restart dev gateway-bff",
+            "APPROVE migrate dev domain-api v2026.11.27.19.00 migrate",
+            "APPROVE update IAM roles dev dev-admission-retirement",
+            "APPROVE update stack dev lookahead-dev-ECR",
+            "APPROVE deploy prod web v2026.11.27.19.00",
+        ):
+            with self.subTest(good=good):
+                body = template.render(**dict(options, command=good))
+                self.assertIn("```text\n" + good + "\n```", body)
+                self.assertIn("| Approve | `" + good + "` |", body)
         for bad in (
-            "APPROVE IMAGE web-v2026.10.28",
-            "APPROVE IMAGE Web-v2026.10.28.15.01",
-            "APPROVE IMAGE web-v2026.10.28.15.1",
-            "APPROVE IMAGE 2026.10.28.15.01",
+            "APPROVE IMAGE web-v2026.10.28.15.01",
+            "APPROVE DEPLOY web-v2026.11.01.14.00",
+            "APPROVE REFRESH web-v2026.11.01.14.00",
+            "APPROVE RECOVER web-v2026.11.01.14.00",
+            "APPROVE RESTART " + "a" * 64,
+            "APPROVE IAM " + "a" * 64,
+            "APPROVE CONTENT v2026.11.27.19.00",
+            "APPROVE APPLY NO_CHANGES",
+            "APPROVE PUBLISH IMAGE DEV web v2026.11.27.19.00",
+            "APPROVE Publish image dev web v2026.11.27.19.00",
+            "APPROVE publish image web v2026.11.27.19.00",
+            "APPROVE publish image staging web v2026.11.27.19.00",
+            "APPROVE publish image dev",
+            "APPROVE publish image dev  web v2026.11.27.19.00",
+            "APPROVE publish image dev web v2026.11.27.19.00 ",
+            "APPROVE publish image dev web `v1`",
+            "APPROVE publish image dev web v1 a b c",
+            "approve publish image dev web v2026.11.27.19.00",
+            "REJECT",
         ):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 template.render(**dict(options, command=bad))
+
+    def test_first_line_says_what_happens_then_the_copyable_command(self):
+        options = self.fixture()
+        command = "APPROVE publish image dev web v2026.11.27.19.00"
+        headline = {
+            "env": "DEV",
+            "action": "Publish image",
+            "subject": "web v2026.11.27.19.00",
+            "change": "DLV-1027 Readable approvals",
+        }
+        body = template.render(
+            **dict(options, command=command),
+            headline=headline,
+            outcome=(
+                "Publishes image web v2026.11.27.19.00 to ECR. Nothing is deployed."
+            ),
+        )
+        lines = body.splitlines()
+        self.assertEqual(
+            "Publishes image web v2026.11.27.19.00 to ECR. Nothing is deployed.",
+            lines[0],
+        )
+        self.assertEqual(["", "```text", command, "```", ""], lines[1:6])
+        self.assertEqual("> [!IMPORTANT]", lines[6])
+        self.assertIn(
+            "Comment exactly `" + command + "` or `REJECT`", body.split("## ")[0]
+        )
+        self.assertEqual(2, body.count("```text\n" + command + "\n```"))
+        self.assertIn("letters are case-sensitive", body)
+        self.assertNotIn("digest unchanged", body)
+        self.assertEqual(
+            "DEV: Publish image web v2026.11.27.19.00", template.title(headline)
+        )
+        self.assertEqual(
+            "DEV: Deploy web v2026.11.27.19.00 · duplicate image",
+            template.title(
+                {
+                    **headline,
+                    "action": "Deploy",
+                    "note": "duplicate image",
+                }
+            ),
+        )
+        noted = template.render(
+            **dict(options, command=command),
+            headline={**headline, "note": "duplicate image"},
+        )
+        self.assertTrue(
+            noted.startswith(
+                "> [!IMPORTANT]\n> **DEV · Publish image web v2026.11.27.19.00 ·"
+                " duplicate image** — DLV-1027 Readable approvals"
+            )
+        )
+        multi = "APPROVE create bucket dev a\nAPPROVE smoke test dev a"
+        self.assertIn(
+            "Comment exactly the command block, line by line or `REJECT`",
+            template.render(**dict(options, command=multi), headline=headline),
+        )
 
     def test_headline_resources_and_validation_render_change_first(self):
         options = self.fixture()
@@ -163,10 +223,7 @@ class TemplateTests(unittest.TestCase):
             resources=resources,
             validation=[("Template checks", "52 resources")],
         )
-        self.assertEqual(
-            template.title(headline, 123),
-            "DEV: Apply lookahead-dev-compute — create network load balancer · run 123",
-        )
+        self.assertEqual(template.title(headline), "DEV: Apply lookahead-dev-compute")
         self.assertTrue(
             body.startswith(
                 (
@@ -175,7 +232,11 @@ class TemplateTests(unittest.TestCase):
                 )
             )
         )
-        self.assertIn("Comment `APPROVE APPLY <digest>` or `REJECT`", body)
+        self.assertIn(
+            "Comment exactly `APPROVE apply stack dev lookahead-dev-compute` or"
+            " `REJECT`",
+            body,
+        )
         summary = body.split("## What changes")[0]
         self.assertIn(
             (
@@ -233,20 +294,22 @@ class TemplateTests(unittest.TestCase):
             body.index("### What this run does"), body.index("| Item | Detail |")
         )
         self.assertIn("1. Cut the tag.", body.split("## What changes")[0])
-        for bad in [{**headline, "change": ""}, {**headline, "env": "\n"}]:
+        for bad in [
+            {**headline, "subject": ""},
+            {**headline, "env": "\n"},
+            {"env": "DEV", "subject": "x"},
+        ]:
             with self.assertRaises(ValueError):
-                template.title(bad, 123)
-        with self.assertRaises(ValueError):
-            template.title(headline, "x")
+                template.title(bad)
         with self.assertRaises(ValueError):
             template.alert("OTHER", "x")
         self.assertEqual(template.table(("a",), []), "")
-        self.assertIn("&#124;", template.title({**headline, "change": "a|b"}, 1))
+        self.assertIn("&#124;", template.title({**headline, "subject": "a|b"}))
 
     def test_portable_renderer_matches_reviewed_version(self):
         # An accidental edit in one repository must fail until all reviewed copies are
         # synchronized.
-        expected = "d94d584818fa71c26c6202b23ea02adb9298234dcbf5ede5263d07eaa66e4075"
+        expected = "9aaa590f5ac0c4bbcb1d3c0c1f994dca85a1f0cd8ace7649b81274ee582d2f12"
         self.assertEqual(
             hashlib.sha256(Path(template.__file__).read_bytes()).hexdigest(), expected
         )

@@ -471,10 +471,13 @@ class PlanTests(MigrateFixture):
             )
             self.assertIsNone(planned["currentDesiredCount"])  # no stack yet
             self.assertEqual(
-                "APPROVE " + command.upper() + " domain-v2026.10.26.20.00",
+                "APPROVE migrate dev domain-api v2026.10.26.20.00 " + command,
                 m.approvalCommand(planned),
             )
-            self.assertEqual(m.ACTIONS[command], m.headline(planned)["action"])
+            self.assertEqual(
+                ("Migrate", command),
+                (m.headline(planned)["action"], m.headline(planned)["note"]),
+            )
             self.assertIn("nothing is written", m.headline(planned)["change"])
         with self.assertRaisesRegex(
             ValueError, "MIGRATE_COMMAND must be migrate, verify or status"
@@ -577,14 +580,18 @@ class ApprovalTests(MigrateFixture):
             ),
         )
         self.assertEqual(
-            "DEV: Migrate domain data domain-v2026.10.26.20.00 — one Fargate task"
-            " lookahead-dev-domain-migrate applies the data steps of this release to"
-            " the four DynamoDB tables; the service is not touched · run 12",
-            self.issue()["title"],
+            "DEV: Migrate domain-api v2026.10.26.20.00 · migrate", self.issue()["title"]
         )
         body = self.issue()["body"]
+        self.assertTrue(
+            body.startswith(
+                "Applies the data steps of domain-api v2026.10.26.20.00 to the four DEV"
+                " DynamoDB tables. The service is not touched.\n\n```text\n"
+                "APPROVE migrate dev domain-api v2026.10.26.20.00 migrate\n```\n"
+            )
+        )
         for phrase in (
-            "APPROVE MIGRATE domain-v2026.10.26.20.00",
+            "APPROVE migrate dev domain-api v2026.10.26.20.00 migrate",
             "### Affected AWS resources",
             "`AWS::ECS::TaskDefinition`",
             "`AWS::DynamoDB::Table`",
@@ -684,6 +691,31 @@ class ApprovalTests(MigrateFixture):
             ),
         )
 
+    def test_only_the_readable_phrase_with_the_planned_command_approves(self):
+        """DLV-1027: `APPROVE migrate dev domain-api <version> <command>`, exact after
+        trimming surrounding whitespace, case-sensitive."""
+        planned = self.planned("verify")
+        receipt = self.approved(planned)
+        env = {**self.env, "MIGRATE_COMMAND": "verify"}
+        good = "APPROVE migrate dev domain-api v2026.10.26.20.00 verify"
+        for wrong in (
+            "APPROVE VERIFY domain-v2026.10.26.20.00",
+            "APPROVE MIGRATE domain-v2026.10.26.20.00",
+            "APPROVE migrate dev domain-api v2026.10.26.20.00 migrate",
+            "APPROVE migrate dev domain-api v2026.10.26.20.00",
+            "APPROVE migrate prod domain-api v2026.10.26.20.00 verify",
+            "APPROVE migrate dev domain v2026.10.26.20.00 verify",
+            "APPROVE migrate dev domain-api v2026.10.26.20.01 verify",
+            "APPROVE Migrate dev domain-api v2026.10.26.20.00 verify",
+        ):
+            self.github.comments[0]["body"] = wrong
+            with self.assertRaisesRegex(
+                ValueError, "Exact live owner approval", msg=wrong
+            ):
+                m.verify(planned, receipt, env, self.root, self.get, self.now)
+        self.github.comments[0]["body"] = "\n" + good + "  "
+        m.verify(planned, receipt, env, self.root, self.get, self.now)
+
     def test_the_issue_body_of_verify_and_status_says_nothing_is_written(self):
         for command in ("verify", "status"):
             self.github.data.pop("issues/3", None)
@@ -691,8 +723,16 @@ class ApprovalTests(MigrateFixture):
             self.approved(planned)
             body = self.issue()["body"]
             self.assertIn(
-                "APPROVE " + command.upper() + " domain-v2026.10.26.20.00", body
+                "```text\nAPPROVE migrate dev domain-api v2026.10.26.20.00 "
+                + command
+                + "\n```",
+                body,
             )
+            self.assertEqual(
+                "DEV: Migrate domain-api v2026.10.26.20.00 · " + command,
+                self.issue()["title"],
+            )
+            self.assertIn("Nothing is written.", body.splitlines()[0])
             self.assertIn("**READ ONLY** `AWS::DynamoDB::Table`", body)
             self.assertIn("an empty `applied` list", body)
             self.assertIn("**Business change:** none", body)
@@ -1418,7 +1458,8 @@ class MigrateWorkflowTests(unittest.TestCase):
             (
                 approve["steps"][-1]["if"],
                 approve["steps"][-1]["continue-on-error"],
-                '--match "domain data"' in approve["steps"][-1]["run"],
+                # DLV-1027: titles read `DEV: Migrate domain-api <version> · <command>`
+                '--match "DEV: Migrate"' in approve["steps"][-1]["run"],
             ),
         )
 

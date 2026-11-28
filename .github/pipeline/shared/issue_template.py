@@ -1,10 +1,14 @@
-"""Portable approval-issue presentation v2. Rendering only; no approval authority.
+"""Portable approval-issue presentation v3. Rendering only; no approval authority.
 
-Infra owns this file. Content and Domain keep byte-identical portable copies. v2
-(2026-10-27): change-first titles, a headline alert, tables for every section, an
-explicit "Affected AWS resources" row with resource type, physical name and action,
-resource property sub-tables, and GitHub alert blocks for risks and the decision.
-Commands, digests and the seven section names are unchanged.
+Began as a copy of Infra's renderer; this application repository keeps its own copy,
+byte-identical in Domain, Web and Gateway/BFF. v2 (2026-10-27): change-first titles, a
+headline alert, tables for every section, an explicit "Affected AWS resources" row with
+resource type, physical name and action, resource property sub-tables, and GitHub alert
+blocks for risks and the decision. v3 (DLV-1027, owner decision 2026-11-27): the title
+reads `ENV: <Action> <subject> <version or name>`, the body's first line says in one
+sentence what happens after approval, and the command is the readable phrase
+`APPROVE <action> <env> <subject> <version or name>` in a copyable block; digests stay
+in the body as a record. The seven section names are unchanged.
 """
 
 import html
@@ -34,6 +38,16 @@ RESOURCE_COLUMNS = (
     ("note", "Notes"),
 )
 NAME_KEYS = ("consoleName", "name", "key")
+# DLV-1027 (owner decision 2026-11-27): the approving comment names the change like a
+# branch name, `APPROVE <action> <env> <subject> <version or name>`. Action words are
+# lower case except fixed names (IAM); the environment is always present, so an
+# approval for one environment can never satisfy another; then one to three names
+# (subject, version, a mode). Digests and bare code words (`APPROVE IMAGE <tag>`) are
+# not commands.
+COMMAND = re.compile(
+    r"APPROVE (?:(?:[a-z][a-z-]*|IAM) ){1,3}(?:dev|prod)"
+    r"(?: [A-Za-z0-9][A-Za-z0-9._-]*){1,3}"
+)
 
 
 def text(value):
@@ -102,18 +116,15 @@ def alert(kind, markdown):
     )
 
 
-def title(headline, runId):
-    """Change-first issue title: `ENV: action subject — what changed · run N`."""
-    env, action, subject, change = (
-        text(headline[k]).strip() for k in ("env", "action", "subject", "change")
+def title(headline):
+    """Issue title: `ENV: <Action> <subject> <version or name>` in plain words, with
+    an optional ` · <note>` (for example `duplicate image`). The body links the run."""
+    env, action, subject, note = (
+        text(headline.get(k, "")).strip() for k in ("env", "action", "subject", "note")
     )
-    if not all((env, action, subject, change)) or not re.fullmatch(
-        r"[0-9]+", str(runId)
-    ):
-        raise ValueError(
-            "Headline needs env, action, subject, change and a numeric run"
-        )
-    return env + ": " + action + " " + subject + " — " + change + " · run " + str(runId)
+    if not all((env, action, subject)):
+        raise ValueError("Headline needs env, action and subject")
+    return env + ": " + action + " " + subject + (" · " + note if note else "")
 
 
 def summaryRows(markdown):
@@ -260,46 +271,31 @@ def render(
     resources=None,
     validation=None,
     gist=None,
+    outcome=None,
 ):
-    """`gist`: plain-language Markdown (what this run does, in order, and why) shown
-    before any table."""
+    """`outcome`: one short sentence, the body's first line, saying what happens after
+    approval. `gist`: plain-language Markdown (what this run does, in order, and why)
+    shown before any table."""
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("Exact repository required for review links")
     if not re.fullmatch(r"[0-9]+", str(runId)) or not re.fullmatch(
         r"[A-Za-z0-9-]+", owner
     ):
         raise ValueError("Exact owner and numeric workflow run required")
-    digestCommand = r"APPROVE [A-Z][A-Z -]* [0-9a-f]{64}"
-    # Version-named approvals (user decision 2026-10-28): the ECR image tag
-    # `<app>-vYYYY.MM.DD.HH.NN`, or a bare content release `vYYYY.MM.DD.HH.NN`; the plan
-    # digest stays in the body and the receipt.
-    versionCommand = (
-        r"APPROVE [A-Z][A-Z -]*"
-        r" (?:[a-z][a-z-]*-)?v\d{4}\.\d{2}\.\d{2}\.\d{2}\.(?:\d{2}|[1-9]\d{2,})"
-    )
-    resourceCommand = (
-        r"APPROVE APPLY (?:NO_CHANGES|(?:s3|s3-policy|kms|cloudtrail)"
-        r" (?:CREATE|UPDATE) [A-Za-z0-9_./:=-]+)"
-    )
-    if not command or any(
-        not re.fullmatch(
-            digestCommand + "|" + versionCommand + "|" + resourceCommand, line
-        )
-        for line in command.split("\n")
-    ):
+    if not command or any(not COMMAND.fullmatch(line) for line in command.split("\n")):
         raise ValueError(
-            "Exact approval command or complete resource approval block required"
+            "Exact approval command `APPROVE <action> <env> <subject> <version or"
+            " name>` required"
         )
     run = f"https://github.com/{repository}/actions/runs/{runId}"
-    verb = " ".join(command.split("\n")[0].split(" ")[:2])
-    placeholder = (
-        "<version>"
-        if re.fullmatch(versionCommand, command.split("\n")[0])
-        else "<digest>"
+    answer = (
+        "`" + command + "`"
+        if "\n" not in command
+        else "the command block, line by line"
     )
-    top = ""
+    top = (text(outcome).strip() + "\n\n" + code(command) + "\n\n") if outcome else ""
     if headline:
-        top = (
+        top += (
             alert(
                 "IMPORTANT",
                 "**"
@@ -308,6 +304,7 @@ def render(
                 + text(headline["action"])
                 + " "
                 + text(headline["subject"])
+                + (" · " + text(headline["note"]) if headline.get("note") else "")
                 + "** — "
                 + text(headline["change"])
                 + "\n\nApprove by **"
@@ -318,11 +315,9 @@ def render(
                 + str(runId)
                 + "]("
                 + run
-                + ") · Comment `"
-                + verb
-                + " "
-                + placeholder
-                + "` or `REJECT`",
+                + ") · Comment exactly "
+                + answer
+                + " or `REJECT`",
             )
             + "\n\n"
         )
@@ -363,8 +358,8 @@ def render(
         alert(
             "TIP",
             f"@{owner}: post a **new comment** containing exactly the"
-            " block below. Surrounding whitespace is ignored; "
-            "keep the command and digest unchanged.",
+            " block below. Surrounding whitespace is ignored; letters are"
+            " case-sensitive: keep every word, space and the version unchanged.",
         )
         + "\n\n"
         + code(command)

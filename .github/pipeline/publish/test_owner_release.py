@@ -193,14 +193,17 @@ class OwnerReleaseTests(unittest.TestCase):
                 body = c.github.data["issues/3"]["body"]
                 self.assertIn("/commit/" + "9" * 40, body)
                 self.assertIn("/commit/" + "a" * 40, body)
+                # DLV-1027: the title names the application as its repository
+                name = REPO.split("/", 1)[1].removeprefix("lookahead-learning-")
                 self.assertEqual(
                     c.github.data["issues/3"]["title"],
-                    "DEV: Publish image "
-                    + APP
-                    + (
-                        "-v2026.10.26.20.00 — no merged PR associated with this"
-                        " source · run 12"
-                    ),
+                    "DEV: Publish image " + name + " v2026.10.26.20.00",
+                )
+                self.assertIn(
+                    "```text\nAPPROVE publish image dev "
+                    + name
+                    + " v2026.10.26.20.00\n```",
+                    body,
                 )
                 self.assertIn(
                     (

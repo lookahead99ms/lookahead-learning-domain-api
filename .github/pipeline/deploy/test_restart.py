@@ -12,7 +12,16 @@ import unittest.mock
 import deploy
 import owner_approval as owner
 import restart as m
-from test_deploy import APP, CONFIG, REPOSITORY, RESTARTED_TASK, ROOT, TASK, FakeAws
+from test_deploy import (
+    APP,
+    CONFIG,
+    NAME,
+    REPOSITORY,
+    RESTARTED_TASK,
+    ROOT,
+    TASK,
+    FakeAws,
+)
 
 SHA = "a" * 40
 NOW = datetime(2026, 11, 5, 19, 0, tzinfo=timezone.utc)  # 14:00 in New York
@@ -169,7 +178,7 @@ class PlanTests(RestartFixture):
             planned["planDigest"],
             owner.digest({k: v for k, v in planned.items() if k != "planDigest"}),
         )
-        self.assertEqual("APPROVE RESTART " + planned["planDigest"], m.command(planned))
+        self.assertEqual("APPROVE restart dev " + NAME, m.command(planned))
         m.validatePlan(planned, self.env, self.root, self.get)
         changed = dict(planned, revision=REVISION.replace(":3", ":4"))
         with self.assertRaisesRegex(ValueError, "plan digest changed"):
@@ -242,9 +251,17 @@ class ApprovalTests(RestartFixture):
             ),
         )
         issue = self.github.issues[3]
-        self.assertIn("Restart " + APP, issue["title"])
+        self.assertEqual("DEV: Restart " + NAME + " · revision 3", issue["title"])
+        self.assertTrue(
+            issue["body"].startswith(
+                "Restarts "
+                + NAME
+                + " on the revision it runs now (revision 3). Nothing else changes."
+                "\n\n```text\nAPPROVE restart dev " + NAME + "\n```\n"
+            )
+        )
         for words in (
-            "APPROVE RESTART " + planned["planDigest"],
+            planned["planDigest"],
             "force new deployment of revision 3",
             "AWS::ECS::Service",
             "no image, stack or configuration change",
@@ -293,9 +310,34 @@ class ApprovalTests(RestartFixture):
                 now=lambda: NOW,
                 sleep=lambda s: None,
             )
+        # DLV-1027: only the exact readable phrase approves; old forms, another
+        # environment or application, other letter case or extra words never do.
+        for wrong in (
+            "APPROVE RESTART " + planned["planDigest"],
+            "APPROVE RESTART " + "f" * 64,
+            "APPROVE restart prod " + NAME,
+            "APPROVE restart " + NAME,
+            "APPROVE restart dev other-app",
+            "APPROVE Restart dev " + NAME,
+            "APPROVE restart DEV " + NAME,
+            "APPROVE restart dev " + NAME + " v2026.11.05.19.00",
+            "APPROVE restart dev  " + NAME,
+        ):
+            self.github = Github()
+            self.github.answer = wrong
+            with self.assertRaises(TimeoutError, msg=wrong):
+                m.approve(
+                    planned,
+                    self.env,
+                    self.root,
+                    self.get,
+                    now=lambda: NOW,
+                    sleep=lambda s: None,
+                )
         self.github = Github()
-        self.github.answer = "APPROVE RESTART " + "f" * 64
-        with self.assertRaises(TimeoutError):
+        self.github.answer = "\n APPROVE restart dev " + NAME + " \n"
+        self.assertEqual(
+            7,
             m.approve(
                 planned,
                 self.env,
@@ -303,7 +345,8 @@ class ApprovalTests(RestartFixture):
                 self.get,
                 now=lambda: NOW,
                 sleep=lambda s: None,
-            )
+            )["commentId"],
+        )
         self.github = Github()
         with self.assertRaises(TimeoutError):
             m.approve(

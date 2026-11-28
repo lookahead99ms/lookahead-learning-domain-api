@@ -212,7 +212,7 @@
           "name": "Close the approval issue when approval failed or expired",
           "if": "failure()",
           "continue-on-error": true,
-          "run": "python3 .github/pipeline/shared/issue_close.py --stage \"Approve DEV data migration\" --outcome failure --detail \"Rejected, expired or failed; no migration task ran.\" --match \"domain data\""
+          "run": "python3 .github/pipeline/shared/issue_close.py --stage \"Approve DEV data migration\" --outcome failure --detail \"Rejected, expired or failed; no migration task ran.\" --match \"DEV: Migrate\""
         }
       ]
     },

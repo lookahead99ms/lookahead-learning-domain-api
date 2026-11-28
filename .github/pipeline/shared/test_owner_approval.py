@@ -132,7 +132,9 @@ class Github:
         return {
             "id": 7,
             "user": {"login": m.OWNER},
-            "body": "APPROVE IMAGE " + self.plan["imageTag"],
+            "body": "APPROVE publish image dev "
+            + m.approvalName(self.env["GITHUB_REPOSITORY"])
+            + " v2026.10.26.20.00",
             "created_at": self.now.replace(microsecond=0).isoformat(),
             "updated_at": self.now.replace(microsecond=0).isoformat(),
         }
@@ -349,7 +351,7 @@ class ApprovalTests(unittest.TestCase):
     def test_wrong_edited_missing_future_or_old_comments_never_approve(self):
         edits = [
             lambda c: c["user"].update(login="other"),
-            lambda c: c.update(body="APPROVE IMAGE wrong"),
+            lambda c: c.update(body="APPROVE publish image dev wrong"),
             lambda c: c.update(
                 updated_at=(Github().now + timedelta(seconds=1)).isoformat()
             ),
@@ -376,6 +378,78 @@ class ApprovalTests(unittest.TestCase):
         fake.comments = []
         with self.assertRaises(ValueError):
             m.verify(fake.plan, receipt, fake.env, fake.get, fake.now)
+
+    def test_only_the_readable_phrase_for_this_image_approves(self):
+        """DLV-1027 (owner decision 2026-11-27): `APPROVE publish image dev <app>
+        <version>`, exact after trimming surrounding whitespace, case-sensitive, on this
+        run's own issue, after the issue was created and within the wait window."""
+        names = {
+            "lookahead99ms/lookahead-learning-domain-api": "domain-api",
+            "lookahead99ms/lookahead-learning-web": "web",
+            "lookahead99ms/lookahead-learning-gateway-bff": "gateway-bff",
+        }
+        for repo, name in names.items():
+            fake = Github(repo)
+            self.assertEqual(name, m.approvalName(repo))
+            self.assertEqual(
+                "APPROVE publish image dev " + name + " v2026.10.26.20.00",
+                m.command(fake.plan),
+            )
+        with self.assertRaises(ValueError):
+            m.approvalName("lookahead99ms/lookahead-learning-content")
+        phrase = "APPROVE publish image dev domain-api v2026.10.26.20.00"
+        for accepted in (phrase, "  " + phrase + "\n", "\n" + phrase + "\t"):
+            fake = Github()
+            receipt = fake.approved()
+            fake.comments[0]["body"] = accepted
+            self.assertIsNotNone(
+                m.decision(fake.plan, receipt, fake.env, fake.get, fake.now), accepted
+            )
+        refused = (
+            "APPROVE publish image prod domain-api v2026.10.26.20.00",
+            "APPROVE publish image domain-api v2026.10.26.20.00",
+            "APPROVE publish image dev web v2026.10.26.20.00",
+            "APPROVE publish image dev domain v2026.10.26.20.00",
+            "APPROVE publish image dev domain-api v2026.10.26.20.01",
+            "APPROVE publish image dev domain-api",
+            "APPROVE PUBLISH IMAGE DEV domain-api v2026.10.26.20.00",
+            "APPROVE Publish image dev domain-api v2026.10.26.20.00",
+            "approve publish image dev domain-api v2026.10.26.20.00",
+            "APPROVE publish image dev  domain-api v2026.10.26.20.00",
+            "APPROVE publish image dev domain-api v2026.10.26.20.00 please",
+            "APPROVE deploy dev domain-api v2026.10.26.20.00",
+            "APPROVE IMAGE domain-v2026.10.26.20.00",
+            "APPROVE IMAGE " + "b" * 64,
+            "`" + phrase + "`",
+        )
+        for body in refused:
+            fake = Github()
+            receipt = fake.approved()
+            fake.comments[0]["body"] = body
+            self.assertIsNone(
+                m.decision(fake.plan, receipt, fake.env, fake.get, fake.now), body
+            )
+            with self.assertRaises(ValueError):
+                m.verify(fake.plan, receipt, fake.env, fake.get, fake.now)
+        # The right phrase on another issue, before the issue or after the wait window
+        # never approves this run.
+        fake = Github()
+        receipt = fake.approved()
+        approving = fake.comments
+        fake.comments = []
+        fake.data["issues/4/comments?per_page=100"] = approving
+        self.assertIsNone(m.decision(fake.plan, receipt, fake.env, fake.get, fake.now))
+        wait = m.approvalWait()
+        for moment in (fake.now - timedelta(seconds=1), fake.now + wait):
+            fake = Github()
+            receipt = fake.approved()
+            fake.comments[0].update(
+                created_at=moment.isoformat(), updated_at=moment.isoformat()
+            )
+            later = fake.now + wait + timedelta(minutes=1)
+            self.assertIsNone(
+                m.decision(fake.plan, receipt, fake.env, fake.get, later, recheck=True)
+            )
 
     def test_rejection_changed_issue_pagination_and_comment_id_block(self):
         edits = [
@@ -538,7 +612,7 @@ class ApprovalTests(unittest.TestCase):
         fake.comment = lambda: {
             "id": 7,
             "user": {"login": m.OWNER},
-            "body": "APPROVE IMAGE " + fake.plan["imageTag"],
+            "body": m.command(fake.plan),
             "created_at": late,
             "updated_at": late,
         }
@@ -782,6 +856,7 @@ class ApprovalTests(unittest.TestCase):
         for repo in m.PUBLISHERS:
             fake = Github(repo)
             tag = fake.plan["imageTag"]
+            name = m.approvalName(repo)
             fake.plan["sourceChanges"] = {
                 "meaning": "synthetic",
                 "pullRequests": [
@@ -805,25 +880,27 @@ class ApprovalTests(unittest.TestCase):
                 {
                     "env": "DEV",
                     "action": "Publish image",
-                    "subject": tag,
+                    "subject": name + " v2026.10.26.20.00",
                     "change": "Newest <change>",
                 },
             )
             self.assertEqual(
-                m.issueTemplate.title(headline, "12"),
-                "DEV: Publish image " + tag + " — Newest &lt;change&gt; · run 12",
+                fake.data["issues/3"]["title"],
+                "DEV: Publish image " + name + " v2026.10.26.20.00",
             )
-            self.assertRegex(
-                m.issueTemplate.title(headline, "12"),
-                r"^DEV: Publish image \S+ — .+ · run 12$",
-            )
+            phrase = "APPROVE publish image dev " + name + " v2026.10.26.20.00"
             self.assertTrue(
                 body.startswith(
-                    "> [!IMPORTANT]\n> **DEV · Publish image "
-                    + tag
-                    + "** — Newest &lt;change&gt;"
+                    "Publishes image "
+                    + name
+                    + " v2026.10.26.20.00 to ECR. Nothing is deployed.\n\n```text\n"
+                    + phrase
+                    + "\n```\n\n> [!IMPORTANT]\n> **DEV · Publish image "
+                    + name
+                    + " v2026.10.26.20.00** — Newest &lt;change&gt;"
                 )
             )
+            self.assertIn("Comment exactly `" + phrase + "` or `REJECT`", body)
             self.assertIn(
                 "| **Affected AWS resources** | **None** created, updated or"
                 " replaced. |",

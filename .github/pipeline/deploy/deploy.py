@@ -517,9 +517,9 @@ def resourceRows(config, state, count, current, unchanged=False, busy=False):
                     "duplicate image: the stack already runs this image at"
                     " DesiredCount "
                     + str(count)
-                    + ". APPROVE REFRESH registers a new task definition revision (same"
-                    " image, new refresh token) and ECS restarts the task; APPROVE"
-                    " VERIFY and REJECT change nothing"
+                    + ". A refresh answer registers a new task definition revision"
+                    " (same image, new refresh token) and ECS restarts the task; a"
+                    " verify answer and REJECT change nothing"
                 ),
             },
             {
@@ -733,13 +733,15 @@ def validatePlan(planned, env, root, get=owner.api, identity=None):
 
 
 def approvalCommands(planned):
-    """One comment per allowed answer: `APPROVE DEPLOY <tag>` for a changed plan;
-    `APPROVE REFRESH <tag>` (restart on the same image) and `APPROVE VERIFY <tag>`
-    (verification only) for a duplicate image (user decision 2026-11-02). The comment
-    names the image version as ECR shows it (user decision 2026-10-28); the plan
-    digest binds the exact plan through the issue body and the receipt."""
+    """One comment per allowed answer (DLV-1027, owner decision 2026-11-27), for
+    example `APPROVE deploy dev web v2026.11.27.19.00` for a changed plan (`park` when
+    it sets DesiredCount 0); `APPROVE refresh …` (restart on the same image) and
+    `APPROVE verify …` (verification only) for a duplicate image (user decision
+    2026-11-02). The plan digest binds the exact plan through the body and receipt."""
+    words = {"deploy": "deploy" if planned["desiredCount"] == 1 else "park"}
+    name = owner.approvalName(planned["repository"])
     return {
-        mode: "APPROVE " + mode.upper() + " " + planned["imageTag"]
+        mode: owner.phrase(words.get(mode, mode), name, planned["releaseVersion"])
         for mode in planned["choices"]
     }
 
@@ -756,11 +758,7 @@ def approvalWindow(planned, env=None):
 
 
 def headline(planned):
-    action = (
-        "Deploy " + planned["app"]
-        if planned["desiredCount"] == 1
-        else "Park " + planned["app"]
-    )
+    action = "Deploy" if planned["desiredCount"] == 1 else "Park"
     change = (
         (
             "rolling update of " + planned["stack"]
@@ -786,9 +784,42 @@ def headline(planned):
     return {
         "env": "DEV",
         "action": action,
-        "subject": planned["imageTag"],
+        "subject": owner.approvalName(planned["repository"])
+        + " "
+        + planned["releaseVersion"],
         "change": change,
+        **({"note": "duplicate image"} if planned["unchanged"] else {}),
     }
+
+
+def outcome(planned):
+    """The body's first line: what happens after approval, in one sentence."""
+    subject, stack = headline(planned)["subject"], planned["stack"]
+    if planned["unchanged"]:
+        return (
+            "Duplicate image: "
+            + stack
+            + " already runs "
+            + subject
+            + ". Nothing changes unless you answer "
+            + " or ".join(planned["choices"])
+            + " within 5 minutes."
+        )
+    if planned.get("busyStackPark"):
+        return (
+            "Scales the stuck "
+            + stack
+            + " to zero tasks, then records the park in its stack. Nothing is deleted."
+        )
+    if planned["desiredCount"] == 1:
+        return (
+            "Deploys "
+            + subject
+            + " to DEV with a rolling update of "
+            + stack
+            + ". IAM, network and data do not change."
+        )
+    return "Parks " + stack + " at zero tasks. Nothing is deleted."
 
 
 def dataNote(planned):
@@ -985,6 +1016,7 @@ def body(planned, receipt, env=None):
     ]
     return issueTemplate.render(
         headline=headline(planned),
+        outcome=outcome(planned),
         gist=gist(planned, env),
         resources=planned["resources"],
         overview=(
@@ -1168,7 +1200,7 @@ def approve(planned, env, root, get=owner.api, now=lambda: utc(), sleep=time.sle
         planned["repository"],
         "issues",
         {
-            "title": issueTemplate.title(headline(planned), planned["runId"]),
+            "title": issueTemplate.title(headline(planned)),
             "body": preview,
         },
     )

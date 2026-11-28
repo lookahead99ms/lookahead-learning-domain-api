@@ -162,7 +162,7 @@
       "Type": "String",
       "Default": "none",
       "AllowedPattern": "^[A-Za-z0-9-]{1,64}$",
-      "Description": "Changed only by an APPROVE REFRESH answer in 04 \u00b7 Deploy DEV: a new value registers a new task definition revision with the same image, so ECS restarts the task (Domain re-reads the content release in S3)"
+      "Description": "Changed only by a refresh approval in 04 \u00b7 Deploy DEV: a new value registers a new task definition revision with the same image, so ECS restarts the task (Domain re-reads the content release in S3)"
     },
     "DesiredCount": {
       "Type": "Number",
