@@ -242,7 +242,14 @@ def validate(planned, env, root, get=owner.api):
 
 
 def commands(planned):
-    return {"deploy": "APPROVE RECOVER " + planned["imageTag"]}
+    """One answer (DLV-1027): `APPROVE recover dev <app> <version>`."""
+    return {
+        "deploy": owner.phrase(
+            "recover",
+            owner.approvalName(planned["repository"]),
+            planned["releaseVersion"],
+        )
+    }
 
 
 def window(planned, env=None):
@@ -254,8 +261,10 @@ def window(planned, env=None):
 def headline(planned):
     return {
         "env": "DEV",
-        "action": "Recover " + planned["app"],
-        "subject": planned["imageTag"],
+        "action": "Recover",
+        "subject": owner.approvalName(planned["repository"])
+        + " "
+        + planned["releaseVersion"],
         "change": (
             "park "
             + planned["stack"]
@@ -360,6 +369,13 @@ def body(planned, receipt, env=None):
     ]
     return issueTemplate.render(
         headline=headline(planned),
+        outcome="Recovers "
+        + planned["stack"]
+        + ": parks it, serves "
+        + planned["releaseVersion"]
+        + " and falls back to "
+        + planned["fallbackReleaseVersion"]
+        + " if needed. Nothing is deleted.",
         gist=gist(planned, env),
         resources=resources,
         overview=(
@@ -431,7 +447,7 @@ def approve(
         planned["repository"],
         "issues",
         {
-            "title": issueTemplate.title(headline(planned), planned["runId"]),
+            "title": issueTemplate.title(headline(planned)),
             "body": preview,
         },
     )

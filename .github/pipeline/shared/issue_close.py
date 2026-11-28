@@ -16,10 +16,12 @@ so the workflow closes it as its last step (`if: always()`).
 
 `--receipt` reads the issue number from the stage's receipt (`issue`). When the approval
 never produced a receipt (REJECT, timeout, failure before the wait), `--match` finds the
-one open issue of this run whose title contains the text and whose body links this run.
+one open issue of this run whose title contains the text and whose body links this run;
+`--match` may be repeated when one stage opens issues under several titles (`04 · Deploy
+DEV`: `DEV: Deploy …` or `DEV: Park …`), and any of the texts matches.
 Only issues opened by github-actions[bot] and still open are touched; comments are never
-edited; nothing else is changed. Identical copy in Infra, Content, Domain, Web and
-Gateway/BFF. Never calls AWS.
+edited; nothing else is changed. Began as Infra's copy; identical copy in Domain, Web
+and Gateway/BFF (the repeatable `--match` is theirs, DLV-1027). Never calls AWS.
 """
 
 import argparse
@@ -67,6 +69,7 @@ def fromReceipt(path):
 
 
 def fromMatch(repository, runId, match, call=gh):
+    texts = [match] if isinstance(match, str) else list(match)
     rows = call(
         [
             "repos/"
@@ -80,7 +83,7 @@ def fromMatch(repository, runId, match, call=gh):
     found = [
         r
         for r in rows
-        if match in str(r.get("title", ""))
+        if any(text in str(r.get("title", "")) for text in texts)
         and "/actions/runs/" + str(runId) in str(r.get("body", ""))
     ]
     require(len(found) <= 1, "Several open issues match; closing none")
@@ -156,7 +159,11 @@ def main(argv=None, env=None, call=gh):
     )
     parser.add_argument(
         "--match",
-        help="title text of this run's open approval issue when no receipt exists",
+        action="append",
+        help=(
+            "title text of this run's open approval issue when no receipt exists;"
+            " repeat for several titles"
+        ),
     )
     args = parser.parse_args(argv)
     repository, runId = env.get("GITHUB_REPOSITORY", ""), env.get("GITHUB_RUN_ID", "")

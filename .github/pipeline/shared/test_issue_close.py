@@ -21,7 +21,7 @@ class Github:
                 "number": 7,
                 "state": "open",
                 "user": {"login": m.BOT},
-                "title": "DEV: Publish image web-v2026.10.28.15.01 · run 42",
+                "title": "DEV: Publish image web v2026.10.28.15.01",
                 "body": (
                     "[Run 42](https://github.com/lookahead99ms/example/actions/runs/42)"
                 ),
@@ -140,7 +140,7 @@ class CloseTests(unittest.TestCase):
             "number": 8,
             "state": "open",
             "user": {"login": m.BOT},
-            "title": "DEV: Publish image web-v2026.10.28.15.01 · run 41",
+            "title": "DEV: Publish image web v2026.10.28.15.01",
             "body": (
                 "[Run 41](https://github.com/lookahead99ms/example/actions/runs/41)"
             ),
@@ -196,6 +196,23 @@ class CloseTests(unittest.TestCase):
                 ENV,
                 fake,
             )
+
+    def test_repeated_match_finds_a_park_or_deploy_issue_of_this_run(self):
+        """DLV-1027: `04 · Deploy DEV` opens `DEV: Deploy …` or `DEV: Park …`; the
+        approval stage closes either with one step."""
+        args = ["--stage", "Approve DEV deploy", "--outcome", "failure"]
+        args += ["--detail", "d", "--match", "Deploy", "--match", "Park"]
+        for title in (
+            "DEV: Park web v2026.11.27.19.00",
+            "DEV: Deploy web v2026.11.27.19.00 · duplicate image",
+        ):
+            fake = Github()
+            fake.issues[7]["title"] = title
+            self.assertEqual(7, m.main(args, ENV, fake)["issue"], title)
+        fake = Github()
+        fake.issues[7]["title"] = "DEV: Restart web · revision 3"
+        self.assertIsNone(m.main(args, ENV, fake))
+        self.assertEqual("open", fake.issues[7]["state"])
 
     def test_only_open_bot_issues_are_touched_and_inputs_are_exact(self):
         fake = Github(

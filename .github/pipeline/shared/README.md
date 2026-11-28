@@ -75,8 +75,8 @@ records the effective times; set both variables before a run, not between its jo
    retained as `release-image-<S>` with a `lookahead-scanned-image/v3` receipt that records S and M.
 4. **Approve ECR publish** (`approve`): no credentials, no environment. `owner_release.py gate`
    re-resolves the tag from the frozen record and `owner_release.py approve` opens the owner issue
-   bound to the exact image: `APPROVE IMAGE <version>` (the ECR image tag, for example
-   `web-v2026.10.28.15.01`) within 10 minutes of the issue being created, `REJECT` stops; edited comments,
+   bound to the exact image: `APPROVE publish image dev <app> <version>` (for example
+   `APPROVE publish image dev domain-api v2026.11.27.19.00`; readable approvals below) within 10 minutes of the issue being created, `REJECT` stops; edited comments,
    a moved tag or main, or a changed issue fail closed. The receipt records the comment time (`approvedAt`).
 5. **Publish to ECR** (`publish`, environment `dev`, no required reviewers): rechecks the live
    approval (valid for 15 minutes from the approval comment, so an answer at minute 9 of the wait still
@@ -115,13 +115,14 @@ scheduled scale-down from 2026-11-05). `01 · Full` always passes `1`.
    whose image and count already match the stack is recorded as `unchanged` (a duplicate image) and offers
    `refresh` and `verify` instead of `deploy` (`verify` only when the duplicate is a parked service).
 3. **Approve DEV deploy** (`approve-deploy`): no credentials; `deploy.py approve` opens the owner
-   issue bound to that plan: `APPROVE DEPLOY <image tag>` (for example `web-v2026.11.01.14.00`)
+   issue bound to that plan: `APPROVE deploy dev <app> <version>` (for example `APPROVE deploy dev domain-api v2026.11.27.19.00`;
+   `park` instead of `deploy` for `desired_count` 0)
    within 10 minutes of the issue being created, `REJECT` stops; the plan digest is in the issue body and the receipt. For a
    **duplicate image** the issue title and first line carry a warning, the window is **5 minutes**, and
-   the answers are `APPROVE REFRESH <image tag>` (restart on the same image: the change set sets the
+   the answers are `APPROVE refresh dev <app> <version>` (restart on the same image: the change set sets the
    template parameter `RefreshToken` to `run-<run id>`, CloudFormation registers a new task definition
    revision and ECS performs the rolling update; the new task re-reads its configuration and, for Domain,
-   the content release in S3), `APPROVE VERIFY <image tag>` (no AWS change, verification only, no
+   the content release in S3), `APPROVE verify dev <app> <version>` (no AWS change, verification only, no
    observation) or `REJECT`; no answer closes the issue with nothing done (user decision 2026-11-02).
    The receipt records the chosen mode and the comment time (`approvedAt`); the deploy job executes only that mode.
 4. **Deploy to DEV** (`deploy-dev`, environment `dev`): `deploy.py verify` rechecks the approval
@@ -217,7 +218,7 @@ concurrency group, so it never runs beside a deploy. Use `04 · Deploy DEV` for 
    the target itself). With neither, the plan stops and asks for the input. The fallback tag is frozen the same way;
    then `recover.py plan` writes one `deploy.py` plan per stage (artifact `recover-plan`).
 3. **Approve DEV recovery**: one issue lists every stage, both releases and the park steps; the owner answers
-   `APPROVE RECOVER <app>-<tag>` within 10 minutes of the issue being created (`REJECT` stops the run).
+   `APPROVE recover dev <app> <version>` within 10 minutes of the issue being created (`REJECT` stops the run).
 4. **Recover DEV** (environment `dev`): the live approval is rechecked before any credentials (valid for 15 minutes from
    the approval comment); then each stage assumes
    its own deploy session `<app>-deploy-<run>-<n>` (60 minutes each) and runs `recover.py stage`:
@@ -258,7 +259,8 @@ task definition family are never touched; `04 · Deploy DEV` with the same relea
    tables, ledger items and the resource rows the issue shows.
 3. **Approve DEV data migration**: one v2 issue (task definition family, the one-off task, the untouched service, the four
    tables, the ledger items `DATA_VERSION#DOMAIN / STEP#…`, `CURRENT`, `LOCK`); the owner answers
-   `APPROVE MIGRATE <app>-<tag>` (`APPROVE VERIFY …`, `APPROVE STATUS …`) within `APPROVAL_WAIT_MINUTES` (default 10) of the
+   `APPROVE migrate dev domain-api <version> migrate` (`verify` or `status` as the last word for the
+   other commands) within `APPROVAL_WAIT_MINUTES` (default 10) of the
    issue being created; `REJECT` or silence closes it with nothing run.
 4. **Migrate DEV data** (environment `dev`): the live approval is rechecked before any credentials; then session
    `domain-deploy-migrate-<run>-1` (60 minutes) runs `migrate.py execute`: `ecs register-task-definition` (the digest, both roles,
@@ -285,6 +287,35 @@ the same day: the parameter, the input, the `DEPLOY_PERSISTENCE_STORE` variable,
 `DomainAppSecretArn` / `DomainAppVersion` parameters and the task's database secret are gone. A deploy never names a store;
 the Domain's configuration pins the four DynamoDB table names and `deploy.py` only checks that they are the DEV names.
 The way back from a data step is a new step, not a flag.
+
+## Readable approvals (DLV-1027)
+
+Owner decision 2026-11-27. Every approval issue's title reads `DEV: <Action> <app> <version or name>`, its first line
+says in one sentence what happens after approval, and the exact comment to post is shown in a copyable block (and again
+under "Approve or reject"). The comment names the change like a branch name, `APPROVE <action> <env> <app> <version or
+name>`: lower-case words, the environment always present (today `dev`; a DEV approval can never satisfy a PROD issue),
+`<app>` the repository name without `lookahead-learning-` (`domain-api`, `web`, `gateway-bff`) and `<version>` the release
+tag. The image in ECR keeps its tag `<image app>-<version>` (for example `domain-v…`).
+
+The run accepts only the exact phrase after trimming surrounding whitespace (case-sensitive, single spaces), posted by the
+owner as a new, unedited comment on the run's own issue after the issue was created and within the wait window; `REJECT`
+stops. The plan or image digest stays in the issue body and the receipt, the body is re-rendered and compared before
+credentials, and the approval stays valid for `APPROVAL_VALID_MINUTES` from the comment. The old forms (`APPROVE IMAGE
+<tag>`, `APPROVE DEPLOY <tag>`, `APPROVE REFRESH <tag>`, `APPROVE VERIFY <tag>`, `APPROVE RECOVER <tag>`, `APPROVE RESTART
+<digest>`, `APPROVE MIGRATE <tag>`) are no longer accepted; an issue opened before the change expires unanswered.
+
+| Workflow | Issue title | Comment to post | First line of the issue |
+| --- | --- | --- | --- |
+| `01 · Full` / `03 · Publish`: Approve ECR publish | `DEV: Publish image domain-api v2026.11.27.19.00` | `APPROVE publish image dev domain-api v2026.11.27.19.00` | Publishes image domain-api v2026.11.27.19.00 to ECR. Nothing is deployed. |
+| `04 · Deploy DEV` | `DEV: Deploy domain-api v2026.11.27.19.00` | `APPROVE deploy dev domain-api v2026.11.27.19.00` | Deploys domain-api v2026.11.27.19.00 to DEV with a rolling update of lookahead-dev-<service>. IAM, network and data do not change. |
+| `04 · Deploy DEV`, `desired_count` 0 | `DEV: Park domain-api v2026.11.27.19.00` | `APPROVE park dev domain-api v2026.11.27.19.00` | Parks lookahead-dev-<service> at zero tasks. Nothing is deleted. |
+| `04 · Deploy DEV`, duplicate image | `DEV: Deploy domain-api v2026.11.27.19.00 · duplicate image` | `APPROVE refresh dev domain-api v2026.11.27.19.00` or `APPROVE verify dev domain-api v2026.11.27.19.00` | Duplicate image: lookahead-dev-<service> already runs domain-api v2026.11.27.19.00. Nothing changes unless you answer refresh or verify within 5 minutes. |
+| `05 · Recover DEV` | `DEV: Recover domain-api v2026.11.27.19.00` | `APPROVE recover dev domain-api v2026.11.27.19.00` | Recovers lookahead-dev-<service>: parks it, serves v2026.11.27.19.00 and falls back to <fallback> if needed. Nothing is deleted. |
+| `06 · Restart DEV` | `DEV: Restart domain-api · revision 3` | `APPROVE restart dev domain-api` | Restarts domain-api on the revision it runs now (revision 3). Nothing else changes. |
+| `07 · Migrate DEV data` | `DEV: Migrate domain-api v2026.11.27.19.00 · migrate` | `APPROVE migrate dev domain-api v2026.11.27.19.00 migrate` | Applies the data steps of domain-api v2026.11.27.19.00 to the four DEV DynamoDB tables. The service is not touched. |
+
+When an approval stage fails before it has a receipt, its last step closes the open issue of the run by title text
+(`issue_close.py --match`, repeatable: `04 · Deploy DEV` passes `--match "Deploy" --match "Park"`).
 
 ## Settings the repository needs
 

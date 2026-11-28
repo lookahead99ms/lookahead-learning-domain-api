@@ -923,7 +923,9 @@ verified push range when available; manual/pinned sources are explicitly scoped
 to their exact revision, not claimed as a delta since the previous deployment.
 The central Content/Infra approval flows retain this snapshot with the approval
 receipt and disclose lookup failures or bounded/truncated results. Runtime APIs,
-workflow triggers, AWS grants and existing approval commands are unchanged.
+workflow triggers and AWS grants are unchanged. Approval issue titles and the comment to post are
+readable since DLV-1027 (`DEV: Deploy domain-api v…`, `APPROVE deploy dev domain-api v…`); the table is in
+[readable approvals](.github/pipeline/shared/README.md#readable-approvals-dlv-1027).
 
 ### Calendar image releases
 
@@ -978,7 +980,7 @@ See [docs/dynamodb-runtime.md](docs/dynamodb-runtime.md).
 3. Enter `release_version` (the tag) and leave `command` at `migrate` (`verify` re-checks every recorded step, `status` only reports; both write nothing).
 4. Wait for the Security gate and "Plan DEV data migration" to finish; the plan artifact `migrate-plan` holds `plan.json`.
 5. Open the approval issue the run created (its link is the last line of "Approve DEV data migration") and read it.
-6. Post one new comment with exactly the command the issue shows: `APPROVE MIGRATE domain-vYYYY.MM.DD.HH.NN` (`APPROVE VERIFY …` / `APPROVE STATUS …` for the other commands), within 10 minutes of the issue opening (`APPROVAL_WAIT_MINUTES`), or `REJECT`.
+6. Post one new comment with exactly the command the issue shows: `APPROVE migrate dev domain-api vYYYY.MM.DD.HH.NN migrate` (`verify` or `status` as the last word for the other commands; the issue title reads `DEV: Migrate domain-api vYYYY.MM.DD.HH.NN · <command>`), within 10 minutes of the issue opening (`APPROVAL_WAIT_MINUTES`), or `REJECT`.
 7. Wait for "Migrate DEV data" to finish; it closes the issue with the outcome and keeps `migrate-result/result.json` and one `migrate-record-<tag>-<run>` artifact.
 8. On success, dispatch `04 · Deploy DEV` with the same `release_version`.
 
@@ -988,9 +990,10 @@ live recheck before any credential, `issue_close.py` at the end).
 
 ### What the approval issue shows
 
-A v2 issue titled `DEV: Migrate domain data domain-v… — one Fargate task lookahead-dev-domain-migrate
-applies the data steps of this release to the four DynamoDB tables; the service is not touched · run N`
-(`Verify domain data` / `Read domain data status` for the other commands). "What this run does" lists
+An issue titled `DEV: Migrate domain-api v… · migrate` (`· verify` / `· status` for the other commands;
+DLV-1027) whose first line says what happens after approval ("Applies the data steps of domain-api v… to
+the four DEV DynamoDB tables. The service is not touched."), followed by the exact comment to post in a
+copyable block (`APPROVE migrate dev domain-api v… migrate`). "What this run does" lists
 the five steps in order; "Affected AWS resources" has one row per resource with its type and physical
 name: the task definition family `lookahead-dev-domain-migrate` (CREATE, a new revision), the one-off
 `AWS::ECS::Task` on `lookahead-dev-cluster` (RUN ONCE), the service `lookahead-dev-domain` (NO CHANGE,

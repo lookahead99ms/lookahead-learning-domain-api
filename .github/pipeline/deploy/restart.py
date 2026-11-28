@@ -279,16 +279,18 @@ def revisionNumber(planned):
 
 
 def command(planned):
-    """The issue template admits `APPROVE <WORDS> <plan digest>`; the digest binds the
-    exact revision, task and image of the plan."""
-    return "APPROVE RESTART " + planned["planDigest"]
+    """`APPROVE restart dev <app>` (DLV-1027, owner decision 2026-11-27). The plan
+    digest, which binds the exact revision, task and image, stays in the issue body and
+    the receipt; the answer counts only on this run's own issue."""
+    return owner.phrase("restart", owner.approvalName(planned["repository"]))
 
 
 def headline(planned):
     return {
         "env": "DEV",
-        "action": "Restart " + planned["app"],
-        "subject": "revision " + revisionNumber(planned),
+        "action": "Restart",
+        "subject": owner.approvalName(planned["repository"]),
+        "note": "revision " + revisionNumber(planned),
         "change": (
             "forced rollout of the running revision; no image, stack or"
             " configuration change"
@@ -391,6 +393,11 @@ def body(planned, receipt):
     )
     return issueTemplate.render(
         headline=headline(planned),
+        outcome="Restarts "
+        + owner.approvalName(planned["repository"])
+        + " on the revision it runs now (revision "
+        + revisionNumber(planned)
+        + "). Nothing else changes.",
         resources=resources,
         validation=validation,
         overview=overview,
@@ -470,7 +477,7 @@ def approve(
         planned["repository"],
         "issues",
         {
-            "title": issueTemplate.title(headline(planned), planned["runId"]),
+            "title": issueTemplate.title(headline(planned)),
             "body": body(planned, receipt),
         },
     )

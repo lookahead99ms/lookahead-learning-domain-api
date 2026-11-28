@@ -384,9 +384,17 @@ def validatePlan(planned, env, root, get=owner.api):
 
 
 def commands(planned):
-    """One answer: `APPROVE MIGRATE <tag>`, `APPROVE VERIFY <tag>` or `APPROVE STATUS
-    <tag>` (the image tag as ECR shows it)."""
-    return {"run": "APPROVE " + planned["command"].upper() + " " + planned["imageTag"]}
+    """One answer (DLV-1027, owner decision 2026-11-27): `APPROVE migrate dev
+    domain-api <version> <command>`, the command (`migrate`, `verify` or `status`) as
+    the last word."""
+    return {
+        "run": owner.phrase(
+            "migrate",
+            owner.approvalName(planned["repository"]),
+            planned["releaseVersion"],
+            planned["command"],
+        )
+    }
 
 
 def approvalCommand(planned):
@@ -402,6 +410,25 @@ ACTIONS = {
     "verify": "Verify domain data",
     "status": "Read domain data status",
 }
+# The body's first line: what happens after approval, in one sentence.
+OUTCOMES = {
+    "migrate": (
+        "Applies the data steps of {} to the four DEV DynamoDB tables. The service is"
+        " not touched."
+    ),
+    "verify": (
+        "Checks the recorded data steps of {} against the four DEV DynamoDB tables."
+        " Nothing is written."
+    ),
+    "status": (
+        "Reports the data step status of {} from the four DEV DynamoDB tables. Nothing"
+        " is written."
+    ),
+}
+
+
+def subject(planned):
+    return owner.approvalName(planned["repository"]) + " " + planned["releaseVersion"]
 
 
 def headline(planned):
@@ -420,8 +447,9 @@ def headline(planned):
     )
     return {
         "env": "DEV",
-        "action": ACTIONS[mode],
-        "subject": planned["imageTag"],
+        "action": "Migrate",
+        "subject": subject(planned),
+        "note": mode,
         "change": change,
     }
 
@@ -550,6 +578,7 @@ def body(planned, receipt, env=None):
     mode = planned["command"]
     return issueTemplate.render(
         headline=headline(planned),
+        outcome=OUTCOMES[mode].format(subject(planned)),
         gist=gist(planned, env),
         resources=planned["resources"],
         overview="**"
@@ -644,7 +673,7 @@ def approve(
         planned["repository"],
         "issues",
         {
-            "title": issueTemplate.title(headline(planned), planned["runId"]),
+            "title": issueTemplate.title(headline(planned)),
             "body": preview,
         },
     )

@@ -26,6 +26,8 @@ REPOSITORY = {
     "domain": "lookahead99ms/lookahead-learning-domain-api",
     "gateway-bff": "lookahead99ms/lookahead-learning-gateway-bff",
 }[APP]
+# DLV-1027: approval phrases and issue titles name the application as its repository
+NAME = {"web": "web", "domain": "domain-api", "gateway-bff": "gateway-bff"}[APP]
 SHA = "a" * 40
 DIGEST = "sha256:" + "b" * 64
 TASK = (
@@ -513,7 +515,7 @@ class DeployFixture(unittest.TestCase):
             env["DEPLOY_DESIRED_COUNT"] = count
         result = m.plan(env, self.aws, self.root, self.get, now=self.now)
         stamp = self.now.replace(microsecond=0).isoformat()
-        # the fake owner answers the plan's primary command (DEPLOY, or REFRESH for a
+        # the fake owner answers the plan's primary command (deploy, or refresh for a
         # duplicate image) unless a mode is named
         command = m.approvalCommands(result)[answer or result["choices"][0]]
         self.github.comment = lambda: {
@@ -634,7 +636,7 @@ class PlanTests(DeployFixture):
         parked = self.planned(count="0")
         self.assertEqual((0, False), (parked["desiredCount"], parked["unchanged"]))
         self.assertIn("parked at zero tasks", parked["resources"][1]["note"])
-        self.assertEqual("Park " + APP, m.headline(parked)["action"])
+        self.assertEqual("Park", m.headline(parked)["action"])
         with self.assertRaisesRegex(ValueError, "must be 1 \\(serve\\) or 0"):
             self.planned(count="2")
 
@@ -864,8 +866,20 @@ class ApprovalTests(DeployFixture):
             ),
         )
         issue = self.github.data["issues/3"]
-        self.assertIn("APPROVE DEPLOY " + planned["imageTag"], issue["body"])
-        self.assertIn("Deploy " + APP, issue["title"])
+        phrase = "APPROVE deploy dev " + NAME + " v2026.10.26.20.00"
+        self.assertEqual({"deploy": phrase}, m.approvalCommands(planned))
+        self.assertIn("```text\n" + phrase + "\n```", issue["body"])
+        self.assertEqual("DEV: Deploy " + NAME + " v2026.10.26.20.00", issue["title"])
+        self.assertTrue(
+            issue["body"].startswith(
+                "Deploys "
+                + NAME
+                + " v2026.10.26.20.00 to DEV with a rolling update of "
+                + planned["stack"]
+                + ". IAM, network and data do not change.\n"
+            )
+        )
+
         self.assertIn("rolling update", issue["body"].lower())
         self.assertIn("AWS::ECS::Service", issue["body"])
         self.assertNotIn("slot", issue["body"].lower())
@@ -875,8 +889,98 @@ class ApprovalTests(DeployFixture):
         self.aws.serving("b")
         planned = self.planned(count="0")
         self.approved(planned)
-        self.assertIn("Park " + APP, self.github.data["issues/3"]["title"])
-        self.assertIn("nothing is deleted", self.github.data["issues/3"]["body"])
+        issue = self.github.data["issues/3"]
+        self.assertEqual("DEV: Park " + NAME + " v2026.10.26.20.00", issue["title"])
+        self.assertIn("nothing is deleted", issue["body"])
+        self.assertTrue(
+            issue["body"].startswith(
+                "Parks " + planned["stack"] + " at zero tasks. Nothing is deleted.\n"
+            )
+        )
+        self.assertIn(
+            "```text\nAPPROVE park dev " + NAME + " v2026.10.26.20.00\n```",
+            issue["body"],
+        )
+
+    def test_only_the_readable_phrase_of_this_plan_approves(self):
+        """DLV-1027 (owner decision 2026-11-27): exact phrase after trimming
+        surrounding whitespace, case-sensitive; environment, application and version
+        must all match; old forms never approve."""
+        version = " v2026.10.26.20.00"
+        good = "APPROVE deploy dev " + NAME + version
+        refused = (
+            "APPROVE deploy prod " + NAME + version,
+            "APPROVE deploy " + NAME + version,
+            "APPROVE deploy dev other-app" + version,
+            "APPROVE deploy dev " + NAME + " v2026.10.26.20.01",
+            "APPROVE deploy dev " + NAME,
+            "APPROVE Deploy dev " + NAME + version,
+            "APPROVE DEPLOY DEV " + NAME + version,
+            "APPROVE park dev " + NAME + version,
+            "APPROVE refresh dev " + NAME + version,
+            "APPROVE DEPLOY " + APP + "-v2026.10.26.20.00",
+            "APPROVE deploy dev " + NAME + version + " now",
+        )
+        for body in (good, " " + good + "\n"):
+            planned = self.planned()
+            receipt = self.approved(planned)
+            self.github.comments[0]["body"] = body
+            self.assertIsNotNone(
+                m.decision(planned, receipt, self.env, self.root, self.get, self.now)
+            )
+        for body in refused:
+            planned = self.planned()
+            receipt = self.approved(planned)
+            self.github.comments[0]["body"] = body
+            self.assertIsNone(
+                m.decision(planned, receipt, self.env, self.root, self.get, self.now),
+                body,
+            )
+        # A duplicate image offers refresh and verify; deploy is not an answer there.
+        self.aws.serving("b")
+        planned = self.planned()
+        self.assertEqual(
+            {
+                "refresh": "APPROVE refresh dev " + NAME + version,
+                "verify": "APPROVE verify dev " + NAME + version,
+            },
+            m.approvalCommands(planned),
+        )
+        receipt = self.approved(planned)
+        issue = self.github.data["issues/3"]
+        self.assertEqual(
+            "DEV: Deploy " + NAME + version + " · duplicate image", issue["title"]
+        )
+        self.assertTrue(
+            issue["body"].startswith(
+                "Duplicate image: "
+                + planned["stack"]
+                + " already runs "
+                + NAME
+                + version
+                + ". Nothing changes unless you answer refresh or verify within 5"
+                " minutes.\n"
+            )
+        )
+        for body, mode in (
+            ("APPROVE refresh dev " + NAME + version, "refresh"),
+            ("APPROVE verify dev " + NAME + version, "verify"),
+            (good, None),
+        ):
+            self.github.comments[0]["body"] = body
+            found = m.decision(
+                planned, receipt, self.env, self.root, self.get, self.now
+            )
+            self.assertEqual(mode, found and found[1], body)
+        # Parking the serving stack is a change, answered with park.
+        self.assertEqual(
+            {"deploy": "APPROVE park dev " + NAME + version},
+            m.approvalCommands(self.planned(count="0")),
+        )
+        self.assertEqual(
+            {"verify": "APPROVE verify dev " + NAME + version},
+            m.approvalCommands({**planned, "desiredCount": 0, "choices": ["verify"]}),
+        )
 
     def test_verify_rejects_changed_plan_template_or_configuration_and_owner_reject(
         self,
@@ -937,7 +1041,7 @@ class ApprovalTests(DeployFixture):
         self.github.comment = lambda: {
             "id": 7,
             "user": {"login": "someone"},
-            "body": "APPROVE DEPLOY " + planned["imageTag"],
+            "body": m.approvalCommand(planned),
             "created_at": "2026-01-01T00:00:00+00:00",
             "updated_at": "2026-01-01T00:00:00+00:00",
         }
@@ -999,7 +1103,7 @@ class ApprovalTests(DeployFixture):
         self.github.comment = lambda: {
             "id": 7,
             "user": {"login": owner.OWNER},
-            "body": "APPROVE DEPLOY " + planned["imageTag"],
+            "body": m.approvalCommand(planned),
             "created_at": late,
             "updated_at": late,
         }
@@ -1941,7 +2045,7 @@ class TransportAndCliTests(DeployFixture):
         self.github.comment = lambda: {
             "id": 7,
             "user": {"login": owner.OWNER},
-            "body": "APPROVE DEPLOY " + planned["imageTag"],
+            "body": m.approvalCommand(planned),
             "created_at": stamp,
             "updated_at": stamp,
         }

@@ -992,7 +992,8 @@ class DeployWorkflowTests(unittest.TestCase):
             ("failure()", True),
             (
                 approve["steps"][-1]["if"],
-                '--match "Deploy"' in approve["steps"][-1]["run"],
+                # DLV-1027: a park opens `DEV: Park …`, a deploy `DEV: Deploy …`
+                '--match "Deploy" --match "Park"' in approve["steps"][-1]["run"],
             ),
         )
 
@@ -1171,6 +1172,36 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertEqual({"Task", "Service"}, set(template["Resources"]))
         self.assertNotIn(
             "ActivationAuthorized", json.dumps(template.get("Metadata", {}))
+        )
+
+
+class DependencyCacheTests(unittest.TestCase):
+    def test_java_ci_caches_its_dependency_downloads(self):
+        """DLV-1027: without a cache every build downloads its dependencies again and
+        keeps hitting Maven Central's HTTP 429 rate limit; the pinned setup-java action
+        caches them (Gradle for Gateway/BFF, Maven for Domain). Web builds no Java."""
+        if APP == "web":
+            ci = (ROOT / ".github/workflows/ci.yml").read_text()
+            self.assertNotIn("actions/setup-java@", ci)
+            return
+        steps = [
+            step
+            for job in load("ci.yml")["jobs"].values()
+            for step in uses(job, "actions/setup-java@")
+        ]
+        self.assertEqual(
+            [
+                {
+                    "distribution": "temurin",
+                    "java-version": "21",
+                    "cache": "gradle" if APP == "gateway-bff" else "maven",
+                }
+            ],
+            [step["with"] for step in steps],
+        )
+        self.assertEqual(
+            ["actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6"],
+            [step["uses"] for step in steps],
         )
 
 

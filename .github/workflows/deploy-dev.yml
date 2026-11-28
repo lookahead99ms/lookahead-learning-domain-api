@@ -226,7 +226,7 @@
           "name": "Close the approval issue when approval failed or expired",
           "if": "failure()",
           "continue-on-error": true,
-          "run": "python3 .github/pipeline/shared/issue_close.py --stage \"Approve DEV deploy\" --outcome failure --detail \"Rejected, expired or failed; nothing was deployed.\" --match \"Deploy\""
+          "run": "python3 .github/pipeline/shared/issue_close.py --stage \"Approve DEV deploy\" --outcome failure --detail \"Rejected, expired or failed; nothing was deployed.\" --match \"Deploy\" --match \"Park\""
         }
       ]
     },
