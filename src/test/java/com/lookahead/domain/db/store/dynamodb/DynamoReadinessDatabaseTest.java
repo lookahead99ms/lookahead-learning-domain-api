@@ -1,8 +1,9 @@
 package com.lookahead.domain.db.store.dynamodb;
 
-import com.lookahead.domain.health.DynamoReadinessIndicator;
+import static org.assertj.core.api.Assertions.*;
 
 import com.lookahead.domain.db.store.access.ProtectedOwnerIdentityStore;
+import com.lookahead.domain.health.DynamoReadinessIndicator;
 import com.lookahead.domain.log.LogCapture;
 import java.net.URI;
 import java.time.Clock;
@@ -17,115 +18,197 @@ import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
-import static org.assertj.core.api.Assertions.*;
 
-/** Local raw writes simulate the future migrator and corrupt restore. They do not prove IAM enforcement. */
+/**
+ * Local raw writes simulate the future migrator and corrupt restore. They do not prove IAM
+ * enforcement.
+ */
 @EnabledIfEnvironmentVariable(named = "DLV970_DYNAMODB_TEST_ENDPOINT", matches = ".+")
 class DynamoReadinessDatabaseTest {
-    private static DynamoDbClient client;
-    private static final DynamoTableNames TABLES = DynamoTableNamesTest.names("dev");
-    private static final List<String> NAMES = List.of(TABLES.userAccountDetailsTableName(),
-            TABLES.administratorAuditEventsTableName(), TABLES.userStudyPlanDetailsTableName(), TABLES.protectedOwnerIdentityTableName());
-    private final Set<String> created = new HashSet<>();
-    private DynamoReadinessIndicator readiness(int minimum) {
-        return new DynamoReadinessIndicator(new DynamoReadiness(client, TABLES, new DynamoDataRequirement(
-                IntStream.rangeClosed(1, minimum).mapToObj(i -> "step-" + i).toList())), Clock.systemUTC());
-    }
+  private static DynamoDbClient client;
+  private static final DynamoTableNames TABLES = DynamoTableNamesTest.names("dev");
+  private static final List<String> NAMES =
+      List.of(
+          TABLES.userAccountDetailsTableName(),
+          TABLES.administratorAuditEventsTableName(),
+          TABLES.userStudyPlanDetailsTableName(),
+          TABLES.protectedOwnerIdentityTableName());
+  private final Set<String> created = new HashSet<>();
 
-    @BeforeAll static void connect() {
-        URI endpoint = URI.create(System.getenv("DLV970_DYNAMODB_TEST_ENDPOINT"));
-        if (!"http".equals(endpoint.getScheme()) || !"127.0.0.1".equals(endpoint.getHost()) || endpoint.getPort() < 1024
-                || endpoint.getPort() > 65535 || endpoint.getUserInfo() != null || endpoint.getQuery() != null
-                || endpoint.getFragment() != null || !endpoint.getPath().isEmpty()) throw new IllegalArgumentException("Loopback fixture required");
-        client = DynamoDbClient.builder().endpointOverride(endpoint).region(Region.US_EAST_2)
-                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("synthetic", "synthetic")))
-                .httpClientBuilder(UrlConnectionHttpClient.builder()).build();
-    }
-    @BeforeEach void createTables() {
-        for (String name : NAMES) {
-            // DLV-970: these cases need empty tables; drop any table an earlier class in this JVM left behind.
-            try { client.deleteTable(DeleteTableRequest.builder().tableName(name).build()); } catch (ResourceNotFoundException absent) { /* fresh */ }
-            client.createTable(CreateTableRequest.builder().tableName(name).billingMode(BillingMode.PAY_PER_REQUEST)
-                    .keySchema(KeySchemaElement.builder().attributeName("pk").keyType(KeyType.HASH).build(),
-                            KeySchemaElement.builder().attributeName("sk").keyType(KeyType.RANGE).build())
-                    .attributeDefinitions(AttributeDefinition.builder().attributeName("pk").attributeType(ScalarAttributeType.S).build(),
-                            AttributeDefinition.builder().attributeName("sk").attributeType(ScalarAttributeType.S).build()).build());
-            created.add(name);
-        }
-    }
-    @AfterEach void cleanup() { for (String name : created) client.deleteTable(DeleteTableRequest.builder().tableName(name).build()); }
-    @AfterAll static void close() { if (client != null) client.close(); }
-    private void put(Map<String, AttributeValue> item) {
-        client.putItem(PutItemRequest.builder().tableName(TABLES.protectedOwnerIdentityTableName()).item(item).build());
-    }
+  private DynamoReadinessIndicator readiness(int minimum) {
+    return new DynamoReadinessIndicator(
+        new DynamoReadiness(
+            client,
+            TABLES,
+            new DynamoDataRequirement(
+                IntStream.rangeClosed(1, minimum).mapToObj(i -> "step-" + i).toList())),
+        Clock.systemUTC());
+  }
 
-    @Test void emptyStoreIsBehindThenSameAndHigherVersionsBecomeReadyWithoutReaderWrites() {
-        var health = readiness(2);
-        try (var logs = LogCapture.start("lookahead.health")) {
-            assertThat(health.health().getStatus()).isEqualTo(Status.DOWN);
-            assertThat(logs.messages()).anyMatch(message -> message.contains("data is at 0") && message.contains("needs 2"));
-        }
-        for (String version : List.of("1", "2", "3")) {
-            put(DynamoDataVersionStoreTest.head(version));
-            assertThat(health.health().getStatus()).isEqualTo(version.equals("1") ? Status.DOWN : Status.UP);
-            assertThat(new DynamoDataVersionStore(client, TABLES).currentVersion()).isEqualTo(Long.parseLong(version));
-        }
-        for (String name : NAMES) {
-            assertThat(client.scan(ScanRequest.builder().tableName(name).consistentRead(true).build()).count())
-                    .isEqualTo(name.equals(TABLES.protectedOwnerIdentityTableName()) ? 1 : 0);
-        }
-    }
+  @BeforeAll
+  static void connect() {
+    URI endpoint = URI.create(System.getenv("DLV970_DYNAMODB_TEST_ENDPOINT"));
+    if (!"http".equals(endpoint.getScheme())
+        || !"127.0.0.1".equals(endpoint.getHost())
+        || endpoint.getPort() < 1024
+        || endpoint.getPort() > 65535
+        || endpoint.getUserInfo() != null
+        || endpoint.getQuery() != null
+        || endpoint.getFragment() != null
+        || !endpoint.getPath().isEmpty())
+      throw new IllegalArgumentException("Loopback fixture required");
+    client =
+        DynamoDbClient.builder()
+            .endpointOverride(endpoint)
+            .region(Region.US_EAST_2)
+            .credentialsProvider(
+                StaticCredentialsProvider.create(
+                    AwsBasicCredentials.create("synthetic", "synthetic")))
+            .httpClientBuilder(UrlConnectionHttpClient.builder())
+            .build();
+  }
 
-    @Test void oldReleaseAcceptsNewDataWhileNewReleaseRefusesOldData() {
-        put(DynamoDataVersionStoreTest.head("2"));
-        assertThat(readiness(1).health().getStatus()).isEqualTo(Status.UP);
-        assertThat(readiness(2).health().getStatus()).isEqualTo(Status.UP);
-        assertThat(readiness(3).health().getStatus()).isEqualTo(Status.DOWN);
+  @BeforeEach
+  void createTables() {
+    for (String name : NAMES) {
+      // DLV-970: these cases need empty tables; drop any table an earlier class in this JVM left
+      // behind.
+      try {
+        client.deleteTable(DeleteTableRequest.builder().tableName(name).build());
+      } catch (ResourceNotFoundException absent) {
+        /* fresh */
+      }
+      client.createTable(
+          CreateTableRequest.builder()
+              .tableName(name)
+              .billingMode(BillingMode.PAY_PER_REQUEST)
+              .keySchema(
+                  KeySchemaElement.builder().attributeName("pk").keyType(KeyType.HASH).build(),
+                  KeySchemaElement.builder().attributeName("sk").keyType(KeyType.RANGE).build())
+              .attributeDefinitions(
+                  AttributeDefinition.builder()
+                      .attributeName("pk")
+                      .attributeType(ScalarAttributeType.S)
+                      .build(),
+                  AttributeDefinition.builder()
+                      .attributeName("sk")
+                      .attributeType(ScalarAttributeType.S)
+                      .build())
+              .build());
+      created.add(name);
     }
+  }
 
-    @Test void malformedHeadRefusesTrafficAndValidRestorationRecovers() {
-        var health = readiness(1);
-        var malformed = new HashMap<>(DynamoDataVersionStoreTest.head("1"));
-        malformed.put("version", DynamoDataVersionStoreTest.s("private-secret"));
-        put(malformed);
-        try (var logs = LogCapture.start("lookahead.health")) {
-            assertThat(health.health().getStatus()).isEqualTo(Status.DOWN);
-            assertThat(LogCapture.keys(logs.only("readiness"))).containsEntry("reason", "STORE_UNAVAILABLE");
-            logs.containsNone("private-secret");
-        }
-        put(DynamoDataVersionStoreTest.head("1"));
-        assertThat(health.health().getStatus()).isEqualTo(Status.UP);
-    }
+  @AfterEach
+  void cleanup() {
+    for (String name : created)
+      client.deleteTable(DeleteTableRequest.builder().tableName(name).build());
+  }
 
-    @Test void protectedOwnerBindingIsIndependentAndCannotStandInForTheLedger() {
-        put(Map.of("pk", DynamoDataVersionStoreTest.s("OWNER"), "sk", DynamoDataVersionStoreTest.s("ROOT"),
-                "schemaVersion", DynamoDataVersionStoreTest.n("1"), "issuer", DynamoDataVersionStoreTest.s("https://issuer.test"),
-                "subject", DynamoDataVersionStoreTest.s("owner-subject")));
-        var owner = new ProtectedOwnerIdentityStore(client, TABLES);
-        assertThat(owner.matchesVerifiedIdentity("https://issuer.test", "owner-subject")).isTrue();
-        assertThat(readiness(1).health().getStatus()).isEqualTo(Status.DOWN);
-        put(DynamoDataVersionStoreTest.head("1"));
-        assertThat(readiness(1).health().getStatus()).isEqualTo(Status.UP);
-        assertThat(owner.matchesVerifiedIdentity("https://issuer.test", "owner-subject")).isTrue();
-    }
+  @AfterAll
+  static void close() {
+    if (client != null) client.close();
+  }
 
-    @Test void physicalMissingTableFailsDespiteSufficientLedger() {
-        put(DynamoDataVersionStoreTest.head("99"));
-        String missing = TABLES.userStudyPlanDetailsTableName();
-        client.deleteTable(DeleteTableRequest.builder().tableName(missing).build()); created.remove(missing);
-        try (var logs = LogCapture.start("lookahead.health")) {
-            assertThat(readiness(1).health().getStatus()).isEqualTo(Status.DOWN);
-            assertThat(LogCapture.keys(logs.only("readiness"))).containsEntry("reason", "TABLE_MISSING");
-            assertThat(logs.messages().getFirst()).contains(missing);
-        }
-    }
+  private void put(Map<String, AttributeValue> item) {
+    client.putItem(
+        PutItemRequest.builder()
+            .tableName(TABLES.protectedOwnerIdentityTableName())
+            .item(item)
+            .build());
+  }
 
-    @Test void absentProtectedTableIsMissingRatherThanVersionZero() {
-        String missing = TABLES.protectedOwnerIdentityTableName();
-        client.deleteTable(DeleteTableRequest.builder().tableName(missing).build()); created.remove(missing);
-        try (var logs = LogCapture.start("lookahead.health")) {
-            assertThat(readiness(1).health().getStatus()).isEqualTo(Status.DOWN);
-            assertThat(LogCapture.keys(logs.only("readiness"))).containsEntry("reason", "TABLE_MISSING");
-        }
+  @Test
+  void emptyStoreIsBehindThenSameAndHigherVersionsBecomeReadyWithoutReaderWrites() {
+    var health = readiness(2);
+    try (var logs = LogCapture.start("lookahead.health")) {
+      assertThat(health.health().getStatus()).isEqualTo(Status.DOWN);
+      assertThat(logs.messages())
+          .anyMatch(message -> message.contains("data is at 0") && message.contains("needs 2"));
     }
+    for (String version : List.of("1", "2", "3")) {
+      put(DynamoDataVersionStoreTest.head(version));
+      assertThat(health.health().getStatus())
+          .isEqualTo(version.equals("1") ? Status.DOWN : Status.UP);
+      assertThat(new DynamoDataVersionStore(client, TABLES).currentVersion())
+          .isEqualTo(Long.parseLong(version));
+    }
+    for (String name : NAMES) {
+      assertThat(
+              client
+                  .scan(ScanRequest.builder().tableName(name).consistentRead(true).build())
+                  .count())
+          .isEqualTo(name.equals(TABLES.protectedOwnerIdentityTableName()) ? 1 : 0);
+    }
+  }
+
+  @Test
+  void oldReleaseAcceptsNewDataWhileNewReleaseRefusesOldData() {
+    put(DynamoDataVersionStoreTest.head("2"));
+    assertThat(readiness(1).health().getStatus()).isEqualTo(Status.UP);
+    assertThat(readiness(2).health().getStatus()).isEqualTo(Status.UP);
+    assertThat(readiness(3).health().getStatus()).isEqualTo(Status.DOWN);
+  }
+
+  @Test
+  void malformedHeadRefusesTrafficAndValidRestorationRecovers() {
+    var health = readiness(1);
+    var malformed = new HashMap<>(DynamoDataVersionStoreTest.head("1"));
+    malformed.put("version", DynamoDataVersionStoreTest.s("private-secret"));
+    put(malformed);
+    try (var logs = LogCapture.start("lookahead.health")) {
+      assertThat(health.health().getStatus()).isEqualTo(Status.DOWN);
+      assertThat(LogCapture.keys(logs.only("readiness")))
+          .containsEntry("reason", "STORE_UNAVAILABLE");
+      logs.containsNone("private-secret");
+    }
+    put(DynamoDataVersionStoreTest.head("1"));
+    assertThat(health.health().getStatus()).isEqualTo(Status.UP);
+  }
+
+  @Test
+  void protectedOwnerBindingIsIndependentAndCannotStandInForTheLedger() {
+    put(
+        Map.of(
+            "pk",
+            DynamoDataVersionStoreTest.s("OWNER"),
+            "sk",
+            DynamoDataVersionStoreTest.s("ROOT"),
+            "schemaVersion",
+            DynamoDataVersionStoreTest.n("1"),
+            "issuer",
+            DynamoDataVersionStoreTest.s("https://issuer.test"),
+            "subject",
+            DynamoDataVersionStoreTest.s("owner-subject")));
+    var owner = new ProtectedOwnerIdentityStore(client, TABLES);
+    assertThat(owner.matchesVerifiedIdentity("https://issuer.test", "owner-subject")).isTrue();
+    assertThat(readiness(1).health().getStatus()).isEqualTo(Status.DOWN);
+    put(DynamoDataVersionStoreTest.head("1"));
+    assertThat(readiness(1).health().getStatus()).isEqualTo(Status.UP);
+    assertThat(owner.matchesVerifiedIdentity("https://issuer.test", "owner-subject")).isTrue();
+  }
+
+  @Test
+  void physicalMissingTableFailsDespiteSufficientLedger() {
+    put(DynamoDataVersionStoreTest.head("99"));
+    String missing = TABLES.userStudyPlanDetailsTableName();
+    client.deleteTable(DeleteTableRequest.builder().tableName(missing).build());
+    created.remove(missing);
+    try (var logs = LogCapture.start("lookahead.health")) {
+      assertThat(readiness(1).health().getStatus()).isEqualTo(Status.DOWN);
+      assertThat(LogCapture.keys(logs.only("readiness"))).containsEntry("reason", "TABLE_MISSING");
+      assertThat(logs.messages().getFirst()).contains(missing);
+    }
+  }
+
+  @Test
+  void absentProtectedTableIsMissingRatherThanVersionZero() {
+    String missing = TABLES.protectedOwnerIdentityTableName();
+    client.deleteTable(DeleteTableRequest.builder().tableName(missing).build());
+    created.remove(missing);
+    try (var logs = LogCapture.start("lookahead.health")) {
+      assertThat(readiness(1).health().getStatus()).isEqualTo(Status.DOWN);
+      assertThat(LogCapture.keys(logs.only("readiness"))).containsEntry("reason", "TABLE_MISSING");
+    }
+  }
 }

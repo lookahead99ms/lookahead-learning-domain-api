@@ -21,19 +21,28 @@ import org.springframework.security.web.csrf.CsrfFilter;
 /** Dedicated Infra credential: the read-only token verifier cannot maintain accounts. */
 @Configuration
 public class TestAccountSecurityConfiguration {
-    @Bean @Order(-1)
-    SecurityFilterChain testAccountSecurityChain(HttpSecurity http, Environment environment, TestAccountModeService policy) throws Exception {
-        var provider = new TestAccountOperatorVerifier(policy, TestAccountOperatorSecretValidator.validated(environment));
-        return http.securityMatcher("/internal/v1/test-accounts/**")
-                .addFilterBefore(new TestAccountOperatorFilter(), CsrfFilter.class)
-                .authenticationManager(new ProviderManager(provider))
-                .csrf(csrf -> csrf.csrfTokenRepository(new CookieCsrfTokenRepository())).requestCache(AbstractHttpConfigurer::disable)
-                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(HttpMethod.GET, "/internal/v1/test-accounts/csrf").hasRole("TEST_ACCOUNT_OPERATOR")
-                        .requestMatchers(HttpMethod.POST,
-                        "/internal/v1/test-accounts/seed")
-                        .hasRole("TEST_ACCOUNT_OPERATOR").anyRequest().denyAll())
-                .httpBasic(basic -> basic.authenticationEntryPoint(new TestAccountSecurityHandler())).build();
-    }
+  @Bean
+  @Order(-1)
+  SecurityFilterChain testAccountSecurityChain(
+      HttpSecurity http, Environment environment, TestAccountModeService policy) throws Exception {
+    var provider =
+        new TestAccountOperatorVerifier(
+            policy, TestAccountOperatorSecretValidator.validated(environment));
+    return http.securityMatcher("/internal/v1/test-accounts/**")
+        .addFilterBefore(new TestAccountOperatorFilter(), CsrfFilter.class)
+        .authenticationManager(new ProviderManager(provider))
+        .csrf(csrf -> csrf.csrfTokenRepository(new CookieCsrfTokenRepository()))
+        .requestCache(AbstractHttpConfigurer::disable)
+        .sessionManagement(
+            session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+        .authorizeHttpRequests(auth ->
+            auth.requestMatchers(HttpMethod.GET, "/internal/v1/test-accounts/csrf")
+                .hasRole("TEST_ACCOUNT_OPERATOR")
+                .requestMatchers(HttpMethod.POST, "/internal/v1/test-accounts/seed")
+                .hasRole("TEST_ACCOUNT_OPERATOR")
+                .anyRequest()
+                .denyAll())
+        .httpBasic(basic -> basic.authenticationEntryPoint(new TestAccountSecurityHandler()))
+        .build();
+  }
 }

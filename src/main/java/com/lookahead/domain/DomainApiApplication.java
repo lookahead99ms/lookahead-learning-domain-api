@@ -5,9 +5,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication(scanBasePackages = {"com.lookahead.domain"})
 public class DomainApiApplication {
-    public static void main(String[] args) {
-        var application = new SpringApplication(DomainApiApplication.class);
-        application.setAdditionalProfiles("accounts", "resource");
-        application.run(args);
-    }
+  public static void main(String[] args) {
+    var application = new SpringApplication(DomainApiApplication.class);
+    application.setAdditionalProfiles("accounts", "resource");
+    application.run(args);
+  }
 }

@@ -1,0 +1,26 @@
+# DLV-1026: Python (the pipeline code under .github/pipeline/) follows PEP 8, formatted by
+# `ruff format` (Black-compatible) and linted by `ruff check`. CI runs `ruff format --check .`
+# and `ruff check .` from the repository root with the Ruff pinned in
+# .github/pipeline/shared/requirements-style.txt; locally `ruff format .` fixes the format.
+line-length = 88
+# The oldest interpreter that runs this code: ubuntu-24.04's python3 (3.12) runs the build suites.
+target-version = "py312"
+# Python files only: Ruff also formats Markdown code blocks, which stay out of scope.
+include = ["*.py"]
+# Same settings as the Gateway BFF, whose .gitignore hides every folder named build/ (and with it
+# .github/pipeline/build/); Ruff reads only *.py files, and target/ (Maven output) has none.
+respect-gitignore = false
+# The four step folders put each other on sys.path: their modules are one first-party group.
+src = [
+  ".github/pipeline/build",
+  ".github/pipeline/publish",
+  ".github/pipeline/deploy",
+  ".github/pipeline/shared",
+]
+
+[lint]
+select = ["E", "W", "F", "I"]
+
+[lint.isort]
+# Keep the existing order: modules sorted by name, `import x` and `from x import y` mixed.
+force-sort-within-sections = true

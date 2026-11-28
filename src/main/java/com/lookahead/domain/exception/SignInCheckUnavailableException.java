@@ -4,5 +4,7 @@ import org.springframework.security.authentication.AuthenticationServiceExceptio
 
 /** No underlying request, token, response body, or secret is included in this exception. */
 public final class SignInCheckUnavailableException extends AuthenticationServiceException {
-    public SignInCheckUnavailableException() { super("Identity verification is temporarily unavailable"); }
+  public SignInCheckUnavailableException() {
+    super("Identity verification is temporarily unavailable");
+  }
 }

@@ -176,6 +176,32 @@
                     </execution>
                 </executions>
             </plugin>
+            <!-- DLV-1026: every Java file (main and test) follows Google Java Style as formatted by google-java-format,
+                 with the same defaults as its command line: imports sorted, unused imports removed, long strings
+                 reflowed, Javadoc formatted. The check runs in verify and fails on a mis-formatted file;
+                 ./mvnw spotless:apply fixes the format. -->
+            <plugin>
+                <groupId>com.diffplug.spotless</groupId>
+                <artifactId>spotless-maven-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <java>
+                        <googleJavaFormat>
+                            <version>2.0.0</version>
+                            <style>GOOGLE</style>
+                            <reflowLongStrings>true</reflowLongStrings>
+                            <reorderImports>true</reorderImports>
+                            <formatJavadoc>true</formatJavadoc>
+                        </googleJavaFormat>
+                    </java>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>google-java-style</id>
+                        <goals><goal>check</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
             <!-- DLV-918: patched transitives for the ordinary clean/verify lifecycle. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId><artifactId>maven-clean-plugin</artifactId>

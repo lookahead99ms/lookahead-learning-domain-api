@@ -15,15 +15,15 @@ import org.springframework.web.bind.annotation.RestController;
 @ConditionalOnProperty(name = "app.deployment-environment", havingValue = "local")
 @ConditionalOnProperty(name = "app.local-test.author-enabled", havingValue = "true")
 public class AuthorPreviewAccessController {
-    private final AuthorPreviewAccessService access;
+  private final AuthorPreviewAccessService access;
 
-    public AuthorPreviewAccessController(AuthorPreviewAccessService access) {
-        this.access = access;
-    }
+  public AuthorPreviewAccessController(AuthorPreviewAccessService access) {
+    this.access = access;
+  }
 
-    @GetMapping("/api/v1/author/previews/access")
-    public ResponseEntity<Void> access(@AuthenticationPrincipal AccountPrincipal principal) {
-        access.requireAccess(principal);
-        return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
-    }
+  @GetMapping("/api/v1/author/previews/access")
+  public ResponseEntity<Void> access(@AuthenticationPrincipal AccountPrincipal principal) {
+    access.requireAccess(principal);
+    return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
+  }
 }

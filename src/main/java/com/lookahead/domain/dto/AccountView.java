@@ -4,8 +4,41 @@ import com.lookahead.domain.model.StaffPermissions;
 import java.util.Set;
 import java.util.UUID;
 
-public record AccountView(UUID accountId, String username, String displayName, Set<String> topicGrants, Set<String> contentGrants, boolean authorPreview, StaffPermissions permissions) {
-    public AccountView(UUID accountId,String username,String displayName,Set<String> topicGrants,Set<String> contentGrants,boolean authorPreview){this(accountId,username,displayName,topicGrants,contentGrants,authorPreview,StaffPermissions.forRoles(authorPreview,Set.of()));}
-    public AccountView(UUID accountId,String username,String displayName,Set<String> topicGrants){this(accountId,username,displayName,topicGrants,Set.of(),false);}
-    public AccountView(UUID accountId,String username,String displayName,Set<String> topicGrants,Set<String> contentGrants){this(accountId,username,displayName,topicGrants,contentGrants,false);}
+public record AccountView(
+    UUID accountId,
+    String username,
+    String displayName,
+    Set<String> topicGrants,
+    Set<String> contentGrants,
+    boolean authorPreview,
+    StaffPermissions permissions) {
+  public AccountView(
+      UUID accountId,
+      String username,
+      String displayName,
+      Set<String> topicGrants,
+      Set<String> contentGrants,
+      boolean authorPreview) {
+    this(
+        accountId,
+        username,
+        displayName,
+        topicGrants,
+        contentGrants,
+        authorPreview,
+        StaffPermissions.forRoles(authorPreview, Set.of()));
+  }
+
+  public AccountView(UUID accountId, String username, String displayName, Set<String> topicGrants) {
+    this(accountId, username, displayName, topicGrants, Set.of(), false);
+  }
+
+  public AccountView(
+      UUID accountId,
+      String username,
+      String displayName,
+      Set<String> topicGrants,
+      Set<String> contentGrants) {
+    this(accountId, username, displayName, topicGrants, contentGrants, false);
+  }
 }

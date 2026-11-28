@@ -1,110 +1,256 @@
 """Portable presentation contract and unsafe payload fixtures; no provider calls."""
+
 from copy import deepcopy
 import hashlib
 from pathlib import Path
 import re
 import unittest
+
 import issue_template as template
 
 
 class TemplateTests(unittest.TestCase):
     def fixture(self):
-        return dict(overview='## Decision summary: Test operation\n\n| Question | Gist |\n| --- | --- |\n'
-                    '| What you authorize | One reviewed upload. |\n| Risk and recovery | Preserve partial receipts. |\n'
-                    '| Validation evidence | Tests passed; provider execution unverified. |',
-                    scope=template.records([{'name': 'synthetic', 'action': 'Create'}]),
-                    evidence=template.details('Source evidence', '## Commits\n\nReviewed source.'),
-                    risks='No automatic rollback.', repository='example/infra', runId='123', owner='example',
-                    expires='2026-10-26T23:00:00Z', permissionDeadline='2027-10-26T13:00:00Z',
-                    command='APPROVE APPLY ' + 'a'*64, payload={'source': 'b'*40},
-                    created='2026-10-26T22:20:00Z', planDeadline='2026-10-26T23:00:00Z')
+        return dict(
+            overview="## Decision summary: Test operation\n\n| Question | Gist"
+            " |\n| --- | --- |\n"
+            "| What you authorize | One reviewed upload. |\n| Risk and"
+            " recovery | Preserve partial receipts. |\n"
+            "| Validation evidence | Tests passed; provider execution"
+            " unverified. |",
+            scope=template.records([{"name": "synthetic", "action": "Create"}]),
+            evidence=template.details(
+                "Source evidence", "## Commits\n\nReviewed source."
+            ),
+            risks="No automatic rollback.",
+            repository="example/infra",
+            runId="123",
+            owner="example",
+            expires="2026-10-26T23:00:00Z",
+            permissionDeadline="2027-10-26T13:00:00Z",
+            command="APPROVE APPLY " + "a" * 64,
+            payload={"source": "b" * 40},
+            created="2026-10-26T22:20:00Z",
+            planDeadline="2026-10-26T23:00:00Z",
+        )
 
     def test_seven_sections_one_exact_command_and_separated_authority_deadlines(self):
-        options = self.fixture(); original = deepcopy(options)
+        options = self.fixture()
+        original = deepcopy(options)
         body = template.render(**options)
-        self.assertEqual(re.findall(r'^## (.+)$', body, re.M), list(template.SECTIONS))
-        self.assertEqual(body.count('\n---\n'), 6)
-        self.assertEqual(re.findall(r'```text\n(.*?)\n```', body, re.S), [options['command']])
-        self.assertIn('| **Responsible owner** | @example |', body)
-        self.assertIn('| **Approval deadline (UTC)** | 2026-10-26T23:00:00Z |', body)
-        self.assertIn('| **Permission deadline (separate)** | 2027-10-26T13:00:00Z |', body)
-        self.assertIn('| **PLAN deadline** |', body)
-        self.assertIn('#### Commits', body)
-        self.assertIn('Preserve partial receipts.', body.split('## Risks and recovery')[1])
-        self.assertNotIn('Preserve partial receipts.', body.split('## What changes')[0])
-        self.assertNotIn('| Question |', body)
-        self.assertIn('| Item | Detail |', body); self.assertIn('> [!WARNING]', body); self.assertIn('> [!CAUTION]', body)
-        self.assertIn('| Approve | `' + options['command'] + '` |', body)
+        self.assertEqual(re.findall(r"^## (.+)$", body, re.M), list(template.SECTIONS))
+        self.assertEqual(body.count("\n---\n"), 6)
+        self.assertEqual(
+            re.findall(r"```text\n(.*?)\n```", body, re.S), [options["command"]]
+        )
+        self.assertIn("| **Responsible owner** | @example |", body)
+        self.assertIn("| **Approval deadline (UTC)** | 2026-10-26T23:00:00Z |", body)
+        self.assertIn(
+            "| **Permission deadline (separate)** | 2027-10-26T13:00:00Z |", body
+        )
+        self.assertIn("| **PLAN deadline** |", body)
+        self.assertIn("#### Commits", body)
+        self.assertIn(
+            "Preserve partial receipts.", body.split("## Risks and recovery")[1]
+        )
+        self.assertNotIn("Preserve partial receipts.", body.split("## What changes")[0])
+        self.assertNotIn("| Question |", body)
+        self.assertIn("| Item | Detail |", body)
+        self.assertIn("> [!WARNING]", body)
+        self.assertIn("> [!CAUTION]", body)
+        self.assertIn("| Approve | `" + options["command"] + "` |", body)
         self.assertEqual(options, original)
-        block = 'APPROVE APPLY s3 CREATE synthetic-bucket\nAPPROVE POST APPLY SMOKE ' + 'b'*64
-        self.assertIn(template.code(block), template.render(**dict(options, command=block)))
+        block = (
+            "APPROVE APPLY s3 CREATE synthetic-bucket\nAPPROVE POST APPLY SMOKE "
+            + "b" * 64
+        )
+        self.assertIn(
+            template.code(block), template.render(**dict(options, command=block))
+        )
 
     def test_untrusted_labels_and_fence_payload_cannot_inject_sections(self):
-        self.assertEqual(template.text('<x>|`\r\n'), '&lt;x&gt;&#124;&#96;  ')
-        self.assertIn('&lt;/summary&gt;', template.details('</summary>', 'body'))
-        payload = 'safe\n```\n## Spoofed action'
-        self.assertEqual(template.code(payload), '````text\n' + payload + '\n````')
-        self.assertIn('No resource rows supplied', template.records([]))
-        self.assertIn('| NO CHANGE | `resource` | `generated by AWS` |', template.records([{'action': 'No change'}]))
-        self.assertIn('<br>', template.cell('a\nb')); self.assertIn('&#124;', template.cell('a|b'))
-        self.assertEqual(template.summary('Plain summary.'), 'Plain summary.')
+        self.assertEqual(template.text("<x>|`\r\n"), "&lt;x&gt;&#124;&#96;  ")
+        self.assertIn("&lt;/summary&gt;", template.details("</summary>", "body"))
+        payload = "safe\n```\n## Spoofed action"
+        self.assertEqual(template.code(payload), "````text\n" + payload + "\n````")
+        self.assertIn("No resource rows supplied", template.records([]))
+        self.assertIn(
+            "| NO CHANGE | `resource` | `generated by AWS` |",
+            template.records([{"action": "No change"}]),
+        )
+        self.assertIn("<br>", template.cell("a\nb"))
+        self.assertIn("&#124;", template.cell("a|b"))
+        self.assertEqual(template.summary("Plain summary."), "Plain summary.")
 
     def test_only_exact_owner_run_link_and_command_are_rendered(self):
         options = self.fixture()
-        for field, value in [('repository', 'bad/url/extra'), ('owner', 'user\n## fake'), ('runId', '1?x=2'),
-                             ('command', 'APPROVE APPLY '+'a'*64+'\nREJECT'), ('command', 'APPROVE APPLY wrong')]:
+        for field, value in [
+            ("repository", "bad/url/extra"),
+            ("owner", "user\n## fake"),
+            ("runId", "1?x=2"),
+            ("command", "APPROVE APPLY " + "a" * 64 + "\nREJECT"),
+            ("command", "APPROVE APPLY wrong"),
+        ]:
             with self.subTest(field=field), self.assertRaises(ValueError):
                 template.render(**dict(options, **{field: value}))
 
     def test_image_approvals_name_the_version_as_ecr_shows_it(self):
-        """User decision 2026-10-28: the comment names the ECR image tag, not the plan digest; the digest stays in the body."""
+        """User decision 2026-10-28: the comment names the ECR image tag, not the plan
+        digest; the digest stays in the body."""
         options = self.fixture()
-        headline = {'env': 'DEV', 'action': 'Publish image', 'subject': 'web-v2026.10.28.15.01', 'change': 'numbered pipeline'}
-        body = template.render(**dict(options, command='APPROVE IMAGE web-v2026.10.28.15.01'), headline=headline)
-        self.assertIn('Comment `APPROVE IMAGE <version>` or `REJECT`', body)
-        self.assertIn('```text\nAPPROVE IMAGE web-v2026.10.28.15.01\n```', body)
-        self.assertIn('Comment `APPROVE KEEP <version>` or `REJECT`', template.render(**dict(options, command='APPROVE KEEP DEV gateway-bff-v2026.10.28.15.00'), headline=headline))
-        self.assertIn('Comment `APPROVE DEV <version>` or `REJECT`', template.render(**dict(options, command='APPROVE DEV RESTART v2026.10.28.16.00'), headline=headline))
-        for bad in ('APPROVE IMAGE web-v2026.10.28', 'APPROVE IMAGE Web-v2026.10.28.15.01', 'APPROVE IMAGE web-v2026.10.28.15.1', 'APPROVE IMAGE 2026.10.28.15.01'):
+        headline = {
+            "env": "DEV",
+            "action": "Publish image",
+            "subject": "web-v2026.10.28.15.01",
+            "change": "numbered pipeline",
+        }
+        body = template.render(
+            **dict(options, command="APPROVE IMAGE web-v2026.10.28.15.01"),
+            headline=headline,
+        )
+        self.assertIn("Comment `APPROVE IMAGE <version>` or `REJECT`", body)
+        self.assertIn("```text\nAPPROVE IMAGE web-v2026.10.28.15.01\n```", body)
+        self.assertIn(
+            "Comment `APPROVE KEEP <version>` or `REJECT`",
+            template.render(
+                **dict(
+                    options, command="APPROVE KEEP DEV gateway-bff-v2026.10.28.15.00"
+                ),
+                headline=headline,
+            ),
+        )
+        self.assertIn(
+            "Comment `APPROVE DEV <version>` or `REJECT`",
+            template.render(
+                **dict(options, command="APPROVE DEV RESTART v2026.10.28.16.00"),
+                headline=headline,
+            ),
+        )
+        for bad in (
+            "APPROVE IMAGE web-v2026.10.28",
+            "APPROVE IMAGE Web-v2026.10.28.15.01",
+            "APPROVE IMAGE web-v2026.10.28.15.1",
+            "APPROVE IMAGE 2026.10.28.15.01",
+        ):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 template.render(**dict(options, command=bad))
 
     def test_headline_resources_and_validation_render_change_first(self):
         options = self.fixture()
-        headline = {'env': 'DEV', 'action': 'Apply', 'subject': 'lookahead-dev-compute', 'change': 'create network load balancer'}
-        resources = [{'type': 'AWS::ElasticLoadBalancingV2::LoadBalancer', 'consoleName': 'lookahead-dev-nlb', 'action': 'Create', 'logicalId': 'Lb', 'note': 'internal'},
-                     {'type': 'AWS::ElasticLoadBalancingV2::Listener', 'action': 'Create', 'logicalId': 'Listener'}]
-        body = template.render(**options, headline=headline, resources=resources, validation=[('Template checks', '52 resources')])
-        self.assertEqual(template.title(headline, 123), 'DEV: Apply lookahead-dev-compute — create network load balancer · run 123')
-        self.assertTrue(body.startswith('> [!IMPORTANT]\n> **DEV · Apply lookahead-dev-compute** — create network load balancer'))
-        self.assertIn('Comment `APPROVE APPLY <digest>` or `REJECT`', body)
-        summary = body.split('## What changes')[0]
-        self.assertIn('| **Affected AWS resources** | **CREATE** `AWS::ElasticLoadBalancingV2::LoadBalancer` · `lookahead-dev-nlb`<br>**CREATE** `AWS::ElasticLoadBalancingV2::Listener` · `generated by AWS (logical ID Listener)` |', summary)
-        changes = body.split('## What changes')[1].split('## Validation')[0]
-        self.assertIn('| Action | Resource type | Name in AWS Console | Notes |', changes)
-        self.assertIn('| CREATE | `AWS::ElasticLoadBalancingV2::LoadBalancer` | `lookahead-dev-nlb` | internal |', changes)
-        self.assertIn('<summary>1. lookahead-dev-nlb — properties</summary>', changes); self.assertIn('| **logicalId** | `Lb` |', changes)
-        self.assertNotIn('| **type** |', changes); self.assertNotIn('| **consoleName** |', changes)
-        self.assertIn('| CREATE only if absent |', template.records([{'type': 'AWS::Logs::LogGroup', 'name': 'lg', 'action': 'Create only if absent'}]))
-        self.assertIn('| Template checks | 52 resources |', body.split('## Validation and source')[1].split('## Risks')[0])
-        self.assertIn('| **Affected AWS resources** | **None** created, updated or replaced. |', template.render(**options, resources=[]))
-        self.assertNotIn('Affected AWS resources', template.render(**options))
+        headline = {
+            "env": "DEV",
+            "action": "Apply",
+            "subject": "lookahead-dev-compute",
+            "change": "create network load balancer",
+        }
+        resources = [
+            {
+                "type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+                "consoleName": "lookahead-dev-nlb",
+                "action": "Create",
+                "logicalId": "Lb",
+                "note": "internal",
+            },
+            {
+                "type": "AWS::ElasticLoadBalancingV2::Listener",
+                "action": "Create",
+                "logicalId": "Listener",
+            },
+        ]
+        body = template.render(
+            **options,
+            headline=headline,
+            resources=resources,
+            validation=[("Template checks", "52 resources")],
+        )
+        self.assertEqual(
+            template.title(headline, 123),
+            "DEV: Apply lookahead-dev-compute — create network load balancer · run 123",
+        )
+        self.assertTrue(
+            body.startswith(
+                (
+                    "> [!IMPORTANT]\n> **DEV · Apply"
+                    " lookahead-dev-compute** — create network load balancer"
+                )
+            )
+        )
+        self.assertIn("Comment `APPROVE APPLY <digest>` or `REJECT`", body)
+        summary = body.split("## What changes")[0]
+        self.assertIn(
+            (
+                "| **Affected AWS resources** | **CREATE**"
+                " `AWS::ElasticLoadBalancingV2::LoadBalancer` ·"
+                " `lookahead-dev-nlb`<br>**CREATE**"
+                " `AWS::ElasticLoadBalancingV2::Listener` · `generated by AWS (logical"
+                " ID Listener)` |"
+            ),
+            summary,
+        )
+        changes = body.split("## What changes")[1].split("## Validation")[0]
+        self.assertIn(
+            "| Action | Resource type | Name in AWS Console | Notes |", changes
+        )
+        self.assertIn(
+            (
+                "| CREATE | `AWS::ElasticLoadBalancingV2::LoadBalancer` |"
+                " `lookahead-dev-nlb` | internal |"
+            ),
+            changes,
+        )
+        self.assertIn("<summary>1. lookahead-dev-nlb — properties</summary>", changes)
+        self.assertIn("| **logicalId** | `Lb` |", changes)
+        self.assertNotIn("| **type** |", changes)
+        self.assertNotIn("| **consoleName** |", changes)
+        self.assertIn(
+            "| CREATE only if absent |",
+            template.records(
+                [
+                    {
+                        "type": "AWS::Logs::LogGroup",
+                        "name": "lg",
+                        "action": "Create only if absent",
+                    }
+                ]
+            ),
+        )
+        self.assertIn(
+            "| Template checks | 52 resources |",
+            body.split("## Validation and source")[1].split("## Risks")[0],
+        )
+        self.assertIn(
+            "| **Affected AWS resources** | **None** created, updated or replaced. |",
+            template.render(**options, resources=[]),
+        )
+        self.assertNotIn("Affected AWS resources", template.render(**options))
         # The plain-language gist comes before any table, right under the headline.
-        body = template.render(**options, headline=headline, gist='1. Cut the tag.\n2. Upload.\n\nWhy: reviewers read this first.')
-        self.assertLess(body.index('### What this run does'), body.index('| Item | Detail |'))
-        self.assertIn('1. Cut the tag.', body.split('## What changes')[0])
-        for bad in [{**headline, 'change': ''}, {**headline, 'env': '\n'}]:
-            with self.assertRaises(ValueError): template.title(bad, 123)
-        with self.assertRaises(ValueError): template.title(headline, 'x')
-        with self.assertRaises(ValueError): template.alert('OTHER', 'x')
-        self.assertEqual(template.table(('a',), []), '')
-        self.assertIn('&#124;', template.title({**headline, 'change': 'a|b'}, 1))
+        body = template.render(
+            **options,
+            headline=headline,
+            gist="1. Cut the tag.\n2. Upload.\n\nWhy: reviewers read this first.",
+        )
+        self.assertLess(
+            body.index("### What this run does"), body.index("| Item | Detail |")
+        )
+        self.assertIn("1. Cut the tag.", body.split("## What changes")[0])
+        for bad in [{**headline, "change": ""}, {**headline, "env": "\n"}]:
+            with self.assertRaises(ValueError):
+                template.title(bad, 123)
+        with self.assertRaises(ValueError):
+            template.title(headline, "x")
+        with self.assertRaises(ValueError):
+            template.alert("OTHER", "x")
+        self.assertEqual(template.table(("a",), []), "")
+        self.assertIn("&#124;", template.title({**headline, "change": "a|b"}, 1))
 
     def test_portable_renderer_matches_reviewed_version(self):
-        # An accidental edit in one repository must fail until all reviewed copies are synchronized.
-        expected = '82ba7692d80962b3e4230fd04b5e57a761892915320ff5396fa45269a5bd892a'
-        self.assertEqual(hashlib.sha256(Path(template.__file__).read_bytes()).hexdigest(), expected)
+        # An accidental edit in one repository must fail until all reviewed copies are
+        # synchronized.
+        expected = "d94d584818fa71c26c6202b23ea02adb9298234dcbf5ede5263d07eaa66e4075"
+        self.assertEqual(
+            hashlib.sha256(Path(template.__file__).read_bytes()).hexdigest(), expected
+        )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

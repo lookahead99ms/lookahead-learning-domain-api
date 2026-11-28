@@ -1,11 +1,16 @@
 package com.lookahead.domain.security.config;
 
+import static org.mockito.Mockito.*;
+import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+import com.lookahead.domain.exception.SignInCheckUnavailableException;
 import com.lookahead.domain.local.identity.IdentityConfiguration;
 import com.lookahead.domain.local.identity.IdentityVerificationClient;
-import com.lookahead.domain.exception.SignInCheckUnavailableException;
-import com.lookahead.domain.service.access.AccountGrantService;
-import com.lookahead.domain.security.token.AccountPrincipal;
 import com.lookahead.domain.security.filter.StorageFailureFilter;
+import com.lookahead.domain.security.token.AccountPrincipal;
+import com.lookahead.domain.service.access.AccountGrantService;
 import jakarta.servlet.http.Cookie;
 import java.time.Instant;
 import java.util.List;
@@ -35,145 +40,279 @@ import org.springframework.web.context.support.AnnotationConfigWebApplicationCon
 import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import tools.jackson.databind.ObjectMapper;
-import static org.mockito.Mockito.*;
-import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 class ApiSecurityConfigurationIntegrationTest {
-    private static final String SUBJECT = "6c8bc359-1141-4c98-83e6-a5ca967fe180";
-    private AnnotationConfigWebApplicationContext context;
-    private AccountGrantService accounts;
-    private IdentityVerificationClient identity;
-    private JwtDecoder decoder;
-    private MockMvc http;
+  private static final String SUBJECT = "6c8bc359-1141-4c98-83e6-a5ca967fe180";
+  private AnnotationConfigWebApplicationContext context;
+  private AccountGrantService accounts;
+  private IdentityVerificationClient identity;
+  private JwtDecoder decoder;
+  private MockMvc http;
 
-    @BeforeEach void configure() {
-        context = new AnnotationConfigWebApplicationContext(); context.setServletContext(new MockServletContext());
-        context.getEnvironment().setActiveProfiles("accounts", "resource");
-        context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("boundary-test", Map.of(
-                "app.deployment-environment", "local", "app.identity.issuer", "http://127.0.0.1:4380",
-                "app.identity.upstream", "http://identity:8080", "app.identity.gateway-client-id", "lookahead-web-gateway",
-                "app.identity.verifier-secret", "synthetic-verifier-secret-for-unit-tests")));
-        context.register(TestApplication.class); context.refresh();
-        accounts = context.getBean(AccountGrantService.class); identity = context.getBean(IdentityVerificationClient.class);
-        decoder = context.getBean(JwtDecoder.class);
-        when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "account"));
-        when(identity.verify("synthetic-token")).thenReturn(new IdentityVerificationClient.Verification(true, SUBJECT, "learner", "Learner", "lookahead-web-gateway"));
-        http = MockMvcBuilders.webAppContextSetup(context).addFilters(new StorageFailureFilter()).apply(springSecurity()).build();
-    }
-    @AfterEach void close() { if (context != null) context.close(); }
+  @BeforeEach
+  void configure() {
+    context = new AnnotationConfigWebApplicationContext();
+    context.setServletContext(new MockServletContext());
+    context.getEnvironment().setActiveProfiles("accounts", "resource");
+    context
+        .getEnvironment()
+        .getPropertySources()
+        .addFirst(
+            new MapPropertySource(
+                "boundary-test",
+                Map.of(
+                    "app.deployment-environment",
+                    "local",
+                    "app.identity.issuer",
+                    "http://127.0.0.1:4380",
+                    "app.identity.upstream",
+                    "http://identity:8080",
+                    "app.identity.gateway-client-id",
+                    "lookahead-web-gateway",
+                    "app.identity.verifier-secret",
+                    "synthetic-verifier-secret-for-unit-tests")));
+    context.register(TestApplication.class);
+    context.refresh();
+    accounts = context.getBean(AccountGrantService.class);
+    identity = context.getBean(IdentityVerificationClient.class);
+    decoder = context.getBean(JwtDecoder.class);
+    when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "account"));
+    when(identity.verify("synthetic-token"))
+        .thenReturn(
+            new IdentityVerificationClient.Verification(
+                true, SUBJECT, "learner", "Learner", "lookahead-web-gateway"));
+    http =
+        MockMvcBuilders.webAppContextSetup(context)
+            .addFilters(new StorageFailureFilter())
+            .apply(springSecurity())
+            .build();
+  }
 
-    @Test void authenticatedIdentityReachesResourceWithoutSessionOrPassword() throws Exception {
-        http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token"))
-                .andExpect(status().isOk()).andExpect(jsonPath("subject").value(SUBJECT)).andExpect(header().doesNotExist("Set-Cookie"));
-        verify(accounts).ensureSubject(UUID.fromString(SUBJECT));
-        verifyNoMoreInteractions(accounts);
+  @AfterEach
+  void close() {
+    if (context != null) context.close();
+  }
+
+  @Test
+  void authenticatedIdentityReachesResourceWithoutSessionOrPassword() throws Exception {
+    http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("subject").value(SUBJECT))
+        .andExpect(header().doesNotExist("Set-Cookie"));
+    verify(accounts).ensureSubject(UUID.fromString(SUBJECT));
+    verifyNoMoreInteractions(accounts);
+  }
+
+  @Test
+  void invalidSignatureOrWrongClientIsUnauthorizedBeforeInternalLookup() throws Exception {
+    when(decoder.decode("synthetic-token")).thenThrow(new BadJwtException("Invalid signature"));
+    http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isUnauthorized())
+        .andExpect(header().string("WWW-Authenticate", "Bearer"));
+    reset(decoder);
+    when(decoder.decode("synthetic-token")).thenReturn(token("other-client", "account"));
+    http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isUnauthorized());
+    verifyNoInteractions(identity, accounts);
+  }
+
+  @Test
+  void inactiveIdentityIs401WhileUnavailableAuthorityIs503() throws Exception {
+    when(identity.verify("synthetic-token"))
+        .thenReturn(new IdentityVerificationClient.Verification(false, null, null, null, null));
+    http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isUnauthorized())
+        .andExpect(jsonPath("code").value("AUTHENTICATION_REQUIRED"));
+    when(identity.verify("synthetic-token")).thenThrow(new SignInCheckUnavailableException());
+    http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isServiceUnavailable())
+        .andExpect(jsonPath("code").value("IDENTITY_UNAVAILABLE"))
+        .andExpect(header().string("Cache-Control", "no-store"))
+        .andExpect(header().doesNotExist("WWW-Authenticate"));
+    verifyNoInteractions(accounts);
+  }
+
+  @Test
+  void subjectStorageFailureIsSafe503AndNeverExecutesResource() throws Exception {
+    doThrow(SdkClientException.create("synthetic private database details"))
+        .when(accounts)
+        .ensureSubject(UUID.fromString(SUBJECT));
+    http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isServiceUnavailable())
+        .andExpect(jsonPath("code").value("ACCOUNT_STORAGE_UNAVAILABLE"))
+        .andExpect(content().string(Matchers.not(Matchers.containsString("private database"))));
+  }
+
+  @Test
+  void accountReadRejectsCookiesAndBrowserSuppliedIdentityWithoutBearer() throws Exception {
+    http.perform(
+            get("/api/v1/auth/me")
+                .cookie(new Cookie("JSESSIONID", "forged"))
+                .header("Origin", "https://attacker.invalid")
+                .param("verifiedEmail", "invited@example.invalid"))
+        .andExpect(status().isUnauthorized());
+    verifyNoInteractions(identity, accounts, decoder);
+  }
+
+  @Test
+  void tokenScopeAndDenyByDefaultAreEnforced() throws Exception {
+    when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
+    http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isForbidden());
+    http.perform(post("/api/v1/auth/register").header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isForbidden());
+    http.perform(post("/oauth2/token").header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isForbidden());
+  }
+
+  @Test
+  void anonymousPublicRoutesDoNotDependOnIdentityOrProductStorage() throws Exception {
+    http.perform(get("/api/v1/status")).andExpect(status().isOk());
+    http.perform(get("/content/public.json")).andExpect(status().isOk());
+    http.perform(get("/api/v1/auth/me")).andExpect(status().isUnauthorized());
+    verifyNoInteractions(identity, accounts, decoder);
+  }
+
+  @Test
+  void authorReviewRequiresBearerAndAccountScopeAndDoesNotAcceptBrowserSession() throws Exception {
+    String route = "/api/v1/author/review-artifacts";
+    http.perform(get(route)).andExpect(status().isUnauthorized());
+    http.perform(get(route).cookie(new Cookie("JSESSIONID", "forged")))
+        .andExpect(status().isUnauthorized());
+    when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
+    http.perform(get(route).header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isForbidden());
+    http.perform(
+            delete("/api/v1/author/review-artifacts/study-plan-review/events")
+                .header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isForbidden());
+  }
+
+  @Test
+  void platformReviewsRequireBearerAndAccountScope() throws Exception {
+    String route = "/api/v1/platform-reviews";
+    http.perform(get(route)).andExpect(status().isUnauthorized());
+    http.perform(get(route + "/me").cookie(new Cookie("JSESSIONID", "forged")))
+        .andExpect(status().isUnauthorized());
+    when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
+    http.perform(get(route).header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isForbidden());
+    http.perform(
+            put(route + "/" + SUBJECT + "/triage")
+                .header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isForbidden());
+  }
+
+  /**
+   * DLV-971: the delivery plan routes need the same bearer and account scope as platform reviews.
+   */
+  @Test
+  void deliveryPlanRequiresBearerAndAccountScope() throws Exception {
+    String route = "/api/v1/delivery/plan";
+    http.perform(get(route)).andExpect(status().isUnauthorized());
+    http.perform(get(route).cookie(new Cookie("JSESSIONID", "forged")))
+        .andExpect(status().isUnauthorized());
+    when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
+    http.perform(get(route).header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isForbidden());
+    http.perform(post(route + "/work-items").header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isForbidden());
+    http.perform(put(route + "/work-items/DLV-1").header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isForbidden());
+  }
+
+  /**
+   * DLV-971 sweeps: the owner's manual run is a bearer route with the account scope; it was denied
+   * by default before (403 for everyone).
+   */
+  @Test
+  void sweepRunIsReachableWithTheAccountScopeAndDeniedWithoutIt() throws Exception {
+    String route = "/api/v1/sweeps/run";
+    http.perform(post(route).cookie(new Cookie("JSESSIONID", "forged")))
+        .andExpect(status().isForbidden());
+    when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
+    http.perform(post(route).header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isForbidden());
+    when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "account"));
+    http.perform(post(route).header("Authorization", "Bearer synthetic-token"))
+        .andExpect(status().isNotFound());
+  }
+
+  @Test
+  void staffAccessRequiresBearerAndAccountScopeWithoutBrowserSession() throws Exception {
+    for (String route :
+        List.of(
+            "/api/v1/admin/access",
+            "/api/v1/admin/access/lookup",
+            "/api/v1/account/permissions",
+            "/api/v1/auth/invitations/activate",
+            "/api/v1/account/access-summary",
+            "/api/v1/admin/test-accounts",
+            "/api/v1/admin/test-accounts/" + SUBJECT + "/reset",
+            "/api/v1/admin/accounts",
+            "/api/v1/admin/accounts/" + SUBJECT + "/downgrade",
+            "/api/v1/admin/accounts/" + SUBJECT + "/delete")) {
+      http.perform(get(route).cookie(new Cookie("JSESSIONID", "forged")))
+          .andExpect(status().isUnauthorized());
+      http.perform(post(route).cookie(new Cookie("JSESSIONID", "forged")))
+          .andExpect(status().isForbidden());
+      when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
+      http.perform(post(route).header("Authorization", "Bearer synthetic-token"))
+          .andExpect(status().isForbidden());
     }
-    @Test void invalidSignatureOrWrongClientIsUnauthorizedBeforeInternalLookup() throws Exception {
-        when(decoder.decode("synthetic-token")).thenThrow(new BadJwtException("Invalid signature"));
-        http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token"))
-                .andExpect(status().isUnauthorized()).andExpect(header().string("WWW-Authenticate", "Bearer"));
-        reset(decoder); when(decoder.decode("synthetic-token")).thenReturn(token("other-client", "account"));
-        http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token")).andExpect(status().isUnauthorized());
-        verifyNoInteractions(identity, accounts);
+  }
+
+  private static Jwt token(String client, String scope) {
+    return Jwt.withTokenValue("synthetic-token")
+        .header("alg", "RS256")
+        .subject(SUBJECT)
+        .issuer("http://127.0.0.1:4380")
+        .audience(List.of("lookahead-api"))
+        .claim("client_id", client)
+        .claim("scope", scope)
+        .issuedAt(Instant.now())
+        .expiresAt(Instant.now().plusSeconds(60))
+        .build();
+  }
+
+  @Configuration
+  @EnableWebMvc
+  @EnableWebSecurity
+  @Import({ApiSecurityConfiguration.class, IdentityConfiguration.class, ProbeController.class})
+  static class TestApplication {
+    @Bean
+    ObjectMapper mapper() {
+      return new ObjectMapper();
     }
-    @Test void inactiveIdentityIs401WhileUnavailableAuthorityIs503() throws Exception {
-        when(identity.verify("synthetic-token")).thenReturn(new IdentityVerificationClient.Verification(false, null, null, null, null));
-        http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token"))
-                .andExpect(status().isUnauthorized()).andExpect(jsonPath("code").value("AUTHENTICATION_REQUIRED"));
-        when(identity.verify("synthetic-token")).thenThrow(new SignInCheckUnavailableException());
-        http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token"))
-                .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("code").value("IDENTITY_UNAVAILABLE"))
-                .andExpect(header().string("Cache-Control", "no-store")).andExpect(header().doesNotExist("WWW-Authenticate"));
-        verifyNoInteractions(accounts);
+
+    @Bean
+    AccountGrantService accounts() {
+      return mock(AccountGrantService.class, withSettings().mockMaker(MockMakers.SUBCLASS));
     }
-    @Test void subjectStorageFailureIsSafe503AndNeverExecutesResource() throws Exception {
-        doThrow(SdkClientException.create("synthetic private database details"))
-                .when(accounts).ensureSubject(UUID.fromString(SUBJECT));
-        http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token"))
-                .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("code").value("ACCOUNT_STORAGE_UNAVAILABLE"))
-                .andExpect(content().string(Matchers.not(Matchers.containsString("private database"))));
+
+    @Bean
+    @Primary
+    JwtDecoder decoder() {
+      return mock(JwtDecoder.class, withSettings().mockMaker(MockMakers.SUBCLASS));
     }
-    @Test void accountReadRejectsCookiesAndBrowserSuppliedIdentityWithoutBearer() throws Exception {
-        http.perform(get("/api/v1/auth/me").cookie(new Cookie("JSESSIONID", "forged"))
-                .header("Origin", "https://attacker.invalid").param("verifiedEmail", "invited@example.invalid"))
-                .andExpect(status().isUnauthorized());
-        verifyNoInteractions(identity, accounts, decoder);
+
+    @Bean
+    @Primary
+    IdentityVerificationClient verifier() {
+      return mock(IdentityVerificationClient.class, withSettings().mockMaker(MockMakers.SUBCLASS));
     }
-    @Test void tokenScopeAndDenyByDefaultAreEnforced() throws Exception {
-        when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
-        http.perform(get("/api/v1/auth/me").header("Authorization", "Bearer synthetic-token")).andExpect(status().isForbidden());
-        http.perform(post("/api/v1/auth/register").header("Authorization", "Bearer synthetic-token")).andExpect(status().isForbidden());
-        http.perform(post("/oauth2/token").header("Authorization", "Bearer synthetic-token")).andExpect(status().isForbidden());
+  }
+
+  @RestController
+  static class ProbeController {
+    @GetMapping("/api/v1/auth/me")
+    Map<String, String> me(@AuthenticationPrincipal AccountPrincipal principal) {
+      return Map.of("subject", principal.accountId().toString());
     }
-    @Test void anonymousPublicRoutesDoNotDependOnIdentityOrProductStorage() throws Exception {
-        http.perform(get("/api/v1/status")).andExpect(status().isOk());
-        http.perform(get("/content/public.json")).andExpect(status().isOk());
-        http.perform(get("/api/v1/auth/me")).andExpect(status().isUnauthorized());
-        verifyNoInteractions(identity, accounts, decoder);
+
+    @GetMapping({"/api/v1/status", "/content/public.json"})
+    Map<String, String> publicRoute() {
+      return Map.of("status", "ok");
     }
-    @Test void authorReviewRequiresBearerAndAccountScopeAndDoesNotAcceptBrowserSession() throws Exception {
-        String route="/api/v1/author/review-artifacts";
-        http.perform(get(route)).andExpect(status().isUnauthorized());
-        http.perform(get(route).cookie(new Cookie("JSESSIONID","forged"))).andExpect(status().isUnauthorized());
-        when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
-        http.perform(get(route).header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
-        http.perform(delete("/api/v1/author/review-artifacts/study-plan-review/events").header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
-    }
-    @Test void platformReviewsRequireBearerAndAccountScope() throws Exception {
-        String route="/api/v1/platform-reviews";
-        http.perform(get(route)).andExpect(status().isUnauthorized());
-        http.perform(get(route+"/me").cookie(new Cookie("JSESSIONID","forged"))).andExpect(status().isUnauthorized());
-        when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
-        http.perform(get(route).header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
-        http.perform(put(route+"/"+SUBJECT+"/triage").header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
-    }
-    /** DLV-971: the delivery plan routes need the same bearer and account scope as platform reviews. */
-    @Test void deliveryPlanRequiresBearerAndAccountScope() throws Exception {
-        String route="/api/v1/delivery/plan";
-        http.perform(get(route)).andExpect(status().isUnauthorized());
-        http.perform(get(route).cookie(new Cookie("JSESSIONID","forged"))).andExpect(status().isUnauthorized());
-        when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
-        http.perform(get(route).header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
-        http.perform(post(route+"/work-items").header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
-        http.perform(put(route+"/work-items/DLV-1").header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
-    }
-    /** DLV-971 sweeps: the owner's manual run is a bearer route with the account scope; it was denied by default before (403 for everyone). */
-    @Test void sweepRunIsReachableWithTheAccountScopeAndDeniedWithoutIt() throws Exception {
-        String route="/api/v1/sweeps/run";
-        http.perform(post(route).cookie(new Cookie("JSESSIONID","forged"))).andExpect(status().isForbidden());
-        when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
-        http.perform(post(route).header("Authorization","Bearer synthetic-token")).andExpect(status().isForbidden());
-        when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "account"));
-        http.perform(post(route).header("Authorization","Bearer synthetic-token")).andExpect(status().isNotFound());
-    }
-    @Test void staffAccessRequiresBearerAndAccountScopeWithoutBrowserSession() throws Exception {
-        for (String route : List.of("/api/v1/admin/access", "/api/v1/admin/access/lookup", "/api/v1/account/permissions", "/api/v1/auth/invitations/activate", "/api/v1/account/access-summary", "/api/v1/admin/test-accounts", "/api/v1/admin/test-accounts/"+SUBJECT+"/reset", "/api/v1/admin/accounts", "/api/v1/admin/accounts/"+SUBJECT+"/downgrade", "/api/v1/admin/accounts/"+SUBJECT+"/delete")) {
-            http.perform(get(route).cookie(new Cookie("JSESSIONID", "forged")))
-                    .andExpect(status().isUnauthorized());
-            http.perform(post(route).cookie(new Cookie("JSESSIONID", "forged")))
-                    .andExpect(status().isForbidden());
-            when(decoder.decode("synthetic-token")).thenReturn(token("lookahead-web-gateway", "content"));
-            http.perform(post(route).header("Authorization", "Bearer synthetic-token"))
-                    .andExpect(status().isForbidden());
-        }
-    }
-    private static Jwt token(String client, String scope) {
-        return Jwt.withTokenValue("synthetic-token").header("alg", "RS256").subject(SUBJECT).issuer("http://127.0.0.1:4380")
-                .audience(List.of("lookahead-api")).claim("client_id", client).claim("scope", scope)
-                .issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(60)).build();
-    }
-    @Configuration @EnableWebMvc @EnableWebSecurity
-    @Import({ApiSecurityConfiguration.class, IdentityConfiguration.class, ProbeController.class})
-    static class TestApplication {
-        @Bean ObjectMapper mapper() { return new ObjectMapper(); }
-        @Bean AccountGrantService accounts() { return mock(AccountGrantService.class, withSettings().mockMaker(MockMakers.SUBCLASS)); }
-        @Bean @Primary JwtDecoder decoder() { return mock(JwtDecoder.class, withSettings().mockMaker(MockMakers.SUBCLASS)); }
-        @Bean @Primary IdentityVerificationClient verifier() { return mock(IdentityVerificationClient.class, withSettings().mockMaker(MockMakers.SUBCLASS)); }
-    }
-    @RestController static class ProbeController {
-        @GetMapping("/api/v1/auth/me") Map<String, String> me(@AuthenticationPrincipal AccountPrincipal principal) { return Map.of("subject", principal.accountId().toString()); }
-        @GetMapping({"/api/v1/status", "/content/public.json"}) Map<String, String> publicRoute() { return Map.of("status", "ok"); }
-    }
+  }
 }

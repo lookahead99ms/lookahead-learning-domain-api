@@ -9,19 +9,20 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 @EnableConfigurationProperties(CorsConfigValues.class)
 public class WebConfiguration implements WebMvcConfigurer {
 
-    private final CorsConfigValues corsValues;
+  private final CorsConfigValues corsValues;
 
-    public WebConfiguration(CorsConfigValues corsValues) {
-        this.corsValues = corsValues;
-    }
+  public WebConfiguration(CorsConfigValues corsValues) {
+    this.corsValues = corsValues;
+  }
 
-    @Override
-    public void addCorsMappings(CorsRegistry registry) {
-        registry.addMapping("/api/**")
-                .allowedOrigins(corsValues.allowedOrigins().toArray(String[]::new))
-                .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
-                .allowedHeaders("*")
-                .allowCredentials(true)
-                .maxAge(3600);
-    }
+  @Override
+  public void addCorsMappings(CorsRegistry registry) {
+    registry
+        .addMapping("/api/**")
+        .allowedOrigins(corsValues.allowedOrigins().toArray(String[]::new))
+        .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+        .allowedHeaders("*")
+        .allowCredentials(true)
+        .maxAge(3600);
+  }
 }
